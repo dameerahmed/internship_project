@@ -70,7 +70,6 @@ async def create_project(
         # 2. Setup minimalist core project model without raw credential provisioning leaks
         # We store initial state; keys rotation will happen exclusively via the rotation endpoint on demand.
         db_project = Project(
-            id=uuid.uuid4(),
             name=payload.name,
             description=getattr(payload, "description", None),
             company_id=company_id,
@@ -101,7 +100,6 @@ async def create_project(
             for event in payload.event_configs:
                 normalized_event = normalize_event_config_payload(event)
                 db_event = EventConfig(
-                    id=uuid.uuid4(),
                     project_id=project_id,
                     event_type=normalized_event["event_type"],
                     target_url=normalized_event["target_url"],
