@@ -1,0 +1,24 @@
+# Local virtual environments
+.venv/
+venv/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Local config & logs
+.env
+.env.*
+*.log
+logs/
+
+# SQLite databases
+*.sqlite3
+*.db
+
+# Docker configuration files
+Dockerfile
+.dockerignore
+docker-compose.yml

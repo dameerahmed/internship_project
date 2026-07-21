@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  # RabbitMQ Service
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: my_rabbitmq
+    ports:
+      - "5672:5672"   # RabbitMQ broker port
+      - "15672:15672" # RabbitMQ Management Dashboard
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin123
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+  # Redis Service
+  redis:
+    image: redis:7-alpine
+    container_name: my_redis
+    ports:
+      - "6379:6379"   # Redis default port
+    volumes:
+      - redis_data:/var/data
+    command: redis-server --appendonly yes
+
+volumes:
+  rabbitmq_data:
+  redis_data:

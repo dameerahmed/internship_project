@@ -1,0 +1,42 @@
+# Local virtual environments
+.venv/
+venv/
+**/venv/
+**/.venv/
+
+# Node dependencies and build folders
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+build/
+**/build/
+.vite/
+
+# Python cache files
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Local secrets & configs
+.env
+.env.*
+!.env.example
+
+# Git directories
+.git/
+.gitignore
+
+# SQLite databases or logs
+*.sqlite3
+*.db
+*.log
+logs/
+
+# IDE files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
