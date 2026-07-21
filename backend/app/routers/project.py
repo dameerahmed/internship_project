@@ -39,6 +39,7 @@ async def list_projects(
         {
             "id": project.id,
             "name": project.name,
+            "description": project.description,
             "is_active": project.is_active,
             "company_id": project.company_id,
             "created_at": project.created_at,
@@ -263,6 +264,7 @@ async def get_project(
     return {
         "id": db_project.id,
         "name": db_project.name,
+        "description": db_project.description,
         "is_active": db_project.is_active,
         "retention_days": db_project.retention_days,
         "delete_time": None,
@@ -378,6 +380,9 @@ async def update_project(
         if payload.is_active is not None:
             db_project.is_active = payload.is_active
 
+        if payload.description is not None:
+            db_project.description = payload.description.strip() or None
+
         if getattr(payload, "retention_days", None) is not None:
             db_project.retention_days = payload.retention_days
 
@@ -416,6 +421,7 @@ async def update_project(
         return {
             "id": project_id,
             "name": db_project.name,
+            "description": db_project.description,
             "is_active": db_project.is_active,
             "retention_days": db_project.retention_days,
             "company_id": company_id,
@@ -501,6 +507,7 @@ async def new_api_and_secret_generation(
         return {
             "id": project_id,
             "name": db_project.name,
+            "description": db_project.description,
             "is_active": db_project.is_active,
             "company_id": company_id,
             "api_key": new_client_api_key,

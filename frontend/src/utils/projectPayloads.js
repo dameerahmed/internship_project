@@ -36,12 +36,13 @@ export const buildProjectEventConfigs = (eventConfigs = []) => {
     });
 };
 
-export const createProjectPayload = ({ name, eventConfigs = [], isActive = true, retentionDays = 30, deleteTime = '' }) => {
+export const createProjectPayload = ({ name, description = '', eventConfigs = [], isActive = true, retentionDays = 30, deleteTime = '' }) => {
   const normalizedRetention = Number.isFinite(Number(retentionDays)) ? Number(retentionDays) : 30;
   const normalizedDeleteTime = typeof deleteTime === 'string' ? deleteTime.trim() : '';
 
   return {
     name: name?.trim() || '',
+    description: description?.trim() || '',
     is_active: isActive,
     retention_days: normalizedRetention,
     delete_time: normalizedDeleteTime || null,

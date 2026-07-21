@@ -24,6 +24,7 @@ import { createProjectPayload } from '@/utils/projectPayloads';
 
 const blankForm = (project) => ({
   name: project?.name || '',
+  description: project?.description || '',
   eventConfigs: project?.event_configs?.length
     ? project.event_configs.map((config) => ({
         event_type: config.event_type || 'webhook.received',
@@ -130,6 +131,7 @@ export default function ProjectDetailPage() {
     try {
       const payload = createProjectPayload({
         name: form.name,
+        description: form.description,
         eventConfigs: form.eventConfigs,
         isActive: form.isActive,
         retentionDays: form.retentionDays,
@@ -430,6 +432,18 @@ export default function ProjectDetailPage() {
                     value={form.name} 
                     onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))} 
                     placeholder="E.g. production-gateway-cluster" 
+                  />
+                </div>
+
+                {/* Project Description input */}
+                <div className="space-y-2">
+                  <label htmlFor="detail-project-description" className="block text-xs font-bold text-zinc-400 uppercase tracking-wider">PROJECT_DESCRIPTION</label>
+                  <textarea 
+                    id="detail-project-description" 
+                    className="min-h-20 w-full rounded-xl border border-zinc-800 bg-[#11121d] px-3.5 py-2.5 text-xs text-white outline-none focus:border-[#8be9fd] transition-colors font-medium resize-y" 
+                    value={form.description || ''} 
+                    onChange={(event) => setForm((prev) => ({ ...prev, description: event.target.value }))} 
+                    placeholder="E.g. Routing billing alerts to Slack and Discord" 
                   />
                 </div>
 

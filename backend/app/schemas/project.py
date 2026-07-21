@@ -71,6 +71,7 @@ def _normalize_project_payload(values):
 
 class ProjectBase(BaseModel):
     name: str = Field(..., max_length=255)
+    description: Optional[str] = None
     is_active: bool = True
     retention_days: int = 30
     delete_time: Optional[str] = None
@@ -91,6 +92,7 @@ class ProjectCreate(ProjectBase):
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = Field(None, max_length=255)
+    description: Optional[str] = None
     is_active: Optional[bool] = None
     event_configs: Optional[List[EventConfigBase]] = None
     retention_days: Optional[int] = None

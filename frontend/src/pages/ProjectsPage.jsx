@@ -94,6 +94,7 @@ export default function ProjectsPage() {
     try {
       const payload = createProjectPayload({
         name: form.name,
+        description: form.description,
         eventConfigs: form.eventConfigs,
         isActive: true,
         retentionDays: 30,
@@ -298,6 +299,9 @@ export default function ProjectsPage() {
                         <span className="font-semibold text-zinc-900 dark:text-zinc-100">{project.name}</span>
                         <ArrowRight className="h-4 w-4 text-zinc-400" />
                       </button>
+                      {project.description && (
+                        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400 line-clamp-1">{project.description}</p>
+                      )}
                       <div className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">{project.is_active ? 'Active and ready' : 'Paused'}</div>
                     </div>
                     <div className="flex flex-wrap items-center gap-3">

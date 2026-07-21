@@ -17,6 +17,7 @@ class Project(Base):
     id = Column(Integer, primary_key=True, autoincrement=True,index=True)
     company_id = Column(Integer, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(255), nullable=False)
+    description = Column(String(500), nullable=True)
     hashed_secret = Column(String(255), unique=True, nullable=False, index=True)
     secret_key = Column(String(255), nullable=False)  # For HMAC Security Verification
     is_active = Column(Boolean, default=True, nullable=False, index=True)
