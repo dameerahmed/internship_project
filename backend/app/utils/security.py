@@ -140,12 +140,19 @@ def validate_payload_keys(payload: Any, required_keys: Optional[List[str]], requ
     if not required_keys:
         return True
 
+    clean_keys = [str(k).strip() for k in required_keys if str(k or "").strip()]
+    if not clean_keys:
+        return True
+
     if not isinstance(payload, dict):
         return False
 
-    for idx, key_path in enumerate(required_keys):
+    for idx, key_path in enumerate(clean_keys):
         current = payload
         parts = [part for part in str(key_path).split('.') if part]
+        if not parts:
+            continue
+
         found = True
         for part in parts:
             if isinstance(current, dict) and part in current:
@@ -153,11 +160,12 @@ def validate_payload_keys(payload: Any, required_keys: Optional[List[str]], requ
             else:
                 found = False
                 break
+
         if not found:
             return False
 
         if required_types and idx < len(required_types):
-            expected_type = str(required_types[idx]).strip().lower()
+            expected_type = str(required_types[idx] or "").strip().lower()
             if expected_type and expected_type not in ("any", ""):
                 if expected_type == "string" and not isinstance(current, str):
                     return False
