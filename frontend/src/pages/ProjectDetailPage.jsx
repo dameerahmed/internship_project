@@ -78,6 +78,7 @@ export default function ProjectDetailPage() {
   const [saving, setSaving] = useState(false);
   const [toggling, setToggling] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [purging, setPurging] = useState(false);
   const [feedback, setFeedback] = useState({ type: '', message: '' });
   const [generatedKeys, setGeneratedKeys] = useState(null);
   const [form, setForm] = useState(blankForm(null));
@@ -239,6 +240,22 @@ export default function ProjectDetailPage() {
       navigate('/projects');
     } catch (error) {
       setFeedback({ type: 'error', message: error.message || 'Failed to delete project.' });
+    }
+  };
+
+  const handlePurgeNow = async () => {
+    if (!project || !window.confirm(`Are you sure you want to purge all webhook events and delivery execution logs for "${project.name}" right now?`)) {
+      return;
+    }
+
+    setPurging(true);
+    try {
+      const { data } = await apiClient.post(`/v1/projects/${project.id}/purge`);
+      setFeedback({ type: 'success', message: data.message || 'Webhook events and execution logs purged successfully!' });
+    } catch (error) {
+      setFeedback({ type: 'error', message: error.message || 'Failed to purge project data.' });
+    } finally {
+      setPurging(false);
     }
   };
 
@@ -663,10 +680,10 @@ export default function ProjectDetailPage() {
               </div>
             )}
 
-            {/* Target Data Scope Checkboxes */}
+            {/* Target Data Scope Checkboxes & Instant Purge Button */}
             <div className="rounded-2xl border border-zinc-800/80 bg-[#080910] p-4 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-zinc-300">
-              <span className="font-semibold text-zinc-400">Purge Target Scope:</span>
               <div className="flex flex-wrap items-center gap-4">
+                <span className="font-semibold text-zinc-400">Purge Target Scope:</span>
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
@@ -674,7 +691,7 @@ export default function ProjectDetailPage() {
                     onChange={(e) => setForm((prev) => ({ ...prev, purgeEvents: e.target.checked }))}
                     className="rounded border-zinc-700 bg-zinc-900 text-emerald-500 focus:ring-0"
                   />
-                  <span>Webhook Ingress Payloads</span>
+                  <span>Webhook Ingress Payloads (`webhook_events`)</span>
                 </label>
 
                 <label className="flex items-center gap-2 cursor-pointer">
@@ -684,9 +701,19 @@ export default function ProjectDetailPage() {
                     onChange={(e) => setForm((prev) => ({ ...prev, purgeLogs: e.target.checked }))}
                     className="rounded border-zinc-700 bg-zinc-900 text-emerald-500 focus:ring-0"
                   />
-                  <span>Execution & Forwarding Logs</span>
+                  <span>Execution Logs (`webhook_logs`)</span>
                 </label>
               </div>
+
+              <button
+                type="button"
+                disabled={purging}
+                onClick={handlePurgeNow}
+                className="inline-flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 px-4 py-2 text-xs font-semibold text-rose-400 transition active:scale-95 shrink-0 shadow-sm"
+              >
+                <Trash2 size={14} />
+                <span>{purging ? 'Purging both tables...' : 'Purge Data Now'}</span>
+              </button>
             </div>
           </section>
 

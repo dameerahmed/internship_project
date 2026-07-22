@@ -21,6 +21,8 @@ from backend.app.services.project_service import normalize_event_config_payload
 # Models
 from backend.app.models.project import Project
 from backend.app.models.event_config import EventConfig
+from backend.app.models.webhook_log import WebhookLog
+from backend.app.models.webhook_event import WebhookEvent
 
 router = APIRouter(prefix="/v1/projects", tags=["Projects"])
 logger = logging.getLogger("project_router")
@@ -518,4 +520,39 @@ async def new_api_and_secret_generation(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate new API and secret keys: {str(e)}"
+        )
+
+
+@router.post("/{project_id}/purge")
+async def purge_project_data(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_company = Depends(get_current_company)
+):
+    try:
+        company_id = current_company.id
+        result = await db.execute(
+            select(Project).where(Project.id == project_id, Project.company_id == company_id)
+        )
+        db_project = result.scalars().first()
+        if db_project is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+        ec_res = await db.execute(select(EventConfig.id).where(EventConfig.project_id == project_id))
+        ec_ids = [row[0] for row in ec_res.fetchall()]
+
+        # 1. Delete Webhook Logs for this project
+        if ec_ids:
+            await db.execute(delete(WebhookLog).where(WebhookLog.event_config_id.in_(ec_ids)))
+
+        # 2. Delete Webhook Events for this project
+        await db.execute(delete(WebhookEvent).where(WebhookEvent.project_id == project_id))
+
+        await db.commit()
+        return {"message": f"Webhook events and delivery logs purged successfully for project #{project_id}."}
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to purge project data: {str(e)}"
         )
