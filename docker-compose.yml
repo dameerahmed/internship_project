@@ -67,15 +67,15 @@ services:
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     environment:
-      DATABASE_URL: ${DATABASE_URL}
-      REDIS_URL: ${REDIS_URL}
-      RABBITMQ_URL: ${RABBITMQ_URL}
-      SECRET_KEY: ${SECRET_KEY}
-      SYSTEM_PRIVATE_KEY: ${SYSTEM_PRIVATE_KEY}
-      SYSTEM_PUBLIC_KEY: ${SYSTEM_PUBLIC_KEY}
-      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES}
-      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS}
-      COOKIE_SECURE: ${COOKIE_SECURE}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@db:5432/internship_db}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://admin:admin123@rabbitmq:5672/}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production-1234567890}
+      SYSTEM_PRIVATE_KEY: ${SYSTEM_PRIVATE_KEY:-}
+      SYSTEM_PUBLIC_KEY: ${SYSTEM_PUBLIC_KEY:-}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-15}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      COOKIE_SECURE: ${COOKIE_SECURE:-False}
     volumes:
       # Map the local backend folder inside the container for live reloading
       - ./backend:/app/backend
@@ -97,15 +97,15 @@ services:
       dockerfile: Dockerfile
     container_name: webhook_celery_worker
     environment:
-      DATABASE_URL: ${DATABASE_URL}
-      REDIS_URL: ${REDIS_URL}
-      RABBITMQ_URL: ${RABBITMQ_URL}
-      SECRET_KEY: ${SECRET_KEY}
-      SYSTEM_PRIVATE_KEY: ${SYSTEM_PRIVATE_KEY}
-      SYSTEM_PUBLIC_KEY: ${SYSTEM_PUBLIC_KEY}
-      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES}
-      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS}
-      COOKIE_SECURE: ${COOKIE_SECURE}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@db:5432/internship_db}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://admin:admin123@rabbitmq:5672/}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production-1234567890}
+      SYSTEM_PRIVATE_KEY: ${SYSTEM_PRIVATE_KEY:-}
+      SYSTEM_PUBLIC_KEY: ${SYSTEM_PUBLIC_KEY:-}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-15}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      COOKIE_SECURE: ${COOKIE_SECURE:-False}
     volumes:
       # Map the local backend folder inside the container for worker live reloading
       - ./backend:/app/backend
