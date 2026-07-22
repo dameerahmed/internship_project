@@ -14,7 +14,8 @@ import {
   Layers, 
   ExternalLink,
   Copy,
-  AlertTriangle
+  AlertTriangle,
+  Zap
 } from 'lucide-react';
 import ProtectedLayout from '../components/ProtectedLayout';
 import { useAuth } from '../context/AuthContext';
@@ -79,6 +80,85 @@ export default function ProjectDetailPage() {
   const [form, setForm] = useState(blankForm(null));
   const [revealSecret, setRevealSecret] = useState(false);
   const [timeLeft, setTimeLeft] = useState(0);
+
+  // Webhook Tester State
+  const [showTestModal, setShowTestModal] = useState(false);
+  const [testApiKey, setTestApiKey] = useState('');
+  const [testSecretKey, setTestSecretKey] = useState('');
+  const [testEventType, setTestEventType] = useState('');
+  const [testPayloadStr, setTestPayloadStr] = useState('');
+  const [testLoading, setTestLoading] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+
+  const handleOpenTestModal = async () => {
+    setShowTestModal(true);
+    setTestResult(null);
+    const activeConfigs = form.eventConfigs || [];
+    const firstEvt = activeConfigs[0]?.event_type || 'webhook.received';
+    setTestEventType(firstEvt);
+
+    const samplePayload = { event: firstEvt };
+    const rules = activeConfigs[0]?.payload_rules || [];
+    rules.forEach((r) => {
+      if (!r.key) return;
+      if (r.type === 'number') samplePayload[r.key] = 99.99;
+      else if (r.type === 'boolean') samplePayload[r.key] = true;
+      else if (r.type === 'object') samplePayload[r.key] = { id: 1 };
+      else if (r.type === 'array') samplePayload[r.key] = [1, 2];
+      else samplePayload[r.key] = 'sample_value';
+    });
+
+    setTestPayloadStr(JSON.stringify(samplePayload, null, 2));
+
+    if (generatedKeys?.api_key && generatedKeys?.secret_key) {
+      setTestApiKey(generatedKeys.api_key);
+      setTestSecretKey(generatedKeys.secret_key);
+    } else if (project?.id) {
+      try {
+        const { data } = await apiClient.get(`/v1/projects/refresh_keys/${project.id}`);
+        setGeneratedKeys({ api_key: data.api_key, secret_key: data.secret_key });
+        setTestApiKey(data.api_key);
+        setTestSecretKey(data.secret_key);
+      } catch {
+        // Ignore
+      }
+    }
+  };
+
+  const handleDispatchTestWebhook = async () => {
+    if (!testApiKey || !testSecretKey) {
+      alert('API Key and Secret Key are required to send a test webhook.');
+      return;
+    }
+
+    let parsedPayload = {};
+    try {
+      parsedPayload = JSON.parse(testPayloadStr);
+    } catch {
+      alert('Invalid JSON in test payload field. Please enter valid JSON.');
+      return;
+    }
+
+    setTestLoading(true);
+    setTestResult(null);
+
+    try {
+      const { data } = await apiClient.post('/v1/gateway/test', {
+        api_key: testApiKey,
+        secret_key: testSecretKey,
+        event_type: testEventType || 'webhook.received',
+        payload: parsedPayload,
+      });
+      setTestResult(data);
+    } catch (err) {
+      setTestResult({
+        status: 'Failed',
+        detail: err.response?.data?.detail || err.message || 'Gateway Test Failed',
+      });
+    } finally {
+      setTestLoading(false);
+    }
+  };
   
   const clearTimerRef = useRef(null);
   const countdownIntervalRef = useRef(null);
@@ -324,6 +404,14 @@ export default function ProjectDetailPage() {
             </div>
             
             <div className="flex flex-wrap gap-2.5">
+              <button 
+                type="button" 
+                onClick={handleOpenTestModal} 
+                className="inline-flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 px-4 py-2.5 text-xs font-bold text-emerald-400 transition active:scale-95 shadow-lg"
+              >
+                <Zap className="h-4 w-4" />
+                TEST_WEBHOOK_ENDPOINT
+              </button>
               <button 
                 type="button" 
                 onClick={() => navigate(`/projects/${projectId}/logs`)} 
@@ -825,6 +913,149 @@ export default function ProjectDetailPage() {
 
         </section>
       </div>
+
+      {/* TEST WEBHOOK DISPATCHER MODAL */}
+      {showTestModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-2xl overflow-hidden rounded-3xl border border-zinc-800 bg-[#0c0d15] shadow-2xl">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-zinc-800 p-5 bg-[#10121d]">
+              <div className="flex items-center gap-2.5">
+                <span className="flex h-8 w-8 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
+                  <Zap size={16} />
+                </span>
+                <div>
+                  <h3 className="text-sm font-mono font-bold text-white uppercase">Test Webhook Gateway Dispatcher</h3>
+                  <p className="text-[10px] font-mono text-zinc-400">Sends live signed test payload to POST /v1/gateway</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowTestModal(false)}
+                className="rounded-xl border border-zinc-800 p-2 text-xs font-mono text-zinc-400 hover:bg-zinc-800 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="space-y-4 p-5 max-h-[75vh] overflow-y-auto">
+              
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="block text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 mb-1">
+                    Event Type
+                  </label>
+                  <select
+                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
+                    value={testEventType}
+                    onChange={(e) => setTestEventType(e.target.value)}
+                  >
+                    {(form.eventConfigs || []).map((c, i) => (
+                      <option key={i} value={c.event_type}>{c.event_type}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 mb-1">
+                    Target Project Node
+                  </label>
+                  <input
+                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3 py-2 text-xs font-mono text-zinc-400"
+                    disabled
+                    value={project?.name || ''}
+                  />
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="block text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 mb-1">
+                    API Key (X-API-KEY)
+                  </label>
+                  <input
+                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3 py-2 text-xs font-mono text-zinc-300 outline-none focus:border-emerald-400"
+                    value={testApiKey}
+                    onChange={(e) => setTestApiKey(e.target.value)}
+                    placeholder="gw_live:..."
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 mb-1">
+                    Webhook Secret (HMAC-SHA256)
+                  </label>
+                  <input
+                    type="password"
+                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3 py-2 text-xs font-mono text-zinc-300 outline-none focus:border-emerald-400"
+                    value={testSecretKey}
+                    onChange={(e) => setTestSecretKey(e.target.value)}
+                    placeholder="Secret Key..."
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 mb-1">
+                  Test Webhook Payload JSON
+                </label>
+                <textarea
+                  className="min-h-36 w-full rounded-xl border border-zinc-800 bg-[#080910] p-3 text-xs font-mono text-emerald-300 outline-none focus:border-emerald-400"
+                  value={testPayloadStr}
+                  onChange={(e) => setTestPayloadStr(e.target.value)}
+                  placeholder='{ "event": "order.created", "amount": 99.99 }'
+                />
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowTestModal(false)}
+                  className="rounded-xl border border-zinc-800 px-4 py-2 text-xs font-mono font-bold text-zinc-400 hover:bg-zinc-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={testLoading}
+                  onClick={handleDispatchTestWebhook}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 text-xs font-mono font-bold text-zinc-950 hover:bg-emerald-400 disabled:opacity-50 transition active:scale-95 shadow-md"
+                >
+                  <Zap size={14} />
+                  <span>{testLoading ? 'DISPATCHING...' : 'DISPATCH TEST WEBHOOK'}</span>
+                </button>
+              </div>
+
+              {testResult && (
+                <div className="mt-4 space-y-2 rounded-2xl border border-zinc-800 bg-[#080910] p-4 text-xs font-mono">
+                  <div className="flex items-center justify-between border-b border-zinc-800/80 pb-2">
+                    <span className="font-bold text-white">GATEWAY TEST EXECUTION RESULT</span>
+                    <span className={`px-2 py-0.5 rounded font-bold ${testResult.gateway_http_code < 400 || testResult.status === 'Gateway_Accepted' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>
+                      {testResult.gateway_http_code ? `HTTP ${testResult.gateway_http_code}` : testResult.status}
+                    </span>
+                  </div>
+
+                  {testResult.generated_headers?.['X-HUB-SIGNATURE'] && (
+                    <div className="text-[11px]">
+                      <span className="text-zinc-500 font-bold">HMAC Signature: </span>
+                      <span className="text-cyan-400 font-bold break-all">{testResult.generated_headers['X-HUB-SIGNATURE']}</span>
+                    </div>
+                  )}
+
+                  <div>
+                    <span className="text-zinc-500 font-bold">Gateway Response: </span>
+                    <pre className="mt-1 max-h-36 overflow-y-auto rounded-xl bg-black/60 p-3 text-[11px] text-zinc-300">
+                      {JSON.stringify(testResult.gateway_response || testResult, null, 2)}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+            </div>
+          </div>
+        </div>
+      )}
     </ProtectedLayout>
   );
 }
