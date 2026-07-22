@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { 
   ArrowLeft, 
@@ -8,7 +8,6 @@ import {
   Plus, 
   Trash2, 
   CheckCircle2, 
-  Clock, 
   Database, 
   Copy, 
   AlertTriangle,
@@ -16,7 +15,9 @@ import {
   ShieldCheck,
   Calendar,
   Save,
-  Check
+  Check,
+  Clock,
+  RefreshCw
 } from 'lucide-react';
 import ProtectedLayout from '../components/ProtectedLayout';
 import { useAuth } from '../context/AuthContext';
@@ -94,6 +95,20 @@ export default function ProjectDetailPage() {
   const [testLoading, setTestLoading] = useState(false);
   const [testResult, setTestResult] = useState(null);
 
+  const fetchCredentials = async (id) => {
+    try {
+      setGenerating(true);
+      const { data } = await apiClient.get(`/v1/projects/refresh_keys/${id}`);
+      setGeneratedKeys({ api_key: data.api_key, secret_key: data.secret_key });
+      setRevealSecret(true);
+      return data;
+    } catch (err) {
+      console.warn('Failed to auto-fetch credentials:', err);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
   const loadProject = async () => {
     if (!projectId) {
       setLoading(false);
@@ -114,13 +129,8 @@ export default function ProjectDetailPage() {
       setForm(blankForm(found));
       sessionStorage.setItem('selectedProjectId', String(found.id));
 
-      // Auto load credentials for this project
-      try {
-        const { data: keyData } = await apiClient.get(`/v1/projects/refresh_keys/${found.id}`);
-        setGeneratedKeys({ api_key: keyData.api_key, secret_key: keyData.secret_key });
-      } catch {
-        // Ignore fallback
-      }
+      // Auto load live credentials
+      await fetchCredentials(found.id);
     } catch (error) {
       setFeedback({ type: 'error', message: error.message || 'Unable to load project configuration.' });
     } finally {
@@ -134,9 +144,20 @@ export default function ProjectDetailPage() {
 
   const handleCopy = async (text, label = 'Credential') => {
     if (!text || text.includes('•••')) {
-      setFeedback({ type: 'error', message: 'Credentials key is not available. Please click Regenerate Credentials.' });
+      // If keys aren't revealed yet, fetch them first
+      const data = await fetchCredentials(project.id);
+      if (data) {
+        const val = label === 'API Key' ? data.api_key : data.secret_key;
+        performCopy(val, label);
+      } else {
+        setFeedback({ type: 'error', message: 'Unable to fetch credentials for copying.' });
+      }
       return;
     }
+    performCopy(text, label);
+  };
+
+  const performCopy = async (text, label) => {
     try {
       if (navigator.clipboard && window.isSecureContext) {
         await navigator.clipboard.writeText(text);
@@ -152,10 +173,10 @@ export default function ProjectDetailPage() {
         textArea.remove();
       }
       setCopiedField(label);
-      setFeedback({ type: 'success', message: `${label} copied to clipboard!` });
+      setFeedback({ type: 'success', message: `✓ ${label} copied to clipboard!` });
       setTimeout(() => setCopiedField(''), 3000);
     } catch {
-      setFeedback({ type: 'error', message: 'Failed to copy credential.' });
+      setFeedback({ type: 'error', message: 'Failed to copy credential to clipboard.' });
     }
   };
 
@@ -213,20 +234,8 @@ export default function ProjectDetailPage() {
 
   const handleGenerateKeys = async () => {
     if (!project) return;
-
-    setGenerating(true);
-    setFeedback({ type: '', message: '' });
-
-    try {
-      const { data } = await apiClient.get(`/v1/projects/refresh_keys/${project.id}`);
-      setGeneratedKeys({ api_key: data.api_key, secret_key: data.secret_key });
-      setRevealSecret(true);
-      setFeedback({ type: 'success', message: 'API Credentials regenerated successfully.' });
-    } catch (error) {
-      setFeedback({ type: 'error', message: error.message || 'Failed to refresh API keys.' });
-    } finally {
-      setGenerating(false);
-    }
+    await fetchCredentials(project.id);
+    setFeedback({ type: 'success', message: 'API Credentials generated and revealed below.' });
   };
 
   const handleDelete = async () => {
@@ -283,13 +292,10 @@ export default function ProjectDetailPage() {
       setTestApiKey(generatedKeys.api_key);
       setTestSecretKey(generatedKeys.secret_key);
     } else if (project?.id) {
-      try {
-        const { data } = await apiClient.get(`/v1/projects/refresh_keys/${project.id}`);
-        setGeneratedKeys({ api_key: data.api_key, secret_key: data.secret_key });
-        setTestApiKey(data.api_key);
-        setTestSecretKey(data.secret_key);
-      } catch {
-        // Ignore
+      const keys = await fetchCredentials(project.id);
+      if (keys) {
+        setTestApiKey(keys.api_key);
+        setTestSecretKey(keys.secret_key);
       }
     }
   };
@@ -348,12 +354,12 @@ export default function ProjectDetailPage() {
 
   return (
     <ProtectedLayout title={project?.name || 'Project Details'} eyebrow="Project Management">
-      <div className="max-w-6xl mx-auto space-y-8 py-2">
+      <div className="max-w-6xl mx-auto space-y-6 py-2">
         
-        {/* Compact Header Panel */}
-        <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 sm:p-8 shadow-xl">
-          <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
-            <div className="space-y-3">
+        {/* Top Header Panel */}
+        <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 shadow-xl">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+            <div className="space-y-2">
               <button 
                 type="button" 
                 onClick={() => navigate('/projects')} 
@@ -363,13 +369,13 @@ export default function ProjectDetailPage() {
                 Back to Projects
               </button>
               
-              <div className="flex items-center gap-4 flex-wrap">
-                <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">
+              <div className="flex items-center gap-3 flex-wrap">
+                <h1 className="text-2xl font-bold tracking-tight text-white">
                   {project?.name || 'Project Details'}
                 </h1>
                 
-                {/* Single Header Toggle Switch */}
-                <div className="flex items-center gap-2.5 rounded-full border border-zinc-800 bg-[#080910] px-3.5 py-1.5">
+                {/* Single Header Active/Paused Toggle Switch */}
+                <div className="flex items-center gap-2.5 rounded-full border border-zinc-800 bg-[#080910] px-3.5 py-1">
                   <span className={`text-xs font-semibold ${form.isActive ? 'text-emerald-400' : 'text-zinc-400'}`}>
                     {form.isActive ? 'Active' : 'Paused'}
                   </span>
@@ -385,13 +391,13 @@ export default function ProjectDetailPage() {
                 </div>
               </div>
 
-              <p className="max-w-2xl text-xs sm:text-sm text-zinc-400 leading-relaxed">
+              <p className="text-xs text-zinc-400">
                 Configure webhook event routing, payload validation rules, data retention schedules, and API credentials.
               </p>
             </div>
             
             {/* Top Action Buttons */}
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2.5">
               <button 
                 type="button" 
                 onClick={handleOpenTestModal} 
@@ -424,41 +430,41 @@ export default function ProjectDetailPage() {
 
         {/* Feedback Alert Banner */}
         {feedback.message && (
-          <div className={`rounded-2xl px-5 py-3.5 text-xs font-semibold flex items-center gap-2.5 ${feedback.type === 'error' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
+          <div className={`rounded-2xl px-4 py-3 text-xs font-semibold flex items-center gap-2.5 ${feedback.type === 'error' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
             {feedback.type === 'error' ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
             <span>{feedback.message}</span>
           </div>
         )}
 
-        <form onSubmit={handleSave} className="space-y-8">
+        <form onSubmit={handleSave} className="space-y-6">
           
           {/* Section 1: Project Details & API Credentials Panel */}
-          <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 sm:p-8 shadow-xl space-y-6">
+          <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 shadow-xl space-y-5">
             <div className="border-b border-zinc-800/80 pb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                <h2 className="text-base font-bold text-white flex items-center gap-2">
                   <ShieldCheck className="h-5 w-5 text-emerald-400" />
                   Project Information & API Credentials
                 </h2>
-                <p className="mt-1 text-xs text-zinc-400">Configure basic project information and manage API authentication credentials.</p>
+                <p className="mt-0.5 text-xs text-zinc-400">Configure basic project details and manage HMAC authentication keys.</p>
               </div>
 
               <button
                 type="button"
                 disabled={generating}
                 onClick={handleGenerateKeys}
-                className="inline-flex items-center gap-2 rounded-xl border border-zinc-700 bg-[#161724] hover:bg-[#1e2032] px-4 py-2 text-xs font-semibold text-zinc-200 transition active:scale-95 shadow-sm shrink-0"
+                className="inline-flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 px-4 py-2 text-xs font-bold text-emerald-400 transition active:scale-95 shadow-sm shrink-0"
               >
-                <KeyRound className="h-4 w-4 text-emerald-400" />
-                <span>{generating ? 'Regenerating...' : 'Regenerate Credentials'}</span>
+                <KeyRound className="h-4 w-4" />
+                <span>{generating ? 'Fetching Keys...' : 'Reveal / Regenerate Credentials'}</span>
               </button>
             </div>
 
-            <div className="grid gap-6 sm:grid-cols-2">
-              <div className="space-y-2">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-1.5">
                 <label className="block text-xs font-semibold text-zinc-300">Project Name</label>
                 <input
-                  className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-4 py-2.5 text-xs sm:text-sm text-white outline-none focus:border-emerald-400"
+                  className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-4 py-2 text-xs sm:text-sm text-white outline-none focus:border-emerald-400"
                   value={form.name}
                   onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
                   placeholder="e.g. Stripe Payment Gateways"
@@ -466,10 +472,10 @@ export default function ProjectDetailPage() {
                 />
               </div>
 
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 <label className="block text-xs font-semibold text-zinc-300">Description</label>
                 <input
-                  className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-4 py-2.5 text-xs sm:text-sm text-zinc-200 outline-none focus:border-emerald-400"
+                  className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-4 py-2 text-xs sm:text-sm text-zinc-200 outline-none focus:border-emerald-400"
                   value={form.description}
                   onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
                   placeholder="Optional project description..."
@@ -478,192 +484,169 @@ export default function ProjectDetailPage() {
             </div>
 
             {/* API Credentials Box */}
-            {generatedKeys && (
-              <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-5 space-y-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
-                    <CheckCircle2 size={14} />
-                    Active Project API Credentials
-                  </span>
+            <div className="rounded-2xl border border-zinc-800 bg-[#080910] p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-zinc-200 flex items-center gap-1.5">
+                  <KeyRound size={14} className="text-emerald-400" />
+                  API Authentication Keys
+                </span>
+                {!generatedKeys && (
+                  <button
+                    type="button"
+                    onClick={handleGenerateKeys}
+                    className="text-xs font-semibold text-emerald-400 hover:underline flex items-center gap-1"
+                  >
+                    <Eye size={13} /> Click to Reveal Raw Keys
+                  </button>
+                )}
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                {/* API Key */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-semibold text-zinc-400">API Key (X-API-KEY)</label>
+                    {copiedField === 'API Key' && (
+                      <span className="text-[11px] font-semibold text-emerald-400 flex items-center gap-1">
+                        <Check size={12} /> Copied!
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between gap-2 rounded-xl border border-zinc-800 bg-[#0c0d15] p-2 text-xs font-mono">
+                    <input
+                      type="text"
+                      readOnly
+                      className="w-full bg-transparent outline-none text-cyan-300 font-mono text-xs select-all border-none focus:ring-0 truncate"
+                      value={generatedKeys?.api_key || '••••••••••••••••••••••••••••••••'}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleCopy(generatedKeys?.api_key, 'API Key')}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-[#141522] hover:bg-zinc-800 px-3 py-1.5 text-xs font-bold text-zinc-200 transition active:scale-95 shrink-0"
+                    >
+                      <Copy size={13} />
+                      <span>Copy</span>
+                    </button>
+                  </div>
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-2">
-                  {/* API Key */}
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-semibold text-zinc-400">API Key (X-API-KEY)</label>
-                      {copiedField === 'API Key' && (
-                        <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1">
-                          <Check size={12} /> Copied to clipboard!
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center justify-between gap-2 rounded-xl border border-zinc-800 bg-[#080910] p-2.5 text-xs font-mono text-cyan-300">
-                      <input
-                        type="text"
-                        readOnly
-                        className="w-full bg-transparent outline-none text-cyan-300 font-mono text-xs select-all border-none focus:ring-0 truncate"
-                        value={generatedKeys.api_key || ''}
-                      />
+                {/* Secret Key */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-semibold text-zinc-400">Webhook Signing Secret</label>
+                    {copiedField === 'Webhook Secret' && (
+                      <span className="text-[11px] font-semibold text-emerald-400 flex items-center gap-1">
+                        <Check size={12} /> Copied!
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between gap-2 rounded-xl border border-zinc-800 bg-[#0c0d15] p-2 text-xs font-mono">
+                    <input
+                      type={revealSecret ? 'text' : 'password'}
+                      readOnly
+                      className="w-full bg-transparent outline-none text-pink-300 font-mono text-xs select-all border-none focus:ring-0 truncate"
+                      value={generatedKeys?.secret_key || '••••••••••••••••••••••••••••••••'}
+                    />
+                    <div className="flex items-center gap-1.5 shrink-0">
                       <button
                         type="button"
-                        onClick={() => handleCopy(generatedKeys.api_key, 'API Key')}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-[#141522] hover:bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-zinc-300 transition active:scale-95 shrink-0"
+                        onClick={() => handleCopy(generatedKeys?.secret_key, 'Webhook Secret')}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-[#141522] hover:bg-zinc-800 px-3 py-1.5 text-xs font-bold text-zinc-200 transition active:scale-95"
                       >
                         <Copy size={13} />
                         <span>Copy</span>
                       </button>
-                    </div>
-                  </div>
-
-                  {/* Secret Key */}
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-semibold text-zinc-400">Webhook Signing Secret</label>
-                      {copiedField === 'Webhook Secret' && (
-                        <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1">
-                          <Check size={12} /> Copied to clipboard!
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center justify-between gap-2 rounded-xl border border-zinc-800 bg-[#080910] p-2.5 text-xs font-mono text-pink-300">
-                      <input
-                        type={revealSecret ? 'text' : 'password'}
-                        readOnly
-                        className="w-full bg-transparent outline-none text-pink-300 font-mono text-xs select-all border-none focus:ring-0 truncate"
-                        value={generatedKeys.secret_key || ''}
-                      />
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => handleCopy(generatedKeys.secret_key, 'Webhook Secret')}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-[#141522] hover:bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-zinc-300 transition active:scale-95"
-                        >
-                          <Copy size={13} />
-                          <span>Copy</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setRevealSecret((prev) => !prev)}
-                          className="rounded-lg border border-zinc-800 bg-[#141522] hover:bg-zinc-800 p-2 text-zinc-300 transition active:scale-95"
-                          title={revealSecret ? 'Hide Secret' : 'Reveal Secret'}
-                        >
-                          {revealSecret ? <EyeOff size={14} /> : <Eye size={14} />}
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setRevealSecret((prev) => !prev)}
+                        className="rounded-lg border border-zinc-800 bg-[#141522] hover:bg-zinc-800 p-1.5 text-zinc-300 transition active:scale-95"
+                        title={revealSecret ? 'Hide Secret' : 'Reveal Secret'}
+                      >
+                        {revealSecret ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
                     </div>
                   </div>
                 </div>
               </div>
-            )}
+            </div>
           </section>
 
-          {/* Section 2: Compact Data Retention & Automated Log Cleanup Policy */}
-          <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 sm:p-8 shadow-xl space-y-6">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-800/80 pb-4">
+          {/* Section 2: Compact Data Retention & Automated Cleanup Policy */}
+          <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 shadow-xl space-y-5">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-800/80 pb-3">
               <div>
-                <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                <h2 className="text-base font-bold text-white flex items-center gap-2">
                   <Calendar className="h-5 w-5 text-emerald-400" />
-                  Data Retention & Auto-Cleanup Policy
+                  Data Retention & Auto-Cleanup Schedule
                 </h2>
-                <p className="mt-1 text-xs text-zinc-400">
-                  Configure project-wide retention mode. Old webhook event payloads and execution logs are automatically purged on schedule.
+                <p className="mt-0.5 text-xs text-zinc-400">
+                  Choose retention mode. Expired payloads and execution logs are automatically purged on schedule.
                 </p>
               </div>
 
-              {/* Retention Mode Tabs */}
-              <div className="flex items-center gap-1 rounded-xl bg-[#080910] p-1 border border-zinc-800 text-xs shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setForm((prev) => ({ ...prev, retentionMode: 'rolling_days' }))}
-                  className={`rounded-lg px-3 py-1.5 font-semibold transition ${form.retentionMode === 'rolling_days' ? 'bg-emerald-500 text-zinc-950 shadow-sm' : 'text-zinc-400 hover:text-white'}`}
+              {/* Mode Selector Dropdown */}
+              <div className="w-full sm:w-64">
+                <select
+                  className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3.5 py-2 text-xs font-semibold text-emerald-400 outline-none focus:border-emerald-400"
+                  value={form.retentionMode}
+                  onChange={(e) => setForm((prev) => ({ ...prev, retentionMode: e.target.value }))}
                 >
-                  Auto Rolling Days
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setForm((prev) => ({ ...prev, retentionMode: 'specific_date' }))}
-                  className={`rounded-lg px-3 py-1.5 font-semibold transition ${form.retentionMode === 'specific_date' ? 'bg-emerald-500 text-zinc-950 shadow-sm' : 'text-zinc-400 hover:text-white'}`}
-                >
-                  Specific Target Date & Hour
-                </button>
+                  <option value="rolling_days">🔄 Auto Rolling Days Expiration</option>
+                  <option value="specific_date">📅 Specific Calendar Date & Time</option>
+                </select>
               </div>
             </div>
 
+            {/* Dynamic Single Row Inputs Based on Mode */}
             {form.retentionMode === 'rolling_days' ? (
-              <div className="grid gap-6 sm:grid-cols-2">
-                {/* Retention Period (Days) */}
-                <div className="space-y-3">
-                  <label className="block text-xs font-semibold text-zinc-300">Rolling Expiration Period</label>
-                  
-                  <div className="flex flex-wrap items-center gap-2">
-                    {[3, 7, 14, 30, 90, 365].map((days) => (
-                      <button
-                        key={days}
-                        type="button"
-                        onClick={() => setForm((prev) => ({ ...prev, retentionDays: days }))}
-                        className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition border ${form.retentionDays === days ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-[#080910] border-zinc-800 text-zinc-400 hover:border-zinc-700'}`}
-                      >
-                        {days} Days
-                      </button>
-                    ))}
-                    <div className="flex items-center gap-1.5 ml-1">
-                      <input
-                        type="number"
-                        min="1"
-                        max="3650"
-                        className="w-20 rounded-xl border border-zinc-800 bg-[#080910] px-2.5 py-1.5 text-xs font-mono text-white outline-none focus:border-emerald-400"
-                        value={form.retentionDays || ''}
-                        onChange={(e) => setForm((prev) => ({ ...prev, retentionDays: parseInt(e.target.value) || 30 }))}
-                      />
-                      <span className="text-xs text-zinc-400">days</span>
-                    </div>
-                  </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-semibold text-zinc-300">Rolling Expiration Days</label>
+                  <select
+                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3.5 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
+                    value={form.retentionDays}
+                    onChange={(e) => setForm((prev) => ({ ...prev, retentionDays: parseInt(e.target.value) || 30 }))}
+                  >
+                    <option value={3}>3 Days Retention</option>
+                    <option value={7}>7 Days Retention</option>
+                    <option value={14}>14 Days Retention</option>
+                    <option value={30}>30 Days Retention (Default)</option>
+                    <option value={90}>90 Days Retention</option>
+                    <option value={365}>365 Days Retention</option>
+                  </select>
                 </div>
 
-                {/* Scheduled Daily Deletion Time */}
-                <div className="space-y-3">
+                <div className="space-y-1.5">
                   <label className="block text-xs font-semibold text-zinc-300">Scheduled Daily Cleanup Time</label>
-                  
-                  <div className="flex flex-wrap items-center gap-2">
-                    {[
-                      { label: '12 AM', value: '00:00' },
-                      { label: '2 AM (Off-peak)', value: '02:00' },
-                      { label: '4 AM', value: '04:00' },
-                      { label: '6 AM', value: '06:00' },
-                      { label: '12 PM', value: '12:00' },
-                    ].map((timeOption) => (
-                      <button
-                        key={timeOption.value}
-                        type="button"
-                        onClick={() => setForm((prev) => ({ ...prev, deleteTime: timeOption.value }))}
-                        className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition border ${form.deleteTime === timeOption.value ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-[#080910] border-zinc-800 text-zinc-400 hover:border-zinc-700'}`}
-                      >
-                        {timeOption.label}
-                      </button>
-                    ))}
-                  </div>
+                  <select
+                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3.5 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
+                    value={form.deleteTime || '02:00'}
+                    onChange={(e) => setForm((prev) => ({ ...prev, deleteTime: e.target.value }))}
+                  >
+                    <option value="00:00">12:00 AM (Midnight)</option>
+                    <option value="02:00">02:00 AM (Off-peak)</option>
+                    <option value="04:00">04:00 AM</option>
+                    <option value="06:00">06:00 AM</option>
+                    <option value="12:00">12:00 PM (Noon)</option>
+                  </select>
                 </div>
               </div>
             ) : (
-              <div className="grid gap-6 sm:grid-cols-2">
-                {/* Specific Target Date */}
-                <div className="space-y-2">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-1.5">
                   <label className="block text-xs font-semibold text-zinc-300">Specific Target Expiration Date</label>
                   <input
                     type="date"
-                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-4 py-2.5 text-xs font-mono text-white outline-none focus:border-emerald-400"
+                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3.5 py-2 text-xs font-mono text-white outline-none focus:border-emerald-400"
                     value={form.deleteDate || ''}
                     onChange={(e) => setForm((prev) => ({ ...prev, deleteDate: e.target.value }))}
                   />
-                  <p className="text-[11px] text-zinc-500">Log entries created before this date will be purged automatically at the target hour.</p>
                 </div>
 
-                {/* Specific Purge Hour */}
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   <label className="block text-xs font-semibold text-zinc-300">Exact Purge Hour</label>
                   <select
-                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-4 py-2.5 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
+                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3.5 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
                     value={form.deleteTime || '02:00'}
                     onChange={(e) => setForm((prev) => ({ ...prev, deleteTime: e.target.value }))}
                   >
@@ -675,15 +658,14 @@ export default function ProjectDetailPage() {
                     <option value="18:00">06:00 PM</option>
                     <option value="21:00">09:00 PM</option>
                   </select>
-                  <p className="text-[11px] text-zinc-500">Purge runs at this specific hour on the target date.</p>
                 </div>
               </div>
             )}
 
             {/* Target Data Scope Checkboxes & Instant Purge Button */}
-            <div className="rounded-2xl border border-zinc-800/80 bg-[#080910] p-4 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-zinc-300">
+            <div className="rounded-2xl border border-zinc-800 bg-[#080910] p-3.5 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-zinc-300">
               <div className="flex flex-wrap items-center gap-4">
-                <span className="font-semibold text-zinc-400">Purge Target Scope:</span>
+                <span className="font-semibold text-zinc-400">Purge Scope:</span>
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
@@ -691,7 +673,7 @@ export default function ProjectDetailPage() {
                     onChange={(e) => setForm((prev) => ({ ...prev, purgeEvents: e.target.checked }))}
                     className="rounded border-zinc-700 bg-zinc-900 text-emerald-500 focus:ring-0"
                   />
-                  <span>Webhook Ingress Payloads (`webhook_events`)</span>
+                  <span>Webhook Payloads (`webhook_events`)</span>
                 </label>
 
                 <label className="flex items-center gap-2 cursor-pointer">
@@ -709,20 +691,20 @@ export default function ProjectDetailPage() {
                 type="button"
                 disabled={purging}
                 onClick={handlePurgeNow}
-                className="inline-flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 px-4 py-2 text-xs font-semibold text-rose-400 transition active:scale-95 shrink-0 shadow-sm"
+                className="inline-flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 px-3.5 py-1.5 text-xs font-semibold text-rose-400 transition active:scale-95 shrink-0 shadow-sm"
               >
-                <Trash2 size={14} />
+                <Trash2 size={13} />
                 <span>{purging ? 'Purging both tables...' : 'Purge Data Now'}</span>
               </button>
             </div>
           </section>
 
           {/* Section 3: Event Routing & Payload Schema Builder */}
-          <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 sm:p-8 shadow-xl space-y-6">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-800/80 pb-4">
+          <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 shadow-xl space-y-5">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-800/80 pb-3">
               <div>
-                <h2 className="text-lg font-bold text-white">Event Routing & Payload Schema Validation</h2>
-                <p className="mt-1 text-xs text-zinc-400">
+                <h2 className="text-base font-bold text-white">Event Routing & Payload Schema Validation</h2>
+                <p className="mt-0.5 text-xs text-zinc-400">
                   Configure target destination URLs and mandatory payload key & data type requirements for each event type.
                 </p>
               </div>
@@ -745,23 +727,23 @@ export default function ProjectDetailPage() {
                     ],
                   }))
                 }
-                className="inline-flex items-center gap-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 px-4 py-2 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/20 transition active:scale-95"
+                className="inline-flex items-center gap-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 px-3.5 py-1.5 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/20 transition active:scale-95"
               >
                 <Plus size={14} />
                 <span>Add Event Rule</span>
               </button>
             </div>
 
-            <div className="space-y-6">
+            <div className="space-y-5">
               {form.eventConfigs.map((config, index) => (
-                <div key={index} className="rounded-2xl border border-zinc-800 bg-[#080910] p-6 space-y-5">
+                <div key={index} className="rounded-2xl border border-zinc-800 bg-[#080910] p-5 space-y-4">
                   {/* Event Header */}
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-800/60 pb-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-800/60 pb-3">
                     <div className="flex items-center gap-3 flex-1">
                       <div className="space-y-1 flex-1 max-w-sm">
                         <label className="block text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Event Type Name</label>
                         <input
-                          className="w-full rounded-xl border border-zinc-800 bg-[#0c0d15] px-3.5 py-2 text-xs font-mono text-emerald-400 outline-none focus:border-emerald-400"
+                          className="w-full rounded-xl border border-zinc-800 bg-[#0c0d15] px-3.5 py-1.5 text-xs font-mono text-emerald-400 outline-none focus:border-emerald-400"
                           value={config.event_type}
                           onChange={(e) =>
                             updateEventConfig(index, (item) => ({ ...item, event_type: e.target.value }))
@@ -780,9 +762,9 @@ export default function ProjectDetailPage() {
                           onClick={() =>
                             updateEventConfig(index, (item) => ({ ...item, is_active: !item.is_active }))
                           }
-                          className={`relative h-6 w-11 rounded-full p-0.5 transition ${config.is_active ? 'bg-emerald-500' : 'bg-zinc-700'}`}
+                          className={`relative h-5 w-9 rounded-full p-0.5 transition ${config.is_active ? 'bg-emerald-500' : 'bg-zinc-700'}`}
                         >
-                          <span className={`block h-5 w-5 rounded-full bg-white transition ${config.is_active ? 'translate-x-5' : 'translate-x-0'}`} />
+                          <span className={`block h-4 w-4 rounded-full bg-white transition ${config.is_active ? 'translate-x-4' : 'translate-x-0'}`} />
                         </button>
                       </div>
 
@@ -795,7 +777,7 @@ export default function ProjectDetailPage() {
                               eventConfigs: prev.eventConfigs.filter((_, i) => i !== index),
                             }))
                           }
-                          className="rounded-xl border border-zinc-800 p-2 text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 transition"
+                          className="rounded-xl border border-zinc-800 p-1.5 text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 transition"
                           title="Remove Event Rule"
                         >
                           <Trash2 size={14} />
@@ -805,7 +787,7 @@ export default function ProjectDetailPage() {
                   </div>
 
                   {/* Destination Target URLs */}
-                  <div className="space-y-3">
+                  <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <label className="block text-xs font-semibold text-zinc-300">Destination Forwarding URLs</label>
                       <button
@@ -826,7 +808,7 @@ export default function ProjectDetailPage() {
                       {config.target_urls.map((url, urlIdx) => (
                         <div key={urlIdx} className="flex items-center gap-2">
                           <input
-                            className="flex-1 rounded-xl border border-zinc-800 bg-[#0c0d15] px-3.5 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
+                            className="flex-1 rounded-xl border border-zinc-800 bg-[#0c0d15] px-3.5 py-1.5 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
                             value={url}
                             onChange={(e) =>
                               updateEventConfig(index, (item) => ({
@@ -846,7 +828,7 @@ export default function ProjectDetailPage() {
                                   target_urls: item.target_urls.filter((_, i) => i !== urlIdx),
                                 }))
                               }
-                              className="rounded-xl border border-zinc-800 p-2 text-zinc-500 hover:text-rose-400"
+                              className="rounded-xl border border-zinc-800 p-1.5 text-zinc-500 hover:text-rose-400"
                             >
                               <Trash2 size={12} />
                             </button>
@@ -857,11 +839,11 @@ export default function ProjectDetailPage() {
                   </div>
 
                   {/* Dynamic Payload Keys & Required Data Types Builder */}
-                  <div className="space-y-3 pt-2">
+                  <div className="space-y-2 pt-1">
                     <div className="flex items-center justify-between">
                       <div>
                         <label className="block text-xs font-semibold text-zinc-300">Payload Schema Validation Rules</label>
-                        <p className="text-[11px] text-zinc-500">Incoming payloads must contain these keys and match the expected data type.</p>
+                        <p className="text-[11px] text-zinc-500">Incoming payloads must contain these keys and match expected types.</p>
                       </div>
                       <button
                         type="button"
@@ -884,7 +866,7 @@ export default function ProjectDetailPage() {
 
                     <div className="space-y-2">
                       {(config.payload_rules || []).map((rule, ruleIdx) => (
-                        <div key={ruleIdx} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 rounded-xl border border-zinc-800/80 bg-[#0c0d15] p-2.5">
+                        <div key={ruleIdx} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 rounded-xl border border-zinc-800/80 bg-[#0c0d15] p-2">
                           <div className="flex-1">
                             <input
                               className="w-full rounded-lg border border-zinc-800 bg-[#080910] px-3 py-1.5 text-xs font-mono text-emerald-300 outline-none focus:border-emerald-400"
