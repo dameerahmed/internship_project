@@ -114,6 +114,13 @@ export default function ProjectDetailPage() {
       setProject(found);
       setForm(blankForm(found));
       sessionStorage.setItem('selectedProjectId', String(found.id));
+
+      try {
+        const { data: keyData } = await apiClient.get(`/v1/projects/refresh_keys/${found.id}`);
+        setGeneratedKeys({ api_key: keyData.api_key, secret_key: keyData.secret_key });
+      } catch {
+        // Ignore fallback
+      }
     } catch (error) {
       setFeedback({ type: 'error', message: error.message || 'Unable to load project configuration.' });
     } finally {
@@ -133,7 +140,7 @@ export default function ProjectDetailPage() {
     if (clearTimerRef.current) window.clearTimeout(clearTimerRef.current);
     if (countdownIntervalRef.current) window.clearInterval(countdownIntervalRef.current);
 
-    const seconds = 30;
+    const seconds = 60;
     setTimeLeft(seconds);
 
     countdownIntervalRef.current = window.setInterval(() => {
@@ -147,21 +154,34 @@ export default function ProjectDetailPage() {
     }, 1000);
 
     clearTimerRef.current = window.setTimeout(() => {
-      setGeneratedKeys(null);
       setRevealSecret(false);
-      setFeedback({ type: '', message: '' });
     }, seconds * 1000);
   };
 
   const handleCopy = async (text, label = 'Credential') => {
-    if (!text) return;
+    if (!text) {
+      setFeedback({ type: 'error', message: 'No credential key available to copy.' });
+      return;
+    }
     try {
-      await navigator.clipboard.writeText(text);
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        document.execCommand('copy');
+        textArea.remove();
+      }
       setCopiedField(label);
       setFeedback({ type: 'success', message: `${label} copied to clipboard!` });
-      setTimeout(() => setCopiedField(''), 2500);
+      setTimeout(() => setCopiedField(''), 3000);
     } catch {
-      setFeedback({ type: 'error', message: 'Failed to copy to clipboard.' });
+      setFeedback({ type: 'error', message: 'Failed to copy credential to clipboard.' });
     }
   };
 
@@ -508,18 +528,24 @@ export default function ProjectDetailPage() {
                       <label className="text-xs font-semibold text-zinc-400">API Key (X-API-KEY)</label>
                       {copiedField === 'API Key' && (
                         <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1">
-                          <Check size={12} /> Copied
+                          <Check size={12} /> Copied to clipboard!
                         </span>
                       )}
                     </div>
-                    <div className="flex items-center justify-between gap-2 rounded-xl border border-zinc-800 bg-[#080910] p-3 text-xs font-mono text-cyan-300">
-                      <span className="truncate flex-1 select-all">{generatedKeys.api_key}</span>
+                    <div className="flex items-center justify-between gap-2 rounded-xl border border-zinc-800 bg-[#080910] p-2.5 text-xs font-mono text-cyan-300">
+                      <input
+                        type="text"
+                        readOnly
+                        className="w-full bg-transparent outline-none text-cyan-300 font-mono text-xs select-all border-none focus:ring-0 truncate"
+                        value={generatedKeys.api_key || ''}
+                      />
                       <button
                         type="button"
                         onClick={() => handleCopy(generatedKeys.api_key, 'API Key')}
-                        className="rounded-lg border border-zinc-800 bg-[#141522] hover:bg-zinc-800 px-2.5 py-1 text-xs font-semibold text-zinc-300 transition active:scale-95"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-[#141522] hover:bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-zinc-300 transition active:scale-95 shrink-0"
                       >
-                        Copy
+                        <Copy size={13} />
+                        <span>Copy</span>
                       </button>
                     </div>
                   </div>
@@ -530,26 +556,31 @@ export default function ProjectDetailPage() {
                       <label className="text-xs font-semibold text-zinc-400">Webhook Signing Secret</label>
                       {copiedField === 'Webhook Secret' && (
                         <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1">
-                          <Check size={12} /> Copied
+                          <Check size={12} /> Copied to clipboard!
                         </span>
                       )}
                     </div>
-                    <div className="flex items-center justify-between gap-2 rounded-xl border border-zinc-800 bg-[#080910] p-3 text-xs font-mono text-pink-300">
-                      <span className="truncate flex-1 select-all">
-                        {revealSecret ? generatedKeys.secret_key : '••••••••••••••••••••••••••••••••'}
-                      </span>
-                      <div className="flex items-center gap-1.5">
+                    <div className="flex items-center justify-between gap-2 rounded-xl border border-zinc-800 bg-[#080910] p-2.5 text-xs font-mono text-pink-300">
+                      <input
+                        type={revealSecret ? 'text' : 'password'}
+                        readOnly
+                        className="w-full bg-transparent outline-none text-pink-300 font-mono text-xs select-all border-none focus:ring-0 truncate"
+                        value={generatedKeys.secret_key || ''}
+                      />
+                      <div className="flex items-center gap-1.5 shrink-0">
                         <button
                           type="button"
                           onClick={() => handleCopy(generatedKeys.secret_key, 'Webhook Secret')}
-                          className="rounded-lg border border-zinc-800 bg-[#141522] hover:bg-zinc-800 px-2.5 py-1 text-xs font-semibold text-zinc-300 transition active:scale-95"
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-[#141522] hover:bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-zinc-300 transition active:scale-95"
                         >
-                          Copy
+                          <Copy size={13} />
+                          <span>Copy</span>
                         </button>
                         <button
                           type="button"
                           onClick={() => setRevealSecret((prev) => !prev)}
-                          className="rounded-lg border border-zinc-800 bg-[#141522] hover:bg-zinc-800 p-1.5 text-zinc-300 transition active:scale-95"
+                          className="rounded-lg border border-zinc-800 bg-[#141522] hover:bg-zinc-800 p-2 text-zinc-300 transition active:scale-95"
+                          title={revealSecret ? 'Hide Secret' : 'Reveal Secret'}
                         >
                           {revealSecret ? <EyeOff size={14} /> : <Eye size={14} />}
                         </button>
