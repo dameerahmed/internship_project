@@ -26,27 +26,39 @@ const blankForm = (project) => ({
   name: project?.name || '',
   description: project?.description || '',
   eventConfigs: project?.event_configs?.length
-    ? project.event_configs.map((config) => ({
-        event_type: config.event_type || 'webhook.received',
-        target_urls: Array.isArray(config.metadata_json?.urls) && config.metadata_json.urls.length
-          ? config.metadata_json.urls
-          : [config.target_url || 'https://example.com/webhook'],
-        payload_keys: Array.isArray(config.payload_keys) && config.payload_keys.length
+    ? project.event_configs.map((config) => {
+        const keys = Array.isArray(config.payload_keys) && config.payload_keys.length
           ? config.payload_keys
           : (Array.isArray(config.metadata_json?.payload_keys) && config.metadata_json.payload_keys.length
             ? config.metadata_json.payload_keys
-            : (config.payload_key ? [config.payload_key] : (config.metadata_json?.payload_key ? [config.metadata_json.payload_key] : []))),
-        payload_types: Array.isArray(config.payload_types) && config.payload_types.length
+            : (config.payload_key ? [config.payload_key] : (config.metadata_json?.payload_key ? [config.metadata_json.payload_key] : [])));
+
+        const types = Array.isArray(config.payload_types) && config.payload_types.length
           ? config.payload_types
           : (Array.isArray(config.metadata_json?.payload_types) && config.metadata_json.payload_types.length
             ? config.metadata_json.payload_types
-            : (config.payload_type ? [config.payload_type] : (config.metadata_json?.payload_type ? [config.metadata_json.payload_type] : []))),
-        retention_days: config.retention_days ?? null,
-        delete_time: config.delete_time ?? '',
-        id: config.id,
-        is_active: config.is_active ?? true,
-      }))
-    : [{ event_type: 'webhook.received', target_urls: ['https://example.com/webhook'], payload_keys: ['event.id'], payload_types: ['string'], retention_days: null, delete_time: '' }],
+            : (config.payload_type ? [config.payload_type] : (config.metadata_json?.payload_type ? [config.metadata_json.payload_type] : [])));
+
+        const payload_rules = keys.map((key, i) => ({
+          key: key || '',
+          type: types[i] || 'string'
+        }));
+
+        return {
+          event_type: config.event_type || 'webhook.received',
+          target_urls: Array.isArray(config.metadata_json?.urls) && config.metadata_json.urls.length
+            ? config.metadata_json.urls
+            : [config.target_url || 'https://example.com/webhook'],
+          payload_rules: payload_rules.length ? payload_rules : [{ key: 'event.id', type: 'string' }],
+          payload_keys: keys.length ? keys : ['event.id'],
+          payload_types: types.length ? types : ['string'],
+          retention_days: config.retention_days ?? null,
+          delete_time: config.delete_time ?? '',
+          id: config.id,
+          is_active: config.is_active ?? true,
+        };
+      })
+    : [{ event_type: 'webhook.received', target_urls: ['https://example.com/webhook'], payload_rules: [{ key: 'event.id', type: 'string' }, { key: 'amount', type: 'number' }, { key: 'status', type: 'string' }], payload_keys: ['event.id', 'amount', 'status'], payload_types: ['string', 'number', 'string'], retention_days: null, delete_time: '' }],
   isActive: project?.is_active ?? true,
   retentionDays: project?.retention_days ?? 30,
   deleteTime: project?.delete_time ?? '',
@@ -536,23 +548,113 @@ export default function ProjectDetailPage() {
                       </div>
 
                       <div className="grid gap-3 md:grid-cols-2">
-                        <div className="space-y-2">
-                          <label className="block text-[10px] font-bold uppercase tracking-wider text-zinc-400">PAYLOAD KEYS (COMMA-SEPARATED)</label>
-                          <input
-                            className="w-full rounded-xl border border-zinc-800 bg-[#0a0b10] px-3 py-2 text-xs text-zinc-300 outline-none focus:border-[#8be9fd]"
-                            value={config.raw_payload_keys_str !== undefined ? config.raw_payload_keys_str : (Array.isArray(config.payload_keys) ? config.payload_keys.join(', ') : '')}
-                            onChange={(event) => {
-                              const val = event.target.value;
-                              updateEventConfig(index, (item) => ({
-                                ...item,
-                                raw_payload_keys_str: val,
-                                payload_keys: val.split(',').map((entry) => entry.trim()).filter(Boolean),
-                              }));
+                      {/* DYNAMIC MULTIPLE PAYLOAD KEYS & TYPES BUILDER */}
+                      <div className="space-y-3 rounded-2xl border border-zinc-800/80 bg-[#080910] p-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <label className="block text-[11px] font-mono font-bold uppercase tracking-wider text-emerald-400">
+                              PAYLOAD KEYS & REQUIRED DATA TYPES
+                            </label>
+                            <p className="text-[10px] font-mono text-zinc-500">Configure key paths and select expected data type rules for payload validation.</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              updateEventConfig(index, (item) => {
+                                const currentRules = item.payload_rules || [];
+                                const nextRules = [...currentRules, { key: '', type: 'string' }];
+                                return {
+                                  ...item,
+                                  payload_rules: nextRules,
+                                  payload_keys: nextRules.map((r) => r.key).filter(Boolean),
+                                  payload_types: nextRules.map((r) => r.type),
+                                };
+                              });
                             }}
-                            placeholder="amount, status, event.id, billing.user_id"
-                          />
-                          <p className="text-[10px] text-zinc-500">Enter multiple payload keys separated by commas (e.g., amount, status, user_id)</p>
+                            className="inline-flex items-center gap-1 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-mono font-bold text-emerald-400 hover:bg-emerald-500/20 transition active:scale-95"
+                          >
+                            <Plus size={13} />
+                            <span>Add Key Rule</span>
+                          </button>
                         </div>
+
+                        <div className="space-y-2">
+                          {(config.payload_rules || []).length === 0 ? (
+                            <p className="text-xs text-zinc-500 font-mono py-2">No payload key rules added yet. Click &quot;Add Key Rule&quot; above.</p>
+                          ) : (
+                            (config.payload_rules || []).map((rule, ruleIdx) => (
+                              <div key={ruleIdx} className="flex flex-col sm:flex-row items-center gap-2">
+                                <div className="flex-1 w-full">
+                                  <input
+                                    className="w-full rounded-xl border border-zinc-800 bg-[#0e1018] px-3 py-2 text-xs text-zinc-200 outline-none focus:border-emerald-400 font-mono"
+                                    value={rule.key}
+                                    onChange={(e) => {
+                                      const newKey = e.target.value;
+                                      updateEventConfig(index, (item) => {
+                                        const nextRules = (item.payload_rules || []).map((r, rIdx) =>
+                                          rIdx === ruleIdx ? { ...r, key: newKey } : r
+                                        );
+                                        return {
+                                          ...item,
+                                          payload_rules: nextRules,
+                                          payload_keys: nextRules.map((r) => r.key).filter(Boolean),
+                                          payload_types: nextRules.map((r) => r.type),
+                                        };
+                                      });
+                                    }}
+                                    placeholder="Key Path (e.g. amount, status, billing.email)"
+                                  />
+                                </div>
+                                <div className="w-full sm:w-44">
+                                  <select
+                                    className="w-full rounded-xl border border-zinc-800 bg-[#0e1018] px-3 py-2 text-xs text-zinc-200 outline-none focus:border-cyan-400 font-mono"
+                                    value={rule.type}
+                                    onChange={(e) => {
+                                      const newType = e.target.value;
+                                      updateEventConfig(index, (item) => {
+                                        const nextRules = (item.payload_rules || []).map((r, rIdx) =>
+                                          rIdx === ruleIdx ? { ...r, type: newType } : r
+                                        );
+                                        return {
+                                          ...item,
+                                          payload_rules: nextRules,
+                                          payload_keys: nextRules.map((r) => r.key).filter(Boolean),
+                                          payload_types: nextRules.map((r) => r.type),
+                                        };
+                                      });
+                                    }}
+                                  >
+                                    <option value="string">string (Text)</option>
+                                    <option value="number">number (Numeric)</option>
+                                    <option value="boolean">boolean (True/False)</option>
+                                    <option value="object">object (JSON Object)</option>
+                                    <option value="array">array (List)</option>
+                                    <option value="any">any (Any Type)</option>
+                                  </select>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    updateEventConfig(index, (item) => {
+                                      const nextRules = (item.payload_rules || []).filter((_, rIdx) => rIdx !== ruleIdx);
+                                      return {
+                                        ...item,
+                                        payload_rules: nextRules,
+                                        payload_keys: nextRules.map((r) => r.key).filter(Boolean),
+                                        payload_types: nextRules.map((r) => r.type),
+                                      };
+                                    });
+                                  }}
+                                  className="rounded-xl border border-zinc-800 p-2 text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition active:scale-95"
+                                  title="Remove Rule"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
                         <div className="space-y-2">
                           <label className="block text-[10px] font-bold uppercase tracking-wider text-zinc-400">RETENTION DAYS</label>
                           <input

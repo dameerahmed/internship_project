@@ -135,15 +135,15 @@ def build_log_payload(event_id: str, request_headers: Optional[Dict[str, str]], 
     }
 
 
-def validate_payload_keys(payload: Any, required_keys: Optional[List[str]]) -> bool:
-    """Validate a payload against a list of dotted paths such as user.id or billing.amount."""
+def validate_payload_keys(payload: Any, required_keys: Optional[List[str]], required_types: Optional[List[str]] = None) -> bool:
+    """Validate a payload against a list of dotted paths such as user.id or billing.amount and their expected types."""
     if not required_keys:
         return True
 
     if not isinstance(payload, dict):
         return False
 
-    for key_path in required_keys:
+    for idx, key_path in enumerate(required_keys):
         current = payload
         parts = [part for part in str(key_path).split('.') if part]
         found = True
@@ -155,6 +155,22 @@ def validate_payload_keys(payload: Any, required_keys: Optional[List[str]]) -> b
                 break
         if not found:
             return False
+
+        if required_types and idx < len(required_types):
+            expected_type = str(required_types[idx]).strip().lower()
+            if expected_type and expected_type not in ("any", ""):
+                if expected_type == "string" and not isinstance(current, str):
+                    return False
+                elif expected_type == "number" and not (isinstance(current, (int, float)) and not isinstance(current, bool)):
+                    return False
+                elif expected_type == "integer" and not (isinstance(current, int) and not isinstance(current, bool)):
+                    return False
+                elif expected_type == "boolean" and not isinstance(current, bool):
+                    return False
+                elif expected_type == "object" and not isinstance(current, dict):
+                    return False
+                elif expected_type == "array" and not isinstance(current, list):
+                    return False
     return True
 
 
