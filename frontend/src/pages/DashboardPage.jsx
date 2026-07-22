@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Plus, Terminal, AlertTriangle, ArrowUpRight } from 'lucide-react';
+import { Plus, Terminal, AlertTriangle, Activity } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import ProtectedLayout from '../components/ProtectedLayout';
 import MetricsDashboard from '../components/dashboard/MetricsDashboard';
@@ -49,41 +49,43 @@ export default function DashboardPage() {
   const activeProjects = useMemo(() => projects.filter((project) => project.is_active).length, [projects]);
 
   return (
-    <ProtectedLayout title="Enterprise Command Center" eyebrow="Dashboard">
+    <ProtectedLayout title="Webhook Gateway Dashboard" eyebrow="Overview">
       <div className="space-y-6">
         
-        {/* ENTERPRISE COMMAND BANNER & QUICK ACTIONS */}
-        <section className="overflow-hidden rounded-3xl border border-zinc-800 bg-[#08090e] p-6 shadow-[0_0_35px_-10px_rgba(16,185,129,0.12)]">
-          <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+        {/* SLEEK ENVATO-STYLE COMMAND BANNER */}
+        <section className="relative overflow-hidden rounded-2xl border border-zinc-800/80 bg-gradient-to-r from-[#0d0e17] via-[#10121e] to-[#0d0e17] p-6 shadow-2xl">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-                <p className="text-[10px] font-mono font-bold uppercase tracking-[0.35em] text-emerald-400">OPERATIONAL STATUS: OPTIMAL</p>
+                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-ping" />
+                <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-emerald-400">
+                  SYSTEM ONLINE • 100% OPERATIONAL
+                </span>
               </div>
               <h1 className="mt-1 text-2xl font-bold text-white tracking-tight">
                 Welcome back, {maskIdentity(user?.company_name || user?.email || 'Operator Console')}
               </h1>
               <p className="mt-1 text-xs text-zinc-400 font-mono">
-                {loading ? 'Syncing gateway telemetry…' : `${activeProjects} active project routes • Real-time ingress, Redis, RabbitMQ & DLQ state.`}
+                {loading ? 'Connecting telemetry...' : `${activeProjects} Active Projects • Real-Time Ingress Traffic & Redis/RabbitMQ Engine`}
               </p>
             </div>
 
-            {/* Quick Actions Toolbar */}
-            <div className="flex flex-wrap items-center gap-3">
+            {/* Action Buttons Toolbar */}
+            <div className="flex flex-wrap items-center gap-2.5">
               <Link
                 to="/projects"
-                className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 px-3.5 py-2 text-xs font-mono font-bold text-emerald-400 transition active:scale-95 shadow-sm"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 px-3.5 py-2 text-xs font-mono font-bold text-zinc-950 transition active:scale-95 shadow-md"
               >
                 <Plus size={14} />
-                <span>NEW PROJECT</span>
+                <span>New Project</span>
               </Link>
 
               <Link
                 to="/logs"
-                className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-750 bg-[#121420] hover:bg-[#191c2e] px-3.5 py-2 text-xs font-mono font-bold text-zinc-200 transition active:scale-95 shadow-sm"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-800 bg-[#141624] hover:bg-[#1a1d30] px-3.5 py-2 text-xs font-mono font-bold text-zinc-200 transition active:scale-95 shadow-sm"
               >
                 <Terminal size={14} className="text-cyan-400" />
-                <span>LIVE LOGS</span>
+                <span>Live Stream</span>
               </Link>
 
               <Link
@@ -91,7 +93,7 @@ export default function DashboardPage() {
                 className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 px-3.5 py-2 text-xs font-mono font-bold text-rose-400 transition active:scale-95 shadow-sm"
               >
                 <AlertTriangle size={14} />
-                <span>DLQ WORKSPACE</span>
+                <span>DLQ Queue</span>
               </Link>
             </div>
           </div>
