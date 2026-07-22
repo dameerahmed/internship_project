@@ -361,11 +361,16 @@ export default function ProjectDetailPage() {
     }));
   };
 
-  const handleCopy = async (text) => {
+  const [copiedField, setCopiedField] = useState('');
+
+  const handleCopy = async (text, label = 'Credential') => {
+    if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
-      setFeedback({ type: 'success', message: 'Copied to secure buffer.' });
-    } catch (err) {
+      setCopiedField(label);
+      setFeedback({ type: 'success', message: `${label} copied to clipboard!` });
+      setTimeout(() => setCopiedField(''), 2500);
+    } catch {
       setFeedback({ type: 'error', message: 'Failed to write credential to clipboard.' });
     }
   };
@@ -866,23 +871,34 @@ export default function ProjectDetailPage() {
                 <div className="space-y-3.5">
                   {/* API KEY ROW */}
                   <div className="space-y-1.5">
-                    <span className="text-[10px] font-bold text-zinc-400 tracking-wider">NODE_API_KEY</span>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold text-zinc-400 tracking-wider">NODE_API_KEY</span>
+                      {copiedField === 'API Key' && (
+                        <span className="text-[10px] font-mono font-bold text-emerald-400">✓ Copied to clipboard</span>
+                      )}
+                    </div>
                     <div className="flex items-center justify-between gap-2 bg-[#0a0b10] border border-zinc-800 rounded-lg p-2.5 font-mono text-[11px] text-[#8be9fd]">
                       <span className="truncate flex-1 select-all">{generatedKeys.api_key}</span>
                       <button 
                         type="button" 
-                        onClick={() => handleCopy(generatedKeys.api_key)} 
-                        className="rounded-md border border-zinc-800 bg-[#161722] hover:bg-zinc-800 p-1.5 text-zinc-300 transition active:scale-90"
-                        title="Copy Key"
+                        onClick={() => handleCopy(generatedKeys.api_key, 'API Key')} 
+                        className="inline-flex items-center gap-1 rounded-md border border-zinc-800 bg-[#161722] hover:bg-zinc-800 px-2 py-1 text-xs font-mono text-zinc-300 transition active:scale-90"
+                        title="Copy API Key"
                       >
                         <Copy size={12} />
+                        <span>Copy</span>
                       </button>
                     </div>
                   </div>
 
                   {/* SECRET KEY ROW */}
                   <div className="space-y-1.5">
-                    <span className="text-[10px] font-bold text-zinc-400 tracking-wider">WEBHOOK_SHARED_SECRET</span>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold text-zinc-400 tracking-wider">WEBHOOK_SHARED_SECRET</span>
+                      {copiedField === 'Webhook Secret' && (
+                        <span className="text-[10px] font-mono font-bold text-emerald-400">✓ Copied to clipboard</span>
+                      )}
+                    </div>
                     <div className="flex items-center justify-between gap-2 bg-[#0a0b10] border border-zinc-800 rounded-lg p-2.5 font-mono text-[11px] text-[#ff79c6]">
                       <span className="truncate flex-1 select-all">
                         {revealSecret ? generatedKeys.secret_key : '••••••••••••••••••••••••••••••••'}
@@ -890,16 +906,18 @@ export default function ProjectDetailPage() {
                       <div className="flex items-center gap-1.5">
                         <button 
                           type="button" 
-                          onClick={() => handleCopy(generatedKeys.secret_key)} 
-                          className="rounded-md border border-zinc-800 bg-[#161722] hover:bg-zinc-800 p-1.5 text-zinc-300 transition active:scale-90"
-                          title="Copy Secret"
+                          onClick={() => handleCopy(generatedKeys.secret_key, 'Webhook Secret')} 
+                          className="inline-flex items-center gap-1 rounded-md border border-zinc-800 bg-[#161722] hover:bg-zinc-800 px-2 py-1 text-xs font-mono text-zinc-300 transition active:scale-90"
+                          title="Copy Secret Key"
                         >
                           <Copy size={12} />
+                          <span>Copy</span>
                         </button>
                         <button 
                           type="button" 
                           className="rounded-md border border-zinc-800 bg-[#161722] hover:bg-zinc-800 p-1.5 text-zinc-300 transition active:scale-90" 
                           onClick={() => setRevealSecret((prev) => !prev)}
+                          title={revealSecret ? "Hide Secret" : "Reveal Secret"}
                         >
                           {revealSecret ? <EyeOff size={12} /> : <Eye size={12} />}
                         </button>
