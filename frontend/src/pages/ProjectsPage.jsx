@@ -258,11 +258,11 @@ export default function ProjectsPage() {
                       </button>
 
                       <button
-                        className="rounded-xl border border-zinc-800 bg-[#121420] px-3 py-1.5 text-xs font-mono font-bold text-zinc-200 hover:bg-[#181a2b] transition"
+                        className="rounded-xl border border-zinc-800 bg-[#121420] px-3.5 py-1.5 text-xs font-semibold text-zinc-200 hover:bg-[#181a2b] transition"
                         onClick={() => navigate(`/projects/${project.id}`)}
                         type="button"
                       >
-                        Manage & Credentials →
+                        Configure Project →
                       </button>
 
                       <button
