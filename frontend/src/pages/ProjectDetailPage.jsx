@@ -80,7 +80,6 @@ export default function ProjectDetailPage() {
   const [generatedKeys, setGeneratedKeys] = useState(null);
   const [form, setForm] = useState(blankForm(null));
   const [revealSecret, setRevealSecret] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(0);
   const [copiedField, setCopiedField] = useState('');
 
   // Webhook Tester Modal State
@@ -91,9 +90,6 @@ export default function ProjectDetailPage() {
   const [testPayloadStr, setTestPayloadStr] = useState('');
   const [testLoading, setTestLoading] = useState(false);
   const [testResult, setTestResult] = useState(null);
-
-  const clearTimerRef = useRef(null);
-  const countdownIntervalRef = useRef(null);
 
   const loadProject = async () => {
     if (!projectId) {
@@ -115,6 +111,7 @@ export default function ProjectDetailPage() {
       setForm(blankForm(found));
       sessionStorage.setItem('selectedProjectId', String(found.id));
 
+      // Auto load credentials for this project
       try {
         const { data: keyData } = await apiClient.get(`/v1/projects/refresh_keys/${found.id}`);
         setGeneratedKeys({ api_key: keyData.api_key, secret_key: keyData.secret_key });
@@ -130,37 +127,11 @@ export default function ProjectDetailPage() {
 
   useEffect(() => {
     loadProject();
-    return () => {
-      if (clearTimerRef.current) window.clearTimeout(clearTimerRef.current);
-      if (countdownIntervalRef.current) window.clearInterval(countdownIntervalRef.current);
-    };
   }, [projectId, user?.email]);
 
-  const triggerCredentialsTimer = () => {
-    if (clearTimerRef.current) window.clearTimeout(clearTimerRef.current);
-    if (countdownIntervalRef.current) window.clearInterval(countdownIntervalRef.current);
-
-    const seconds = 60;
-    setTimeLeft(seconds);
-
-    countdownIntervalRef.current = window.setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          window.clearInterval(countdownIntervalRef.current);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    clearTimerRef.current = window.setTimeout(() => {
-      setRevealSecret(false);
-    }, seconds * 1000);
-  };
-
   const handleCopy = async (text, label = 'Credential') => {
-    if (!text) {
-      setFeedback({ type: 'error', message: 'No credential key available to copy.' });
+    if (!text || text.includes('•••')) {
+      setFeedback({ type: 'error', message: 'Credentials key is not available. Please click Regenerate Credentials.' });
       return;
     }
     try {
@@ -181,7 +152,7 @@ export default function ProjectDetailPage() {
       setFeedback({ type: 'success', message: `${label} copied to clipboard!` });
       setTimeout(() => setCopiedField(''), 3000);
     } catch {
-      setFeedback({ type: 'error', message: 'Failed to copy credential to clipboard.' });
+      setFeedback({ type: 'error', message: 'Failed to copy credential.' });
     }
   };
 
@@ -244,8 +215,7 @@ export default function ProjectDetailPage() {
     try {
       const { data } = await apiClient.get(`/v1/projects/refresh_keys/${project.id}`);
       setGeneratedKeys({ api_key: data.api_key, secret_key: data.secret_key });
-      setRevealSecret(false);
-      triggerCredentialsTimer();
+      setRevealSecret(true);
       setFeedback({ type: 'success', message: 'API Credentials regenerated successfully.' });
     } catch (error) {
       setFeedback({ type: 'error', message: error.message || 'Failed to refresh API keys.' });
@@ -359,7 +329,7 @@ export default function ProjectDetailPage() {
     <ProtectedLayout title={project?.name || 'Project Details'} eyebrow="Project Management">
       <div className="max-w-6xl mx-auto space-y-8 py-2">
         
-        {/* Header Navigation & Title Panel */}
+        {/* Compact Header Panel */}
         <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 sm:p-8 shadow-xl">
           <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
             <div className="space-y-3">
@@ -372,21 +342,26 @@ export default function ProjectDetailPage() {
                 Back to Projects
               </button>
               
-              <div className="flex items-center gap-3.5">
+              <div className="flex items-center gap-4 flex-wrap">
                 <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">
                   {project?.name || 'Project Details'}
                 </h1>
-                {project?.is_active ? (
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-400 border border-emerald-500/20">
-                    <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                    Active & Live
+                
+                {/* Single Header Toggle Switch */}
+                <div className="flex items-center gap-2.5 rounded-full border border-zinc-800 bg-[#080910] px-3.5 py-1.5">
+                  <span className={`text-xs font-semibold ${form.isActive ? 'text-emerald-400' : 'text-zinc-400'}`}>
+                    {form.isActive ? 'Active' : 'Paused'}
                   </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-zinc-500/10 px-3 py-1 text-xs font-semibold text-zinc-400 border border-zinc-500/20">
-                    <span className="h-2 w-2 rounded-full bg-zinc-500" />
-                    Paused
-                  </span>
-                )}
+                  <button
+                    type="button"
+                    disabled={toggling}
+                    onClick={handleToggleActive}
+                    className={`relative h-5 w-9 rounded-full p-0.5 transition ${form.isActive ? 'bg-emerald-500' : 'bg-zinc-700'}`}
+                    title={form.isActive ? 'Pause Project' : 'Activate Project'}
+                  >
+                    <span className={`block h-4 w-4 rounded-full bg-white transition ${form.isActive ? 'translate-x-4' : 'translate-x-0'}`} />
+                  </button>
+                </div>
               </div>
 
               <p className="max-w-2xl text-xs sm:text-sm text-zinc-400 leading-relaxed">
@@ -394,7 +369,7 @@ export default function ProjectDetailPage() {
               </p>
             </div>
             
-            {/* Top Action Toolbar */}
+            {/* Top Action Buttons */}
             <div className="flex flex-wrap items-center gap-3">
               <button 
                 type="button" 
@@ -436,11 +411,26 @@ export default function ProjectDetailPage() {
 
         <form onSubmit={handleSave} className="space-y-8">
           
-          {/* Section 1: General Project Information */}
+          {/* Section 1: Project Details & API Credentials Panel */}
           <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 sm:p-8 shadow-xl space-y-6">
-            <div className="border-b border-zinc-800/80 pb-4">
-              <h2 className="text-lg font-bold text-white">General Information</h2>
-              <p className="mt-1 text-xs text-zinc-400">Basic details and status configuration for this project.</p>
+            <div className="border-b border-zinc-800/80 pb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                  <ShieldCheck className="h-5 w-5 text-emerald-400" />
+                  Project Information & API Credentials
+                </h2>
+                <p className="mt-1 text-xs text-zinc-400">Configure basic project information and manage API authentication credentials.</p>
+              </div>
+
+              <button
+                type="button"
+                disabled={generating}
+                onClick={handleGenerateKeys}
+                className="inline-flex items-center gap-2 rounded-xl border border-zinc-700 bg-[#161724] hover:bg-[#1e2032] px-4 py-2 text-xs font-semibold text-zinc-200 transition active:scale-95 shadow-sm shrink-0"
+              >
+                <KeyRound className="h-4 w-4 text-emerald-400" />
+                <span>{generating ? 'Regenerating...' : 'Regenerate Credentials'}</span>
+              </button>
             </div>
 
             <div className="grid gap-6 sm:grid-cols-2">
@@ -456,69 +446,24 @@ export default function ProjectDetailPage() {
               </div>
 
               <div className="space-y-2">
-                <label className="block text-xs font-semibold text-zinc-300">Project Status</label>
-                <div className="flex items-center justify-between rounded-xl border border-zinc-800 bg-[#080910] px-4 py-2.5">
-                  <span className="text-xs font-medium text-zinc-300">
-                    {form.isActive ? 'Active and processing webhooks' : 'Paused (Requests rejected)'}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={toggling}
-                    onClick={handleToggleActive}
-                    className={`relative h-6 w-11 rounded-full p-0.5 transition ${form.isActive ? 'bg-emerald-500' : 'bg-zinc-700'}`}
-                  >
-                    <span className={`block h-5 w-5 rounded-full bg-white transition ${form.isActive ? 'translate-x-5' : 'translate-x-0'}`} />
-                  </button>
-                </div>
-              </div>
-
-              <div className="sm:col-span-2 space-y-2">
                 <label className="block text-xs font-semibold text-zinc-300">Description</label>
-                <textarea
-                  className="min-h-20 w-full rounded-xl border border-zinc-800 bg-[#080910] p-4 text-xs sm:text-sm text-zinc-200 outline-none focus:border-emerald-400"
+                <input
+                  className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-4 py-2.5 text-xs sm:text-sm text-zinc-200 outline-none focus:border-emerald-400"
                   value={form.description}
                   onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
-                  placeholder="Optional project description and notes..."
+                  placeholder="Optional project description..."
                 />
               </div>
             </div>
-          </section>
 
-          {/* Section 2: API Keys & Credentials */}
-          <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 sm:p-8 shadow-xl space-y-6">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-800/80 pb-4">
-              <div>
-                <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                  <ShieldCheck className="h-5 w-5 text-emerald-400" />
-                  API Credentials & Webhook Signing Secret
-                </h2>
-                <p className="mt-1 text-xs text-zinc-400">Generate and manage HMAC authentication keys used to verify incoming webhook requests.</p>
-              </div>
-
-              <button
-                type="button"
-                disabled={generating}
-                onClick={handleGenerateKeys}
-                className="inline-flex items-center gap-2 rounded-xl border border-zinc-700 bg-[#161724] hover:bg-[#1e2032] px-4 py-2 text-xs font-semibold text-zinc-200 transition active:scale-95 shadow-sm"
-              >
-                <KeyRound className="h-4 w-4 text-emerald-400" />
-                <span>{generating ? 'Regenerating...' : 'Regenerate Credentials'}</span>
-              </button>
-            </div>
-
-            {generatedKeys ? (
+            {/* API Credentials Box */}
+            {generatedKeys && (
               <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-5 space-y-4">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
                     <CheckCircle2 size={14} />
-                    Decrypted Keys Buffer Active
+                    Active Project API Credentials
                   </span>
-                  {timeLeft > 0 && (
-                    <span className="text-[11px] bg-amber-500/10 border border-amber-500/20 text-amber-400 font-semibold px-2.5 py-0.5 rounded-full flex items-center gap-1.5">
-                      <Clock size={12} className="animate-spin" />
-                      Auto-hide in {timeLeft}s
-                    </span>
-                  )}
                 </div>
 
                 <div className="grid gap-4 sm:grid-cols-2">
@@ -589,14 +534,10 @@ export default function ProjectDetailPage() {
                   </div>
                 </div>
               </div>
-            ) : (
-              <div className="rounded-2xl border border-zinc-800/80 bg-[#080910] p-4 text-xs text-zinc-400">
-                Click "Regenerate Credentials" to generate a new API key and HMAC secret key for this project.
-              </div>
             )}
           </section>
 
-          {/* Section 3: Project Data Retention & Automated Log Cleanup Policy */}
+          {/* Section 2: Compact Data Retention & Automated Log Cleanup Policy */}
           <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 sm:p-8 shadow-xl space-y-6">
             <div className="border-b border-zinc-800/80 pb-4">
               <h2 className="text-lg font-bold text-white flex items-center gap-2">
@@ -604,17 +545,17 @@ export default function ProjectDetailPage() {
                 Data Retention & Auto-Cleanup Policy
               </h2>
               <p className="mt-1 text-xs text-zinc-400">
-                Configure project-wide retention periods. Webhook events and execution logs older than this limit are automatically deleted.
+                Configure project-wide retention. Old webhook event payloads and execution logs are automatically purged on schedule.
               </p>
             </div>
 
             <div className="grid gap-6 sm:grid-cols-2">
               {/* Retention Period (Days) */}
               <div className="space-y-3">
-                <label className="block text-xs font-semibold text-zinc-300">Retention Period (Days)</label>
+                <label className="block text-xs font-semibold text-zinc-300">Retention Period</label>
                 
-                <div className="flex flex-wrap gap-2">
-                  {[7, 14, 30, 90, 180, 365].map((days) => (
+                <div className="flex flex-wrap items-center gap-2">
+                  {[7, 14, 30, 90, 365].map((days) => (
                     <button
                       key={days}
                       type="button"
@@ -624,43 +565,48 @@ export default function ProjectDetailPage() {
                       {days} Days
                     </button>
                   ))}
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <input
-                    type="number"
-                    min="1"
-                    max="3650"
-                    className="w-32 rounded-xl border border-zinc-800 bg-[#080910] px-3.5 py-2 text-xs font-mono text-white outline-none focus:border-emerald-400"
-                    value={form.retentionDays || ''}
-                    onChange={(e) => setForm((prev) => ({ ...prev, retentionDays: parseInt(e.target.value) || 30 }))}
-                  />
-                  <span className="text-xs text-zinc-400">days before auto-purge</span>
+                  <div className="flex items-center gap-1.5 ml-2">
+                    <input
+                      type="number"
+                      min="1"
+                      max="3650"
+                      className="w-20 rounded-xl border border-zinc-800 bg-[#080910] px-2.5 py-1.5 text-xs font-mono text-white outline-none focus:border-emerald-400"
+                      value={form.retentionDays || ''}
+                      onChange={(e) => setForm((prev) => ({ ...prev, retentionDays: parseInt(e.target.value) || 30 }))}
+                    />
+                    <span className="text-xs text-zinc-400">days</span>
+                  </div>
                 </div>
               </div>
 
               {/* Scheduled Daily Deletion Time */}
               <div className="space-y-3">
-                <label className="block text-xs font-semibold text-zinc-300">Daily Scheduled Cleanup Time</label>
-                <select
-                  className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-4 py-2.5 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
-                  value={form.deleteTime || '02:00'}
-                  onChange={(e) => setForm((prev) => ({ ...prev, deleteTime: e.target.value }))}
-                >
-                  <option value="00:00">12:00 AM (Midnight)</option>
-                  <option value="02:00">02:00 AM (Recommended Off-Peak)</option>
-                  <option value="04:00">04:00 AM</option>
-                  <option value="06:00">06:00 AM</option>
-                  <option value="12:00">12:00 PM (Noon)</option>
-                  <option value="18:00">06:00 PM</option>
-                </select>
-                <p className="text-[11px] text-zinc-500">System background worker executes log purging automatically at this daily schedule.</p>
+                <label className="block text-xs font-semibold text-zinc-300">Scheduled Daily Cleanup Time</label>
+                
+                <div className="flex flex-wrap items-center gap-2">
+                  {[
+                    { label: '12 AM', value: '00:00' },
+                    { label: '2 AM (Off-peak)', value: '02:00' },
+                    { label: '4 AM', value: '04:00' },
+                    { label: '6 AM', value: '06:00' },
+                    { label: '12 PM', value: '12:00' },
+                  ].map((timeOption) => (
+                    <button
+                      key={timeOption.value}
+                      type="button"
+                      onClick={() => setForm((prev) => ({ ...prev, deleteTime: timeOption.value }))}
+                      className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition border ${form.deleteTime === timeOption.value ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-[#080910] border-zinc-800 text-zinc-400 hover:border-zinc-700'}`}
+                    >
+                      {timeOption.label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              {/* Target Data Scope */}
-              <div className="sm:col-span-2 space-y-3 rounded-2xl border border-zinc-800/80 bg-[#080910] p-4">
-                <label className="block text-xs font-semibold text-zinc-300">Target Data Scope to Purge</label>
-                <div className="grid gap-3 sm:grid-cols-2 text-xs text-zinc-300">
+              {/* Purge Scope Checkboxes */}
+              <div className="sm:col-span-2 rounded-2xl border border-zinc-800/80 bg-[#080910] p-4 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-zinc-300">
+                <span className="font-semibold text-zinc-400">Purge Data Targets:</span>
+                <div className="flex flex-wrap items-center gap-4">
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"
@@ -668,7 +614,7 @@ export default function ProjectDetailPage() {
                       onChange={(e) => setForm((prev) => ({ ...prev, purgeEvents: e.target.checked }))}
                       className="rounded border-zinc-700 bg-zinc-900 text-emerald-500 focus:ring-0"
                     />
-                    <span>Webhook Events & Ingress Payload History</span>
+                    <span>Webhook Ingress Payloads</span>
                   </label>
 
                   <label className="flex items-center gap-2 cursor-pointer">
@@ -678,18 +624,18 @@ export default function ProjectDetailPage() {
                       onChange={(e) => setForm((prev) => ({ ...prev, purgeLogs: e.target.checked }))}
                       className="rounded border-zinc-700 bg-zinc-900 text-emerald-500 focus:ring-0"
                     />
-                    <span>Delivery Forwarding & Execution Logs</span>
+                    <span>Execution & Forwarding Logs</span>
                   </label>
                 </div>
               </div>
             </div>
           </section>
 
-          {/* Section 4: Event Routing & Payload Validation Rules */}
+          {/* Section 3: Event Routing & Payload Schema Builder */}
           <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 sm:p-8 shadow-xl space-y-6">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-800/80 pb-4">
               <div>
-                <h2 className="text-lg font-bold text-white">Event Routing & Payload Validation</h2>
+                <h2 className="text-lg font-bold text-white">Event Routing & Payload Schema Validation</h2>
                 <p className="mt-1 text-xs text-zinc-400">
                   Configure target destination URLs and mandatory payload key & data type requirements for each event type.
                 </p>
@@ -745,7 +691,9 @@ export default function ProjectDetailPage() {
                         <span className="text-xs text-zinc-400 font-medium">{config.is_active ? 'Active' : 'Disabled'}</span>
                         <button
                           type="button"
-                          onClick={() => handleToggleEvent(config.id, config.is_active, index)}
+                          onClick={() =>
+                            updateEventConfig(index, (item) => ({ ...item, is_active: !item.is_active }))
+                          }
                           className={`relative h-6 w-11 rounded-full p-0.5 transition ${config.is_active ? 'bg-emerald-500' : 'bg-zinc-700'}`}
                         >
                           <span className={`block h-5 w-5 rounded-full bg-white transition ${config.is_active ? 'translate-x-5' : 'translate-x-0'}`} />
@@ -822,7 +770,7 @@ export default function ProjectDetailPage() {
                     </div>
                   </div>
 
-                  {/* Multiple Payload Keys & Required Data Types Builder */}
+                  {/* Dynamic Payload Keys & Required Data Types Builder */}
                   <div className="space-y-3 pt-2">
                     <div className="flex items-center justify-between">
                       <div>
@@ -924,10 +872,10 @@ export default function ProjectDetailPage() {
             </div>
           </section>
 
-          {/* Sticky Bottom Save Action Bar */}
+          {/* Sticky Bottom Save Bar */}
           <div className="sticky bottom-6 z-40 rounded-2xl border border-zinc-800 bg-[#0c0d15]/90 p-4 backdrop-blur-md shadow-2xl flex items-center justify-between">
             <div className="text-xs text-zinc-400">
-              Ensure all forwarding URLs and payload rules are correct before saving.
+              Review destination URLs and payload rules before saving.
             </div>
 
             <button
