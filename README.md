@@ -63,6 +63,28 @@ docker-compose down
 
 ---
 
+## ❓ Troubleshooting Common Errors
+
+### 🚨 Error: `bind: address already in use (5432)`
+**Reason:** PostgeSQL base service standard port `5432` is already running locally on the host system (common in Linux/Ubuntu).
+
+**Solution 1 (Recommended on Linux):**
+Stop local PostgreSQL service on the host machine:
+```bash
+sudo systemctl stop postgresql
+# Then retry:
+docker-compose up -d
+```
+
+**Solution 2 (Change Port in `.env`):**
+Edit `.env` file and change `POSTGRES_PORT` to `5433`:
+```env
+POSTGRES_PORT=5433
+```
+Then run `docker-compose up -d`.
+
+---
+
 ## 🔄 Daily Workflow / Git Helper
 
 Use the built-in `git.sh` helper script for pulling and pushing updates:
