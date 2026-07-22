@@ -31,8 +31,16 @@ const blankForm = (project) => ({
         target_urls: Array.isArray(config.metadata_json?.urls) && config.metadata_json.urls.length
           ? config.metadata_json.urls
           : [config.target_url || 'https://example.com/webhook'],
-        payload_keys: Array.isArray(config.payload_keys) ? config.payload_keys : (config.payload_keys ? [config.payload_keys] : []),
-        payload_types: Array.isArray(config.payload_types) ? config.payload_types : (config.payload_types ? [config.payload_types] : []),
+        payload_keys: Array.isArray(config.payload_keys) && config.payload_keys.length
+          ? config.payload_keys
+          : (Array.isArray(config.metadata_json?.payload_keys) && config.metadata_json.payload_keys.length
+            ? config.metadata_json.payload_keys
+            : (config.payload_key ? [config.payload_key] : (config.metadata_json?.payload_key ? [config.metadata_json.payload_key] : []))),
+        payload_types: Array.isArray(config.payload_types) && config.payload_types.length
+          ? config.payload_types
+          : (Array.isArray(config.metadata_json?.payload_types) && config.metadata_json.payload_types.length
+            ? config.metadata_json.payload_types
+            : (config.payload_type ? [config.payload_type] : (config.metadata_json?.payload_type ? [config.metadata_json.payload_type] : []))),
         retention_days: config.retention_days ?? null,
         delete_time: config.delete_time ?? '',
         id: config.id,
@@ -529,16 +537,21 @@ export default function ProjectDetailPage() {
 
                       <div className="grid gap-3 md:grid-cols-2">
                         <div className="space-y-2">
-                          <label className="block text-[10px] font-bold uppercase tracking-wider text-zinc-400">PAYLOAD KEYS</label>
+                          <label className="block text-[10px] font-bold uppercase tracking-wider text-zinc-400">PAYLOAD KEYS (COMMA-SEPARATED)</label>
                           <input
                             className="w-full rounded-xl border border-zinc-800 bg-[#0a0b10] px-3 py-2 text-xs text-zinc-300 outline-none focus:border-[#8be9fd]"
-                            value={(config.payload_keys || []).join(', ')}
-                            onChange={(event) => updateEventConfig(index, (item) => ({
-                              ...item,
-                              payload_keys: event.target.value.split(',').map((entry) => entry.trim()).filter(Boolean),
-                            }))}
-                            placeholder="event.id, user.email"
+                            value={config.raw_payload_keys_str !== undefined ? config.raw_payload_keys_str : (Array.isArray(config.payload_keys) ? config.payload_keys.join(', ') : '')}
+                            onChange={(event) => {
+                              const val = event.target.value;
+                              updateEventConfig(index, (item) => ({
+                                ...item,
+                                raw_payload_keys_str: val,
+                                payload_keys: val.split(',').map((entry) => entry.trim()).filter(Boolean),
+                              }));
+                            }}
+                            placeholder="amount, status, event.id, billing.user_id"
                           />
+                          <p className="text-[10px] text-zinc-500">Enter multiple payload keys separated by commas (e.g., amount, status, user_id)</p>
                         </div>
                         <div className="space-y-2">
                           <label className="block text-[10px] font-bold uppercase tracking-wider text-zinc-400">RETENTION DAYS</label>

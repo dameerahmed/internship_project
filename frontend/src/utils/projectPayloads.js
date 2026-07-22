@@ -24,14 +24,32 @@ export const buildProjectEventConfigs = (eventConfigs = []) => {
       if (config?.retention_value !== undefined) metadata_json.retention_value = config.retention_value;
       if (config?.retention_unit !== undefined) metadata_json.retention_unit = config.retention_unit;
 
+      const safePayloadKeys = Array.isArray(config?.payload_keys)
+        ? config.payload_keys.filter(Boolean)
+        : (typeof config?.payload_keys === 'string'
+          ? config.payload_keys.split(',').map((s) => s.trim()).filter(Boolean)
+          : (config?.payload_key ? [config.payload_key] : []));
+
+      const safePayloadTypes = Array.isArray(config?.payload_types)
+        ? config.payload_types.filter(Boolean)
+        : (typeof config?.payload_types === 'string'
+          ? config.payload_types.split(',').map((s) => s.trim()).filter(Boolean)
+          : (config?.payload_type ? [config.payload_type] : []));
+
       return {
         event_type: (config?.event_type || '').trim() || 'webhook.received',
         target_url: safeUrls[0],
         target_urls: safeUrls,
-        payload_key: config?.payload_key || metadata_json.payload_key || 'event.id',
-        payload_type: config?.payload_type || metadata_json.payload_type || 'string',
+        payload_key: safePayloadKeys[0] || 'event.id',
+        payload_keys: safePayloadKeys,
+        payload_type: safePayloadTypes[0] || 'string',
+        payload_types: safePayloadTypes,
         is_active: config?.is_active ?? true,
-        metadata_json,
+        metadata_json: {
+          ...metadata_json,
+          payload_keys: safePayloadKeys,
+          payload_types: safePayloadTypes,
+        },
       };
     });
 };
