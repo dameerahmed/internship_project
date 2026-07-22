@@ -9,13 +9,14 @@ import {
   Trash2, 
   CheckCircle2, 
   Clock, 
-  Settings, 
   Database, 
-  Layers, 
-  ExternalLink,
-  Copy,
+  Copy, 
   AlertTriangle,
-  Zap
+  Zap,
+  ShieldCheck,
+  Calendar,
+  Save,
+  Check
 } from 'lucide-react';
 import ProtectedLayout from '../components/ProtectedLayout';
 import { useAuth } from '../context/AuthContext';
@@ -53,16 +54,16 @@ const blankForm = (project) => ({
           payload_rules: payload_rules.length ? payload_rules : [{ key: 'event.id', type: 'string' }],
           payload_keys: keys.length ? keys : ['event.id'],
           payload_types: types.length ? types : ['string'],
-          retention_days: config.retention_days ?? null,
-          delete_time: config.delete_time ?? '',
           id: config.id,
           is_active: config.is_active ?? true,
         };
       })
-    : [{ event_type: 'webhook.received', target_urls: ['https://example.com/webhook'], payload_rules: [{ key: 'event.id', type: 'string' }, { key: 'amount', type: 'number' }, { key: 'status', type: 'string' }], payload_keys: ['event.id', 'amount', 'status'], payload_types: ['string', 'number', 'string'], retention_days: null, delete_time: '' }],
+    : [{ event_type: 'webhook.received', target_urls: ['https://example.com/webhook'], payload_rules: [{ key: 'event.id', type: 'string' }, { key: 'amount', type: 'number' }, { key: 'status', type: 'string' }], payload_keys: ['event.id', 'amount', 'status'], payload_types: ['string', 'number', 'string'] }],
   isActive: project?.is_active ?? true,
   retentionDays: project?.retention_days ?? 30,
-  deleteTime: project?.delete_time ?? '',
+  deleteTime: project?.delete_time ?? '02:00',
+  purgeEvents: true,
+  purgeLogs: true,
 });
 
 export default function ProjectDetailPage() {
@@ -80,8 +81,9 @@ export default function ProjectDetailPage() {
   const [form, setForm] = useState(blankForm(null));
   const [revealSecret, setRevealSecret] = useState(false);
   const [timeLeft, setTimeLeft] = useState(0);
+  const [copiedField, setCopiedField] = useState('');
 
-  // Webhook Tester State
+  // Webhook Tester Modal State
   const [showTestModal, setShowTestModal] = useState(false);
   const [testApiKey, setTestApiKey] = useState('');
   const [testSecretKey, setTestSecretKey] = useState('');
@@ -89,6 +91,162 @@ export default function ProjectDetailPage() {
   const [testPayloadStr, setTestPayloadStr] = useState('');
   const [testLoading, setTestLoading] = useState(false);
   const [testResult, setTestResult] = useState(null);
+
+  const clearTimerRef = useRef(null);
+  const countdownIntervalRef = useRef(null);
+
+  const loadProject = async () => {
+    if (!projectId) {
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { data: found } = await apiClient.get(API_ENDPOINTS.PROJECTS.GET(projectId));
+
+      if (!found) {
+        setFeedback({ type: 'error', message: 'Project not found.' });
+        setProject(null);
+        return;
+      }
+
+      setProject(found);
+      setForm(blankForm(found));
+      sessionStorage.setItem('selectedProjectId', String(found.id));
+    } catch (error) {
+      setFeedback({ type: 'error', message: error.message || 'Unable to load project configuration.' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadProject();
+    return () => {
+      if (clearTimerRef.current) window.clearTimeout(clearTimerRef.current);
+      if (countdownIntervalRef.current) window.clearInterval(countdownIntervalRef.current);
+    };
+  }, [projectId, user?.email]);
+
+  const triggerCredentialsTimer = () => {
+    if (clearTimerRef.current) window.clearTimeout(clearTimerRef.current);
+    if (countdownIntervalRef.current) window.clearInterval(countdownIntervalRef.current);
+
+    const seconds = 30;
+    setTimeLeft(seconds);
+
+    countdownIntervalRef.current = window.setInterval(() => {
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          window.clearInterval(countdownIntervalRef.current);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    clearTimerRef.current = window.setTimeout(() => {
+      setGeneratedKeys(null);
+      setRevealSecret(false);
+      setFeedback({ type: '', message: '' });
+    }, seconds * 1000);
+  };
+
+  const handleCopy = async (text, label = 'Credential') => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedField(label);
+      setFeedback({ type: 'success', message: `${label} copied to clipboard!` });
+      setTimeout(() => setCopiedField(''), 2500);
+    } catch {
+      setFeedback({ type: 'error', message: 'Failed to copy to clipboard.' });
+    }
+  };
+
+  const handleSave = async (event) => {
+    event.preventDefault();
+    if (!project) return;
+
+    setSaving(true);
+    setFeedback({ type: '', message: '' });
+
+    try {
+      const payload = createProjectPayload({
+        name: form.name,
+        description: form.description,
+        eventConfigs: form.eventConfigs,
+        isActive: form.isActive,
+        retentionDays: form.retentionDays,
+        deleteTime: form.deleteTime,
+      });
+
+      const { data: updated } = await apiClient.patch(API_ENDPOINTS.PROJECTS.UPDATE(project.id), payload);
+      setProject((prev) => (prev ? { ...prev, ...updated, event_configs: prev.event_configs } : prev));
+      setFeedback({ type: 'success', message: 'Project settings updated successfully.' });
+    } catch (error) {
+      setFeedback({ type: 'error', message: error.message || 'Failed to save project settings.' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleToggleActive = async () => {
+    if (!project) return;
+
+    const nextValue = !project.is_active;
+    const previousProject = project;
+    setProject((prev) => (prev ? { ...prev, is_active: nextValue } : prev));
+    setForm((prev) => ({ ...prev, isActive: nextValue }));
+    setFeedback({ type: 'success', message: `Project status updated to ${nextValue ? 'Active' : 'Paused'}.` });
+
+    setToggling(true);
+    try {
+      const { data: updated } = await apiClient.patch(API_ENDPOINTS.PROJECTS.UPDATE(project.id), { is_active: nextValue });
+      setProject((prev) => (prev ? { ...prev, ...updated } : prev));
+      setForm((prev) => ({ ...prev, isActive: updated.is_active ?? nextValue }));
+    } catch (error) {
+      setProject(previousProject);
+      setForm((prev) => ({ ...prev, isActive: previousProject.is_active }));
+      setFeedback({ type: 'error', message: error.message || 'Failed to update status.' });
+    } finally {
+      setToggling(false);
+    }
+  };
+
+  const handleGenerateKeys = async () => {
+    if (!project) return;
+
+    setGenerating(true);
+    setFeedback({ type: '', message: '' });
+
+    try {
+      const { data } = await apiClient.get(`/v1/projects/refresh_keys/${project.id}`);
+      setGeneratedKeys({ api_key: data.api_key, secret_key: data.secret_key });
+      setRevealSecret(false);
+      triggerCredentialsTimer();
+      setFeedback({ type: 'success', message: 'API Credentials regenerated successfully.' });
+    } catch (error) {
+      setFeedback({ type: 'error', message: error.message || 'Failed to refresh API keys.' });
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!project || !window.confirm(`Are you sure you want to delete "${project.name}"? This action cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      await apiClient.delete(API_ENDPOINTS.PROJECTS.DELETE(project.id));
+      sessionStorage.removeItem('selectedProjectId');
+      navigate('/projects');
+    } catch (error) {
+      setFeedback({ type: 'error', message: error.message || 'Failed to delete project.' });
+    }
+  };
 
   const handleOpenTestModal = async () => {
     setShowTestModal(true);
@@ -159,200 +317,6 @@ export default function ProjectDetailPage() {
       setTestLoading(false);
     }
   };
-  
-  const clearTimerRef = useRef(null);
-  const countdownIntervalRef = useRef(null);
-
-  const loadProject = async () => {
-    if (!projectId) {
-      setLoading(false);
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const { data: found } = await apiClient.get(API_ENDPOINTS.PROJECTS.GET(projectId));
-
-      if (!found) {
-        setFeedback({ type: 'error', message: 'Project targeted endpoint not found.' });
-        setProject(null);
-        return;
-      }
-
-      setProject(found);
-      setForm(blankForm(found));
-      sessionStorage.setItem('selectedProjectId', String(found.id));
-    } catch (error) {
-      setFeedback({ type: 'error', message: error.message || 'Unable to load project node configuration.' });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadProject();
-    return () => {
-      if (clearTimerRef.current) window.clearTimeout(clearTimerRef.current);
-      if (countdownIntervalRef.current) window.clearInterval(countdownIntervalRef.current);
-    };
-  }, [projectId, user?.email]);
-
-  const triggerCredentialsTimer = () => {
-    if (clearTimerRef.current) window.clearTimeout(clearTimerRef.current);
-    if (countdownIntervalRef.current) window.clearInterval(countdownIntervalRef.current);
-
-    const seconds = 15;
-    setTimeLeft(seconds);
-
-    countdownIntervalRef.current = window.setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          window.clearInterval(countdownIntervalRef.current);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    clearTimerRef.current = window.setTimeout(() => {
-      setGeneratedKeys(null);
-      setRevealSecret(false);
-      setFeedback({ type: '', message: '' });
-    }, seconds * 1000);
-  };
-
-  const handleSave = async (event) => {
-    event.preventDefault();
-    if (!project) return;
-
-    setSaving(true);
-    setFeedback({ type: '', message: '' });
-
-    try {
-      const payload = createProjectPayload({
-        name: form.name,
-        description: form.description,
-        eventConfigs: form.eventConfigs,
-        isActive: form.isActive,
-        retentionDays: form.retentionDays,
-        deleteTime: form.deleteTime,
-      });
-
-      const { data: updated } = await apiClient.patch(API_ENDPOINTS.PROJECTS.UPDATE(project.id), payload);
-      setProject((prev) => (prev ? { ...prev, ...updated, event_configs: prev.event_configs } : prev));
-      setFeedback({ type: 'success', message: 'Pipeline network settings deployed.' });
-    } catch (error) {
-      setFeedback({ type: 'error', message: error.message || 'Deployment of settings rejected by gateway.' });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleToggleActive = async () => {
-    if (!project) return;
-
-    const nextValue = !project.is_active;
-    const previousProject = project;
-    setProject((prev) => (prev ? { ...prev, is_active: nextValue } : prev));
-    setForm((prev) => ({ ...prev, isActive: nextValue }));
-    setFeedback({ type: 'success', message: `Data pipeline successfully ${nextValue ? 'activated' : 'paused'}.` });
-
-    setToggling(true);
-    try {
-      const { data: updated } = await apiClient.patch(API_ENDPOINTS.PROJECTS.UPDATE(project.id), { is_active: nextValue });
-      setProject((prev) => (prev ? { ...prev, ...updated } : prev));
-      setForm((prev) => ({ ...prev, isActive: updated.is_active ?? nextValue }));
-    } catch (error) {
-      setProject(previousProject);
-      setForm((prev) => ({ ...prev, isActive: previousProject.is_active }));
-      setFeedback({ type: 'error', message: error.message || 'State modification rejected.' });
-    } finally {
-      setToggling(false);
-    }
-  };
-
-  const handleGenerateKeys = async () => {
-    if (!project) return;
-
-    setGenerating(true);
-    setFeedback({ type: '', message: '' });
-
-    try {
-      const { data } = await apiClient.get(`/v1/projects/refresh_keys/${project.id}`);
-      setGeneratedKeys({ api_key: data.api_key, secret_key: data.secret_key });
-      setRevealSecret(false);
-      triggerCredentialsTimer();
-      setFeedback({ type: 'success', message: 'Keys refreshed. Copy within buffer time.' });
-    } catch (error) {
-      setFeedback({ type: 'error', message: error.message || 'Key refreshing failed.' });
-    } finally {
-      setGenerating(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!project || !window.confirm('WARNING: Destroy project node configuration along with routing maps?')) {
-      return;
-    }
-
-    try {
-      await apiClient.delete(API_ENDPOINTS.PROJECTS.DELETE(project.id));
-      sessionStorage.removeItem('selectedProjectId');
-      navigate('/projects');
-    } catch (error) {
-      setFeedback({ type: 'error', message: error.message || 'Gateway deletion handshake failed.' });
-    }
-  };
-
-  const handleToggleEvent = async (eventId, currentValue, index) => {
-    if (!project) return;
-
-    const nextValue = !currentValue;
-    const previousProject = project;
-
-    setProject((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        event_configs: prev.event_configs.map((ec) => (ec.id === eventId ? { ...ec, is_active: nextValue } : ec)),
-      };
-    });
-    setForm((prev) => ({
-      ...prev,
-      eventConfigs: prev.eventConfigs.map((ec, idx) => (idx === index ? { ...ec, is_active: nextValue } : ec)),
-    }));
-
-    if (!eventId) {
-      setFeedback({ type: 'success', message: 'Event status updated locally. Save to persist it.' });
-      return;
-    }
-
-    setToggling(true);
-    try {
-      const { data: updated } = await apiClient.patch(API_ENDPOINTS.PROJECTS.EVENT_UPDATE(project.id, eventId), { is_active: nextValue });
-      setProject((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          event_configs: prev.event_configs.map((ec) => (ec.id === eventId ? { ...ec, is_active: updated.is_active } : ec)),
-        };
-      });
-      setForm((prev) => ({
-        ...prev,
-        eventConfigs: prev.eventConfigs.map((ec, idx) => (idx === index ? { ...ec, is_active: updated.is_active ?? nextValue } : ec)),
-      }));
-      setFeedback({ type: 'success', message: `Event routing gateway ${updated.event_type || 'updated'} updated.` });
-    } catch (err) {
-      setProject(previousProject);
-      setForm((prev) => ({
-        ...prev,
-        eventConfigs: prev.eventConfigs.map((ec, idx) => (idx === index ? { ...ec, is_active: currentValue } : ec)),
-      }));
-      setFeedback({ type: 'error', message: err.message || 'Failed to toggle child event gateway state.' });
-    } finally {
-      setToggling(false);
-    }
-  };
 
   const updateEventConfig = (index, updater) => {
     setForm((prev) => ({
@@ -361,611 +325,627 @@ export default function ProjectDetailPage() {
     }));
   };
 
-  const [copiedField, setCopiedField] = useState('');
-
-  const handleCopy = async (text, label = 'Credential') => {
-    if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedField(label);
-      setFeedback({ type: 'success', message: `${label} copied to clipboard!` });
-      setTimeout(() => setCopiedField(''), 2500);
-    } catch {
-      setFeedback({ type: 'error', message: 'Failed to write credential to clipboard.' });
-    }
-  };
+  if (loading) {
+    return (
+      <ProtectedLayout title="Loading Project..." eyebrow="Projects">
+        <div className="flex h-64 items-center justify-center text-sm font-medium text-zinc-400">
+          Loading project settings...
+        </div>
+      </ProtectedLayout>
+    );
+  }
 
   return (
-    <ProtectedLayout title={project?.name || 'Project details'} eyebrow="Project workspace">
-      <div className="space-y-6 font-sans text-slate-700 dark:text-slate-300">
+    <ProtectedLayout title={project?.name || 'Project Details'} eyebrow="Project Management">
+      <div className="max-w-6xl mx-auto space-y-8 py-2">
         
-        {/* CRT Scanline Visual Glow Effect */}
-        <div className="absolute inset-0 pointer-events-none opacity-[0.015] bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_4px,3px_100%] z-50" />
-
-        {/* Hero Meta Panel */}
-        <section className="rounded-[28px] border border-zinc-200/70 bg-white/80 p-6 shadow-sm backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/70 relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-32 h-32 bg-[#8be9fd]/5 rounded-full blur-3xl pointer-events-none" />
-          <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-            <div className="space-y-2">
+        {/* Header Navigation & Title Panel */}
+        <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 sm:p-8 shadow-xl">
+          <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+            <div className="space-y-3">
               <button 
                 type="button" 
                 onClick={() => navigate('/projects')} 
-                className="inline-flex items-center gap-2 text-xs font-bold text-zinc-500 hover:text-[#8be9fd] transition duration-150"
+                className="inline-flex items-center gap-2 text-xs font-semibold text-zinc-400 hover:text-emerald-400 transition duration-150"
               >
-                <ArrowLeft className="h-3.5 w-3.5" />
-                RETURN_TO_WORKSPACE
+                <ArrowLeft className="h-4 w-4" />
+                Back to Projects
               </button>
-              <h1 className="text-2xl font-black tracking-tight text-white flex items-center gap-3">
-                {project?.name || 'INITIALIZING_NODE'}
+              
+              <div className="flex items-center gap-3.5">
+                <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">
+                  {project?.name || 'Project Details'}
+                </h1>
                 {project?.is_active ? (
-                  <span className="h-2.5 w-2.5 rounded-full bg-[#50fa7b] shadow-[0_0_8px_#50fa7b]" />
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-400 border border-emerald-500/20">
+                    <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                    Active & Live
+                  </span>
                 ) : (
-                  <span className="h-2.5 w-2.5 rounded-full bg-[#ff5555] shadow-[0_0_8px_#ff5555]" />
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-zinc-500/10 px-3 py-1 text-xs font-semibold text-zinc-400 border border-zinc-500/20">
+                    <span className="h-2 w-2 rounded-full bg-zinc-500" />
+                    Paused
+                  </span>
                 )}
-              </h1>
-              <p className="max-w-2xl text-xs text-zinc-400 font-medium">
-                Map ingestion events, configure multi-destination payload dispatch rules, and securely rotate network handshake tokens.
+              </div>
+
+              <p className="max-w-2xl text-xs sm:text-sm text-zinc-400 leading-relaxed">
+                Configure webhook event routing, payload validation rules, data retention schedules, and API credentials.
               </p>
             </div>
             
-            <div className="flex flex-wrap gap-2.5">
+            {/* Top Action Toolbar */}
+            <div className="flex flex-wrap items-center gap-3">
               <button 
                 type="button" 
                 onClick={handleOpenTestModal} 
-                className="inline-flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 px-4 py-2.5 text-xs font-bold text-emerald-400 transition active:scale-95 shadow-lg"
+                className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 px-4 py-2.5 text-xs font-bold text-zinc-950 transition active:scale-95 shadow-md"
               >
                 <Zap className="h-4 w-4" />
-                TEST_WEBHOOK_ENDPOINT
+                Test Webhook
               </button>
+
               <button 
                 type="button" 
                 onClick={() => navigate(`/projects/${projectId}/logs`)} 
-                className="inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-[#161722] hover:bg-[#1e2030] px-4 py-2.5 text-xs font-bold text-zinc-200 transition active:scale-95 shadow-lg"
+                className="inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-[#141522] hover:bg-[#1a1c2e] px-4 py-2.5 text-xs font-semibold text-zinc-200 transition active:scale-95"
               >
-                <Database className="h-4 w-4 text-[#8be9fd]" />
-                MONITOR_SYS_LOGS
+                <Database className="h-4 w-4 text-cyan-400" />
+                System Logs
               </button>
+
               <button 
                 type="button" 
                 onClick={handleDelete} 
-                className="inline-flex items-center gap-2 rounded-xl border border-rose-500/10 bg-rose-500/10 hover:bg-rose-500/20 px-4 py-2.5 text-xs font-bold text-rose-400 transition active:scale-95"
+                className="inline-flex items-center gap-2 rounded-xl border border-rose-500/20 bg-rose-500/10 hover:bg-rose-500/20 px-4 py-2.5 text-xs font-semibold text-rose-400 transition active:scale-95"
               >
                 <Trash2 className="h-4 w-4" />
-                TERMINATE_NODE
+                Delete Project
               </button>
             </div>
           </div>
         </section>
 
-        {/* Console Stats Tickers */}
-        <section className="grid gap-4 grid-cols-1 sm:grid-cols-3">
-          <div className="rounded-xl border border-zinc-800/80 bg-[#11121d] p-5 shadow-lg flex items-center justify-between">
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">CLUSTER_STATE</p>
-              <p className="mt-1 text-lg font-bold text-white flex items-center gap-1.5">
-                {project?.is_active ? (
-                  <>
-                    <span className="text-[#50fa7b]">ONLINE</span>
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#50fa7b] animate-ping" />
-                  </>
-                ) : (
-                  <span className="text-[#ff5555]">OFFLINE_PAUSED</span>
-                )}
-              </p>
-            </div>
-            <div className="h-8 w-8 rounded-lg bg-zinc-800/40 border border-zinc-800 flex items-center justify-center text-zinc-500">
-              <Layers size={14} />
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-zinc-800/80 bg-[#11121d] p-5 shadow-lg flex items-center justify-between">
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">NODE_ADDRESS_HEXID</p>
-              <p className="mt-1 text-lg font-bold text-[#8be9fd] tracking-widest">
-                {project?.id ? `#${project.id}` : 'N/A'}
-              </p>
-            </div>
-            <div className="h-8 w-8 rounded-lg bg-zinc-800/40 border border-zinc-800 flex items-center justify-center text-zinc-500 font-bold text-[10px]">
-              UUID
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-zinc-800/80 bg-[#11121d] p-5 shadow-lg flex items-center justify-between">
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">ACTIVE_ROUTE_GATEWAYS</p>
-              <p className="mt-1 text-lg font-bold text-[#ff79c6]">{form.eventConfigs.length} Map Rules</p>
-            </div>
-            <div className="h-8 w-8 rounded-lg bg-zinc-800/40 border border-zinc-800 flex items-center justify-center text-zinc-500">
-              <ExternalLink size={14} />
-            </div>
-          </div>
-        </section>
-
-        {/* Global Action Notifications */}
+        {/* Feedback Alert Banner */}
         {feedback.message && (
-          <div className={`rounded-xl px-4 py-3 text-xs font-bold border flex items-center gap-2.5 transition-all animate-pulse ${
-            feedback.type === 'error' 
-              ? 'bg-rose-500/10 border-rose-500/20 text-rose-400' 
-              : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
-          }`}>
-            {feedback.type === 'error' ? <AlertTriangle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
-            SYSTEM: {feedback.message.toUpperCase()}
+          <div className={`rounded-2xl px-5 py-3.5 text-xs font-semibold flex items-center gap-2.5 ${feedback.type === 'error' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
+            {feedback.type === 'error' ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
+            <span>{feedback.message}</span>
           </div>
         )}
 
-        {/* Dual Interactive workspace grids */}
-        <section className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+        <form onSubmit={handleSave} className="space-y-8">
           
-          {/* LEFT COLUMN: Project settings Form */}
-          <div className="rounded-[28px] border border-zinc-200/70 bg-white/80 p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900/70 relative">
-            <div className="flex items-center justify-between gap-4 border-b border-zinc-850 pb-4">
-              <div className="flex items-center gap-2">
-                <Settings className="h-4 w-4 text-[#8be9fd]" />
-                <div>
-                  <h2 className="text-sm font-bold tracking-wider text-white uppercase">PIPELINE_ROUTING_MAPS</h2>
-                  <p className="text-[10px] text-zinc-400">Configure event ingest patterns and endpoint dispatch layers.</p>
+          {/* Section 1: General Project Information */}
+          <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 sm:p-8 shadow-xl space-y-6">
+            <div className="border-b border-zinc-800/80 pb-4">
+              <h2 className="text-lg font-bold text-white">General Information</h2>
+              <p className="mt-1 text-xs text-zinc-400">Basic details and status configuration for this project.</p>
+            </div>
+
+            <div className="grid gap-6 sm:grid-cols-2">
+              <div className="space-y-2">
+                <label className="block text-xs font-semibold text-zinc-300">Project Name</label>
+                <input
+                  className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-4 py-2.5 text-xs sm:text-sm text-white outline-none focus:border-emerald-400"
+                  value={form.name}
+                  onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
+                  placeholder="e.g. Stripe Payment Gateways"
+                  required
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-xs font-semibold text-zinc-300">Project Status</label>
+                <div className="flex items-center justify-between rounded-xl border border-zinc-800 bg-[#080910] px-4 py-2.5">
+                  <span className="text-xs font-medium text-zinc-300">
+                    {form.isActive ? 'Active and processing webhooks' : 'Paused (Requests rejected)'}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={toggling}
+                    onClick={handleToggleActive}
+                    className={`relative h-6 w-11 rounded-full p-0.5 transition ${form.isActive ? 'bg-emerald-500' : 'bg-zinc-700'}`}
+                  >
+                    <span className={`block h-5 w-5 rounded-full bg-white transition ${form.isActive ? 'translate-x-5' : 'translate-x-0'}`} />
+                  </button>
                 </div>
               </div>
-              <button 
-                type="button" 
-                onClick={handleToggleActive} 
-                disabled={toggling} 
-                className={`relative h-6 w-12 rounded-full p-0.5 transition duration-200 border ${
-                  project?.is_active 
-                    ? 'bg-[#50fa7b]/20 border-[#50fa7b]/40' 
-                    : 'bg-zinc-800/80 border-zinc-700'
-                }`}
+
+              <div className="sm:col-span-2 space-y-2">
+                <label className="block text-xs font-semibold text-zinc-300">Description</label>
+                <textarea
+                  className="min-h-20 w-full rounded-xl border border-zinc-800 bg-[#080910] p-4 text-xs sm:text-sm text-zinc-200 outline-none focus:border-emerald-400"
+                  value={form.description}
+                  onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
+                  placeholder="Optional project description and notes..."
+                />
+              </div>
+            </div>
+          </section>
+
+          {/* Section 2: API Keys & Credentials */}
+          <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 sm:p-8 shadow-xl space-y-6">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-800/80 pb-4">
+              <div>
+                <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                  <ShieldCheck className="h-5 w-5 text-emerald-400" />
+                  API Credentials & Webhook Signing Secret
+                </h2>
+                <p className="mt-1 text-xs text-zinc-400">Generate and manage HMAC authentication keys used to verify incoming webhook requests.</p>
+              </div>
+
+              <button
+                type="button"
+                disabled={generating}
+                onClick={handleGenerateKeys}
+                className="inline-flex items-center gap-2 rounded-xl border border-zinc-700 bg-[#161724] hover:bg-[#1e2032] px-4 py-2 text-xs font-semibold text-zinc-200 transition active:scale-95 shadow-sm"
               >
-                <span className={`block h-4.5 w-4.5 rounded-full transition duration-200 ${
-                  project?.is_active 
-                    ? 'translate-x-5.5 bg-[#50fa7b] shadow-[0_0_8px_#50fa7b]' 
-                    : 'translate-x-0 bg-zinc-500'
-                }`} />
+                <KeyRound className="h-4 w-4 text-emerald-400" />
+                <span>{generating ? 'Regenerating...' : 'Regenerate Credentials'}</span>
               </button>
             </div>
 
-            {loading ? (
-              <div className="mt-5 rounded-xl border border-zinc-800 bg-[#11121d] p-8 text-center text-xs text-zinc-500">
-                <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-[#8be9fd] border-t-transparent mb-2" />
-                <p>SYNCING CLUSTER ENVIRONMENT...</p>
-              </div>
-            ) : !project ? (
-              <div className="mt-5 rounded-xl border border-dashed border-zinc-800 p-8 text-center text-xs text-zinc-500">
-                FAILED TO RESOLVE REMOTE TARGET NODE STATE.
-              </div>
-            ) : (
-              <form className="mt-6 space-y-5" onSubmit={handleSave}>
-                
-                {/* Node Name input */}
-                <div className="space-y-2">
-                  <label htmlFor="detail-project-name" className="block text-xs font-bold text-zinc-400 uppercase tracking-wider">PROJECT_NODE_LABEL</label>
-                  <input 
-                    id="detail-project-name" 
-                    className="w-full rounded-xl border border-zinc-800 bg-[#11121d] px-3.5 py-2.5 text-xs text-white outline-none focus:border-[#8be9fd] transition-colors font-semibold" 
-                    value={form.name} 
-                    onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))} 
-                    placeholder="E.g. production-gateway-cluster" 
-                  />
-                </div>
-
-                {/* Project Description input */}
-                <div className="space-y-2">
-                  <label htmlFor="detail-project-description" className="block text-xs font-bold text-zinc-400 uppercase tracking-wider">PROJECT_DESCRIPTION</label>
-                  <textarea 
-                    id="detail-project-description" 
-                    className="min-h-20 w-full rounded-xl border border-zinc-800 bg-[#11121d] px-3.5 py-2.5 text-xs text-white outline-none focus:border-[#8be9fd] transition-colors font-medium resize-y" 
-                    value={form.description || ''} 
-                    onChange={(event) => setForm((prev) => ({ ...prev, description: event.target.value }))} 
-                    placeholder="E.g. Routing billing alerts to Slack and Discord" 
-                  />
-                </div>
-
-                {/* Database cache retention config */}
-                <div className="grid gap-3 border-b border-zinc-850 pb-5 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <label className="block text-xs font-bold text-zinc-400 uppercase tracking-wider">RETENTION_BUFFER (DAYS)</label>
-                    <input 
-                      type="number" 
-                      min={0} 
-                      className="w-full rounded-xl border border-zinc-800 bg-[#11121d] px-3.5 py-2 text-xs text-white outline-none focus:border-[#ff79c6] transition-colors" 
-                      value={form.retentionDays} 
-                      onChange={(e) => setForm((prev) => ({ ...prev, retentionDays: Number(e.target.value) }))} 
-                    />
-                    <span className="text-[10px] text-zinc-500">Packet storage lifetime</span>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="block text-xs font-bold text-zinc-400 uppercase tracking-wider">AUTO-DELETE TIME</label>
-                    <input 
-                      type="datetime-local" 
-                      className="w-full rounded-xl border border-zinc-800 bg-[#11121d] px-3.5 py-2 text-xs text-white outline-none focus:border-[#8be9fd] transition-colors" 
-                      value={form.deleteTime || ''} 
-                      onChange={(e) => setForm((prev) => ({ ...prev, deleteTime: e.target.value }))} 
-                    />
-                    <span className="text-[10px] text-zinc-500">Optional cleanup timestamp for old logs</span>
-                  </div>
-                </div>
-
-                {/* Multi-URL Events Config Grid */}
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="text-xs font-bold text-white uppercase tracking-wider">ROUTING_EVENT_RULES</h3>
-                      <p className="text-[10px] text-zinc-500">Attach target URLs to specific hook event targets.</p>
-                    </div>
-                    <button 
-                      type="button" 
-                      onClick={() => setForm((prev) => ({ 
-                        ...prev, 
-                        eventConfigs: [...prev.eventConfigs, { event_type: 'webhook.received', target_urls: ['https://example.com/webhook'] }] 
-                      }))} 
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-800 bg-[#161722] hover:bg-[#1e2030] px-3 py-2 text-[10px] font-bold text-zinc-300 transition active:scale-95"
-                    >
-                      <Plus className="h-3 w-3 text-[#50fa7b]" />
-                      ATTACH_EVENT
-                    </button>
-                  </div>
-
-                  {form.eventConfigs.map((config, index) => (
-                    <div key={`event-config-${index}`} className="rounded-2xl border border-zinc-200/70 bg-zinc-50/70 p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/70 relative space-y-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <input 
-                          className="w-full rounded-xl border border-zinc-800 bg-[#0a0b10] px-3 py-2 text-xs text-white outline-none font-semibold focus:border-[#bd93f9]" 
-                          value={config.event_type} 
-                          onChange={(event) => updateEventConfig(index, (item) => ({ ...item, event_type: event.target.value }))} 
-                          placeholder="event.routing.signature" 
-                        />
-                        <div className="flex items-center gap-2">
-                          <button 
-                            type="button" 
-                            disabled={toggling || !config.id} 
-                            onClick={() => handleToggleEvent(config.id, config.is_active, index)} 
-                            className={`rounded-xl border px-3 py-1.5 text-[10px] font-bold transition duration-150 uppercase tracking-widest ${
-                              config.is_active 
-                                ? 'bg-[#50fa7b]/15 text-[#50fa7b] border-[#50fa7b]/30' 
-                                : 'bg-zinc-800/80 text-zinc-500 border-zinc-700'
-                            }`}
-                          >
-                            {config.is_active ? 'ACTIVE' : 'PAUSED'}
-                          </button>
-                          <button 
-                            type="button" 
-                            onClick={() => setForm((prev) => ({ 
-                              ...prev, 
-                              eventConfigs: prev.eventConfigs.filter((_, itemIndex) => itemIndex !== index) 
-                            }))} 
-                            className="rounded-xl border border-zinc-800 p-2 text-zinc-500 hover:text-[#ff5555] hover:bg-[#ff5555]/5 transition active:scale-95"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="grid gap-3 md:grid-cols-2">
-                      {/* DYNAMIC MULTIPLE PAYLOAD KEYS & TYPES BUILDER */}
-                      <div className="space-y-3 rounded-2xl border border-zinc-800/80 bg-[#080910] p-4">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <label className="block text-[11px] font-mono font-bold uppercase tracking-wider text-emerald-400">
-                              PAYLOAD KEYS & REQUIRED DATA TYPES
-                            </label>
-                            <p className="text-[10px] font-mono text-zinc-500">Configure key paths and select expected data type rules for payload validation.</p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              updateEventConfig(index, (item) => {
-                                const currentRules = item.payload_rules || [];
-                                const nextRules = [...currentRules, { key: '', type: 'string' }];
-                                return {
-                                  ...item,
-                                  payload_rules: nextRules,
-                                  payload_keys: nextRules.map((r) => r.key).filter(Boolean),
-                                  payload_types: nextRules.map((r) => r.type),
-                                };
-                              });
-                            }}
-                            className="inline-flex items-center gap-1 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-mono font-bold text-emerald-400 hover:bg-emerald-500/20 transition active:scale-95"
-                          >
-                            <Plus size={13} />
-                            <span>Add Key Rule</span>
-                          </button>
-                        </div>
-
-                        <div className="space-y-2">
-                          {(config.payload_rules || []).length === 0 ? (
-                            <p className="text-xs text-zinc-500 font-mono py-2">No payload key rules added yet. Click &quot;Add Key Rule&quot; above.</p>
-                          ) : (
-                            (config.payload_rules || []).map((rule, ruleIdx) => (
-                              <div key={ruleIdx} className="flex flex-col sm:flex-row items-center gap-2">
-                                <div className="flex-1 w-full">
-                                  <input
-                                    className="w-full rounded-xl border border-zinc-800 bg-[#0e1018] px-3 py-2 text-xs text-zinc-200 outline-none focus:border-emerald-400 font-mono"
-                                    value={rule.key}
-                                    onChange={(e) => {
-                                      const newKey = e.target.value;
-                                      updateEventConfig(index, (item) => {
-                                        const nextRules = (item.payload_rules || []).map((r, rIdx) =>
-                                          rIdx === ruleIdx ? { ...r, key: newKey } : r
-                                        );
-                                        return {
-                                          ...item,
-                                          payload_rules: nextRules,
-                                          payload_keys: nextRules.map((r) => r.key).filter(Boolean),
-                                          payload_types: nextRules.map((r) => r.type),
-                                        };
-                                      });
-                                    }}
-                                    placeholder="Key Path (e.g. amount, status, billing.email)"
-                                  />
-                                </div>
-                                <div className="w-full sm:w-44">
-                                  <select
-                                    className="w-full rounded-xl border border-zinc-800 bg-[#0e1018] px-3 py-2 text-xs text-zinc-200 outline-none focus:border-cyan-400 font-mono"
-                                    value={rule.type}
-                                    onChange={(e) => {
-                                      const newType = e.target.value;
-                                      updateEventConfig(index, (item) => {
-                                        const nextRules = (item.payload_rules || []).map((r, rIdx) =>
-                                          rIdx === ruleIdx ? { ...r, type: newType } : r
-                                        );
-                                        return {
-                                          ...item,
-                                          payload_rules: nextRules,
-                                          payload_keys: nextRules.map((r) => r.key).filter(Boolean),
-                                          payload_types: nextRules.map((r) => r.type),
-                                        };
-                                      });
-                                    }}
-                                  >
-                                    <option value="string">string (Text)</option>
-                                    <option value="number">number (Numeric)</option>
-                                    <option value="boolean">boolean (True/False)</option>
-                                    <option value="object">object (JSON Object)</option>
-                                    <option value="array">array (List)</option>
-                                    <option value="any">any (Any Type)</option>
-                                  </select>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    updateEventConfig(index, (item) => {
-                                      const nextRules = (item.payload_rules || []).filter((_, rIdx) => rIdx !== ruleIdx);
-                                      return {
-                                        ...item,
-                                        payload_rules: nextRules,
-                                        payload_keys: nextRules.map((r) => r.key).filter(Boolean),
-                                        payload_types: nextRules.map((r) => r.type),
-                                      };
-                                    });
-                                  }}
-                                  className="rounded-xl border border-zinc-800 p-2 text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition active:scale-95"
-                                  title="Remove Rule"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      </div>
-                        <div className="space-y-2">
-                          <label className="block text-[10px] font-bold uppercase tracking-wider text-zinc-400">RETENTION DAYS</label>
-                          <input
-                            type="number"
-                            min="0"
-                            className="w-full rounded-xl border border-zinc-800 bg-[#0a0b10] px-3 py-2 text-xs text-zinc-300 outline-none focus:border-[#ff79c6]"
-                            value={config.retention_days ?? ''}
-                            onChange={(event) => updateEventConfig(index, (item) => ({
-                              ...item,
-                              retention_days: event.target.value === '' ? null : Number(event.target.value),
-                            }))}
-                            placeholder="7"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="space-y-2">
-                        <label className="block text-[10px] font-bold uppercase tracking-wider text-zinc-400">DELETE TIME</label>
-                        <input
-                          type="datetime-local"
-                          className="w-full rounded-xl border border-zinc-800 bg-[#0a0b10] px-3 py-2 text-xs text-zinc-300 outline-none focus:border-[#8be9fd]"
-                          value={config.delete_time || ''}
-                          onChange={(event) => updateEventConfig(index, (item) => ({ ...item, delete_time: event.target.value }))}
-                        />
-                      </div>
-
-                      {/* Dispatch Endpoint list targets */}
-                      <div className="space-y-2.5">
-                        {(config.target_urls || []).map((url, urlIndex) => (
-                          <div key={`${config.event_type}-${urlIndex}`} className="flex items-center gap-2">
-                            <input 
-                              className="w-full rounded-xl border border-zinc-800 bg-[#0a0b10] px-3 py-2 text-xs text-zinc-300 outline-none focus:border-[#8be9fd]" 
-                              value={url} 
-                              onChange={(event) => updateEventConfig(index, (item) => ({ 
-                                ...item, 
-                                target_urls: item.target_urls.map((currentUrl, currentIndex) => (currentIndex === urlIndex ? event.target.value : currentUrl)) 
-                              }))} 
-                              placeholder="https://server.domain/webhooks/listener" 
-                            />
-                            <button 
-                              type="button" 
-                              onClick={() => updateEventConfig(index, (item) => ({ 
-                                ...item, 
-                                target_urls: item.target_urls.filter((_, currentIndex) => currentIndex !== urlIndex) 
-                              }))} 
-                              className="rounded-xl border border-zinc-800 p-2 text-zinc-500 hover:text-[#ff5555] transition active:scale-95"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-
-                      <button 
-                        type="button" 
-                        onClick={() => updateEventConfig(index, (item) => ({ 
-                          ...item, 
-                          target_urls: [...(item.target_urls || []), 'https://example.com/webhook'] 
-                        }))} 
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-[#0a0b10] hover:bg-[#11121d] px-2.5 py-1.5 text-[10px] font-bold text-zinc-400 transition hover:text-white"
-                      >
-                        <Plus className="h-3 w-3 text-[#8be9fd]" />
-                        APPEND_TARGET_URL
-                      </button>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Save Submit action */}
-                <button 
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#50fa7b] hover:bg-[#68ff90] px-4 py-3.5 text-xs font-bold text-[#0a0b10] tracking-wider transition active:scale-98 shadow-lg shadow-[#50fa7b]/10" 
-                  disabled={saving} 
-                  type="submit"
-                >
-                  {saving ? 'COMMITTING_TRANSACTION...' : 'SAVE_PIPELINE_MAP'}
-                </button>
-              </form>
-            )}
-          </div>
-
-          {/* RIGHT COLUMN: Key Management Credentials Area */}
-          <div className="rounded-[28px] border border-zinc-200/70 bg-white/80 p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900/70 space-y-6">
-            <div className="flex items-center gap-3 border-b border-zinc-850 pb-4">
-              <div className="rounded-xl bg-amber-500/10 p-2 text-[#ffb86c] border border-amber-500/20 shadow-[0_0_8px_rgba(255,184,108,0.15)]">
-                <KeyRound className="h-5 w-5 animate-pulse" />
-              </div>
-              <div>
-                <h3 className="text-sm font-bold tracking-wider text-white uppercase">SECURITY_AND_TOKENS</h3>
-                <p className="text-[10px] text-zinc-400">Secure pipeline validation credentials.</p>
-              </div>
-            </div>
-
-            <button 
-              className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-zinc-800 bg-[#161722] hover:bg-[#1e2030] px-4 py-3.5 text-xs font-bold text-zinc-300 transition active:scale-95" 
-              onClick={handleGenerateKeys} 
-              disabled={generating} 
-              type="button"
-            >
-              <KeyRound className="h-4 w-4 text-[#ffb86c]" />
-              {generating ? 'HANDSHAKE_ROTATION...' : 'REFRESH_NODE_CREDENTIALS'}
-            </button>
-
-            {/* Generated Credentials Output Box */}
-            {generatedKeys && (
-              <div className="rounded-xl border border-[#50fa7b]/20 bg-[#50fa7b]/5 p-5 space-y-4 relative overflow-hidden">
-                <div className="absolute top-0 right-0 w-24 h-24 bg-[#50fa7b]/5 rounded-full blur-2xl pointer-events-none" />
-                
+            {generatedKeys ? (
+              <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-5 space-y-4">
                 <div className="flex items-center justify-between">
-                  <div className="text-xs font-bold text-[#50fa7b] uppercase tracking-wider flex items-center gap-1.5">
-                    <CheckCircle2 size={13} />
-                    TEMPORARY_DECRYPTED_BUFFER
-                  </div>
+                  <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
+                    <CheckCircle2 size={14} />
+                    Decrypted Keys Buffer Active
+                  </span>
                   {timeLeft > 0 && (
-                    <span className="text-[10px] bg-amber-500/10 border border-amber-500/20 text-amber-400 font-bold px-2 py-0.5 rounded flex items-center gap-1.5">
-                      <Clock size={10} className="animate-spin" />
-                      AUTO-FLUSH IN {timeLeft}S
+                    <span className="text-[11px] bg-amber-500/10 border border-amber-500/20 text-amber-400 font-semibold px-2.5 py-0.5 rounded-full flex items-center gap-1.5">
+                      <Clock size={12} className="animate-spin" />
+                      Auto-hide in {timeLeft}s
                     </span>
                   )}
                 </div>
 
-                <div className="space-y-3.5">
-                  {/* API KEY ROW */}
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {/* API Key */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-bold text-zinc-400 tracking-wider">NODE_API_KEY</span>
+                      <label className="text-xs font-semibold text-zinc-400">API Key (X-API-KEY)</label>
                       {copiedField === 'API Key' && (
-                        <span className="text-[10px] font-mono font-bold text-emerald-400">✓ Copied to clipboard</span>
+                        <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1">
+                          <Check size={12} /> Copied
+                        </span>
                       )}
                     </div>
-                    <div className="flex items-center justify-between gap-2 bg-[#0a0b10] border border-zinc-800 rounded-lg p-2.5 font-mono text-[11px] text-[#8be9fd]">
+                    <div className="flex items-center justify-between gap-2 rounded-xl border border-zinc-800 bg-[#080910] p-3 text-xs font-mono text-cyan-300">
                       <span className="truncate flex-1 select-all">{generatedKeys.api_key}</span>
-                      <button 
-                        type="button" 
-                        onClick={() => handleCopy(generatedKeys.api_key, 'API Key')} 
-                        className="inline-flex items-center gap-1 rounded-md border border-zinc-800 bg-[#161722] hover:bg-zinc-800 px-2 py-1 text-xs font-mono text-zinc-300 transition active:scale-90"
-                        title="Copy API Key"
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(generatedKeys.api_key, 'API Key')}
+                        className="rounded-lg border border-zinc-800 bg-[#141522] hover:bg-zinc-800 px-2.5 py-1 text-xs font-semibold text-zinc-300 transition active:scale-95"
                       >
-                        <Copy size={12} />
-                        <span>Copy</span>
+                        Copy
                       </button>
                     </div>
                   </div>
 
-                  {/* SECRET KEY ROW */}
+                  {/* Secret Key */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-bold text-zinc-400 tracking-wider">WEBHOOK_SHARED_SECRET</span>
+                      <label className="text-xs font-semibold text-zinc-400">Webhook Signing Secret</label>
                       {copiedField === 'Webhook Secret' && (
-                        <span className="text-[10px] font-mono font-bold text-emerald-400">✓ Copied to clipboard</span>
+                        <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1">
+                          <Check size={12} /> Copied
+                        </span>
                       )}
                     </div>
-                    <div className="flex items-center justify-between gap-2 bg-[#0a0b10] border border-zinc-800 rounded-lg p-2.5 font-mono text-[11px] text-[#ff79c6]">
+                    <div className="flex items-center justify-between gap-2 rounded-xl border border-zinc-800 bg-[#080910] p-3 text-xs font-mono text-pink-300">
                       <span className="truncate flex-1 select-all">
                         {revealSecret ? generatedKeys.secret_key : '••••••••••••••••••••••••••••••••'}
                       </span>
                       <div className="flex items-center gap-1.5">
-                        <button 
-                          type="button" 
-                          onClick={() => handleCopy(generatedKeys.secret_key, 'Webhook Secret')} 
-                          className="inline-flex items-center gap-1 rounded-md border border-zinc-800 bg-[#161722] hover:bg-zinc-800 px-2 py-1 text-xs font-mono text-zinc-300 transition active:scale-90"
-                          title="Copy Secret Key"
+                        <button
+                          type="button"
+                          onClick={() => handleCopy(generatedKeys.secret_key, 'Webhook Secret')}
+                          className="rounded-lg border border-zinc-800 bg-[#141522] hover:bg-zinc-800 px-2.5 py-1 text-xs font-semibold text-zinc-300 transition active:scale-95"
                         >
-                          <Copy size={12} />
-                          <span>Copy</span>
+                          Copy
                         </button>
-                        <button 
-                          type="button" 
-                          className="rounded-md border border-zinc-800 bg-[#161722] hover:bg-zinc-800 p-1.5 text-zinc-300 transition active:scale-90" 
+                        <button
+                          type="button"
                           onClick={() => setRevealSecret((prev) => !prev)}
-                          title={revealSecret ? "Hide Secret" : "Reveal Secret"}
+                          className="rounded-lg border border-zinc-800 bg-[#141522] hover:bg-zinc-800 p-1.5 text-zinc-300 transition active:scale-95"
                         >
-                          {revealSecret ? <EyeOff size={12} /> : <Eye size={12} />}
+                          {revealSecret ? <EyeOff size={14} /> : <Eye size={14} />}
                         </button>
                       </div>
                     </div>
                   </div>
                 </div>
               </div>
+            ) : (
+              <div className="rounded-2xl border border-zinc-800/80 bg-[#080910] p-4 text-xs text-zinc-400">
+                Click "Regenerate Credentials" to generate a new API key and HMAC secret key for this project.
+              </div>
             )}
+          </section>
+
+          {/* Section 3: Project Data Retention & Automated Log Cleanup Policy */}
+          <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 sm:p-8 shadow-xl space-y-6">
+            <div className="border-b border-zinc-800/80 pb-4">
+              <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                <Calendar className="h-5 w-5 text-emerald-400" />
+                Data Retention & Auto-Cleanup Policy
+              </h2>
+              <p className="mt-1 text-xs text-zinc-400">
+                Configure project-wide retention periods. Webhook events and execution logs older than this limit are automatically deleted.
+              </p>
+            </div>
+
+            <div className="grid gap-6 sm:grid-cols-2">
+              {/* Retention Period (Days) */}
+              <div className="space-y-3">
+                <label className="block text-xs font-semibold text-zinc-300">Retention Period (Days)</label>
+                
+                <div className="flex flex-wrap gap-2">
+                  {[7, 14, 30, 90, 180, 365].map((days) => (
+                    <button
+                      key={days}
+                      type="button"
+                      onClick={() => setForm((prev) => ({ ...prev, retentionDays: days }))}
+                      className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition border ${form.retentionDays === days ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-[#080910] border-zinc-800 text-zinc-400 hover:border-zinc-700'}`}
+                    >
+                      {days} Days
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number"
+                    min="1"
+                    max="3650"
+                    className="w-32 rounded-xl border border-zinc-800 bg-[#080910] px-3.5 py-2 text-xs font-mono text-white outline-none focus:border-emerald-400"
+                    value={form.retentionDays || ''}
+                    onChange={(e) => setForm((prev) => ({ ...prev, retentionDays: parseInt(e.target.value) || 30 }))}
+                  />
+                  <span className="text-xs text-zinc-400">days before auto-purge</span>
+                </div>
+              </div>
+
+              {/* Scheduled Daily Deletion Time */}
+              <div className="space-y-3">
+                <label className="block text-xs font-semibold text-zinc-300">Daily Scheduled Cleanup Time</label>
+                <select
+                  className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-4 py-2.5 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
+                  value={form.deleteTime || '02:00'}
+                  onChange={(e) => setForm((prev) => ({ ...prev, deleteTime: e.target.value }))}
+                >
+                  <option value="00:00">12:00 AM (Midnight)</option>
+                  <option value="02:00">02:00 AM (Recommended Off-Peak)</option>
+                  <option value="04:00">04:00 AM</option>
+                  <option value="06:00">06:00 AM</option>
+                  <option value="12:00">12:00 PM (Noon)</option>
+                  <option value="18:00">06:00 PM</option>
+                </select>
+                <p className="text-[11px] text-zinc-500">System background worker executes log purging automatically at this daily schedule.</p>
+              </div>
+
+              {/* Target Data Scope */}
+              <div className="sm:col-span-2 space-y-3 rounded-2xl border border-zinc-800/80 bg-[#080910] p-4">
+                <label className="block text-xs font-semibold text-zinc-300">Target Data Scope to Purge</label>
+                <div className="grid gap-3 sm:grid-cols-2 text-xs text-zinc-300">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.purgeEvents}
+                      onChange={(e) => setForm((prev) => ({ ...prev, purgeEvents: e.target.checked }))}
+                      className="rounded border-zinc-700 bg-zinc-900 text-emerald-500 focus:ring-0"
+                    />
+                    <span>Webhook Events & Ingress Payload History</span>
+                  </label>
+
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.purgeLogs}
+                      onChange={(e) => setForm((prev) => ({ ...prev, purgeLogs: e.target.checked }))}
+                      className="rounded border-zinc-700 bg-zinc-900 text-emerald-500 focus:ring-0"
+                    />
+                    <span>Delivery Forwarding & Execution Logs</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* Section 4: Event Routing & Payload Validation Rules */}
+          <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 sm:p-8 shadow-xl space-y-6">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-800/80 pb-4">
+              <div>
+                <h2 className="text-lg font-bold text-white">Event Routing & Payload Validation</h2>
+                <p className="mt-1 text-xs text-zinc-400">
+                  Configure target destination URLs and mandatory payload key & data type requirements for each event type.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() =>
+                  setForm((prev) => ({
+                    ...prev,
+                    eventConfigs: [
+                      ...prev.eventConfigs,
+                      {
+                        event_type: 'custom.event',
+                        target_urls: ['https://example.com/webhook'],
+                        payload_rules: [{ key: 'event.id', type: 'string' }],
+                        payload_keys: ['event.id'],
+                        payload_types: ['string'],
+                        is_active: true,
+                      },
+                    ],
+                  }))
+                }
+                className="inline-flex items-center gap-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 px-4 py-2 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/20 transition active:scale-95"
+              >
+                <Plus size={14} />
+                <span>Add Event Rule</span>
+              </button>
+            </div>
+
+            <div className="space-y-6">
+              {form.eventConfigs.map((config, index) => (
+                <div key={index} className="rounded-2xl border border-zinc-800 bg-[#080910] p-6 space-y-5">
+                  {/* Event Header */}
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-800/60 pb-4">
+                    <div className="flex items-center gap-3 flex-1">
+                      <div className="space-y-1 flex-1 max-w-sm">
+                        <label className="block text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Event Type Name</label>
+                        <input
+                          className="w-full rounded-xl border border-zinc-800 bg-[#0c0d15] px-3.5 py-2 text-xs font-mono text-emerald-400 outline-none focus:border-emerald-400"
+                          value={config.event_type}
+                          onChange={(e) =>
+                            updateEventConfig(index, (item) => ({ ...item, event_type: e.target.value }))
+                          }
+                          placeholder="e.g. order.created"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-zinc-400 font-medium">{config.is_active ? 'Active' : 'Disabled'}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleEvent(config.id, config.is_active, index)}
+                          className={`relative h-6 w-11 rounded-full p-0.5 transition ${config.is_active ? 'bg-emerald-500' : 'bg-zinc-700'}`}
+                        >
+                          <span className={`block h-5 w-5 rounded-full bg-white transition ${config.is_active ? 'translate-x-5' : 'translate-x-0'}`} />
+                        </button>
+                      </div>
+
+                      {form.eventConfigs.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setForm((prev) => ({
+                              ...prev,
+                              eventConfigs: prev.eventConfigs.filter((_, i) => i !== index),
+                            }))
+                          }
+                          className="rounded-xl border border-zinc-800 p-2 text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 transition"
+                          title="Remove Event Rule"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Destination Target URLs */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-semibold text-zinc-300">Destination Forwarding URLs</label>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateEventConfig(index, (item) => ({
+                            ...item,
+                            target_urls: [...item.target_urls, 'https://example.com/webhook'],
+                          }))
+                        }
+                        className="text-xs font-semibold text-cyan-400 hover:underline flex items-center gap-1"
+                      >
+                        <Plus size={12} /> Add Destination URL
+                      </button>
+                    </div>
+
+                    <div className="space-y-2">
+                      {config.target_urls.map((url, urlIdx) => (
+                        <div key={urlIdx} className="flex items-center gap-2">
+                          <input
+                            className="flex-1 rounded-xl border border-zinc-800 bg-[#0c0d15] px-3.5 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
+                            value={url}
+                            onChange={(e) =>
+                              updateEventConfig(index, (item) => ({
+                                ...item,
+                                target_urls: item.target_urls.map((u, i) => (i === urlIdx ? e.target.value : u)),
+                              }))
+                            }
+                            placeholder="https://your-api.com/webhook"
+                            required
+                          />
+                          {config.target_urls.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateEventConfig(index, (item) => ({
+                                  ...item,
+                                  target_urls: item.target_urls.filter((_, i) => i !== urlIdx),
+                                }))
+                              }
+                              className="rounded-xl border border-zinc-800 p-2 text-zinc-500 hover:text-rose-400"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Multiple Payload Keys & Required Data Types Builder */}
+                  <div className="space-y-3 pt-2">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="block text-xs font-semibold text-zinc-300">Payload Schema Validation Rules</label>
+                        <p className="text-[11px] text-zinc-500">Incoming payloads must contain these keys and match the expected data type.</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateEventConfig(index, (item) => {
+                            const newRules = [...(item.payload_rules || []), { key: '', type: 'string' }];
+                            return {
+                              ...item,
+                              payload_rules: newRules,
+                              payload_keys: newRules.map((r) => r.key),
+                              payload_types: newRules.map((r) => r.type),
+                            };
+                          })
+                        }
+                        className="text-xs font-semibold text-emerald-400 hover:underline flex items-center gap-1"
+                      >
+                        <Plus size={12} /> Add Payload Rule
+                      </button>
+                    </div>
+
+                    <div className="space-y-2">
+                      {(config.payload_rules || []).map((rule, ruleIdx) => (
+                        <div key={ruleIdx} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 rounded-xl border border-zinc-800/80 bg-[#0c0d15] p-2.5">
+                          <div className="flex-1">
+                            <input
+                              className="w-full rounded-lg border border-zinc-800 bg-[#080910] px-3 py-1.5 text-xs font-mono text-emerald-300 outline-none focus:border-emerald-400"
+                              value={rule.key}
+                              onChange={(e) =>
+                                updateEventConfig(index, (item) => {
+                                  const newRules = item.payload_rules.map((r, i) => (i === ruleIdx ? { ...r, key: e.target.value } : r));
+                                  return {
+                                    ...item,
+                                    payload_rules: newRules,
+                                    payload_keys: newRules.map((r) => r.key),
+                                    payload_types: newRules.map((r) => r.type),
+                                  };
+                                })
+                              }
+                              placeholder="Key path (e.g. amount, status, user.id)"
+                            />
+                          </div>
+
+                          <div className="w-full sm:w-40">
+                            <select
+                              className="w-full rounded-lg border border-zinc-800 bg-[#080910] px-3 py-1.5 text-xs font-mono text-zinc-300 outline-none focus:border-emerald-400"
+                              value={rule.type}
+                              onChange={(e) =>
+                                updateEventConfig(index, (item) => {
+                                  const newRules = item.payload_rules.map((r, i) => (i === ruleIdx ? { ...r, type: e.target.value } : r));
+                                  return {
+                                    ...item,
+                                    payload_rules: newRules,
+                                    payload_keys: newRules.map((r) => r.key),
+                                    payload_types: newRules.map((r) => r.type),
+                                  };
+                                })
+                              }
+                            >
+                              <option value="string">string</option>
+                              <option value="number">number</option>
+                              <option value="integer">integer</option>
+                              <option value="boolean">boolean</option>
+                              <option value="object">object</option>
+                              <option value="array">array</option>
+                              <option value="any">any</option>
+                            </select>
+                          </div>
+
+                          {config.payload_rules.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateEventConfig(index, (item) => {
+                                  const newRules = item.payload_rules.filter((_, i) => i !== ruleIdx);
+                                  return {
+                                    ...item,
+                                    payload_rules: newRules,
+                                    payload_keys: newRules.map((r) => r.key),
+                                    payload_types: newRules.map((r) => r.type),
+                                  };
+                                })
+                              }
+                              className="rounded-lg border border-zinc-800 p-1.5 text-zinc-500 hover:text-rose-400 self-end sm:self-auto"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* Sticky Bottom Save Action Bar */}
+          <div className="sticky bottom-6 z-40 rounded-2xl border border-zinc-800 bg-[#0c0d15]/90 p-4 backdrop-blur-md shadow-2xl flex items-center justify-between">
+            <div className="text-xs text-zinc-400">
+              Ensure all forwarding URLs and payload rules are correct before saving.
+            </div>
+
+            <button
+              type="submit"
+              disabled={saving}
+              className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 px-6 py-2.5 text-xs font-bold text-zinc-950 transition active:scale-95 disabled:opacity-50 shadow-md"
+            >
+              <Save size={16} />
+              <span>{saving ? 'Saving Changes...' : 'Save Project Settings'}</span>
+            </button>
           </div>
 
-        </section>
+        </form>
       </div>
 
       {/* TEST WEBHOOK DISPATCHER MODAL */}
       {showTestModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
           <div className="w-full max-w-2xl overflow-hidden rounded-3xl border border-zinc-800 bg-[#0c0d15] shadow-2xl">
-            {/* Header */}
+            {/* Modal Header */}
             <div className="flex items-center justify-between border-b border-zinc-800 p-5 bg-[#10121d]">
               <div className="flex items-center gap-2.5">
                 <span className="flex h-8 w-8 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
                   <Zap size={16} />
                 </span>
                 <div>
-                  <h3 className="text-sm font-mono font-bold text-white uppercase">Test Webhook Gateway Dispatcher</h3>
-                  <p className="text-[10px] font-mono text-zinc-400">Sends live signed test payload to POST /v1/gateway</p>
+                  <h3 className="text-sm font-bold text-white uppercase">Test Webhook Gateway Dispatcher</h3>
+                  <p className="text-[11px] text-zinc-400">Sends live signed test payload to POST /v1/gateway</p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setShowTestModal(false)}
-                className="rounded-xl border border-zinc-800 p-2 text-xs font-mono text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                className="rounded-xl border border-zinc-800 p-2 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-white"
               >
                 ✕
               </button>
             </div>
 
-            {/* Body */}
+            {/* Modal Body */}
             <div className="space-y-4 p-5 max-h-[75vh] overflow-y-auto">
               
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <label className="block text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 mb-1">
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1">
                     Event Type
                   </label>
                   <select
-                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
+                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3.5 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
                     value={testEventType}
                     onChange={(e) => setTestEventType(e.target.value)}
                   >
@@ -976,11 +956,11 @@ export default function ProjectDetailPage() {
                 </div>
 
                 <div>
-                  <label className="block text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 mb-1">
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1">
                     Target Project Node
                   </label>
                   <input
-                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3 py-2 text-xs font-mono text-zinc-400"
+                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3.5 py-2 text-xs font-mono text-zinc-400"
                     disabled
                     value={project?.name || ''}
                   />
@@ -989,11 +969,11 @@ export default function ProjectDetailPage() {
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <label className="block text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 mb-1">
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1">
                     API Key (X-API-KEY)
                   </label>
                   <input
-                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3 py-2 text-xs font-mono text-zinc-300 outline-none focus:border-emerald-400"
+                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3.5 py-2 text-xs font-mono text-cyan-300 outline-none focus:border-emerald-400"
                     value={testApiKey}
                     onChange={(e) => setTestApiKey(e.target.value)}
                     placeholder="gw_live:..."
@@ -1001,12 +981,12 @@ export default function ProjectDetailPage() {
                 </div>
 
                 <div>
-                  <label className="block text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 mb-1">
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1">
                     Webhook Secret (HMAC-SHA256)
                   </label>
                   <input
                     type="password"
-                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3 py-2 text-xs font-mono text-zinc-300 outline-none focus:border-emerald-400"
+                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3.5 py-2 text-xs font-mono text-pink-300 outline-none focus:border-emerald-400"
                     value={testSecretKey}
                     onChange={(e) => setTestSecretKey(e.target.value)}
                     placeholder="Secret Key..."
@@ -1015,7 +995,7 @@ export default function ProjectDetailPage() {
               </div>
 
               <div>
-                <label className="block text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 mb-1">
+                <label className="block text-xs font-semibold text-zinc-400 mb-1">
                   Test Webhook Payload JSON
                 </label>
                 <textarea
@@ -1030,7 +1010,7 @@ export default function ProjectDetailPage() {
                 <button
                   type="button"
                   onClick={() => setShowTestModal(false)}
-                  className="rounded-xl border border-zinc-800 px-4 py-2 text-xs font-mono font-bold text-zinc-400 hover:bg-zinc-800"
+                  className="rounded-xl border border-zinc-800 px-4 py-2 text-xs font-semibold text-zinc-400 hover:bg-zinc-800"
                 >
                   Cancel
                 </button>
@@ -1038,10 +1018,10 @@ export default function ProjectDetailPage() {
                   type="button"
                   disabled={testLoading}
                   onClick={handleDispatchTestWebhook}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 text-xs font-mono font-bold text-zinc-950 hover:bg-emerald-400 disabled:opacity-50 transition active:scale-95 shadow-md"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-zinc-950 hover:bg-emerald-400 disabled:opacity-50 transition active:scale-95 shadow-md"
                 >
                   <Zap size={14} />
-                  <span>{testLoading ? 'DISPATCHING...' : 'DISPATCH TEST WEBHOOK'}</span>
+                  <span>{testLoading ? 'Dispatching...' : 'Dispatch Test Webhook'}</span>
                 </button>
               </div>
 
