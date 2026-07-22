@@ -9,7 +9,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 from sqlalchemy import select
 from backend.app.services.redis_client import get_redis, get_redis_client
-from backend.app.utils.security import WebhookSecurity, build_log_payload, sanitize_for_logging
+from backend.app.utils.security import WebhookSecurity, build_log_payload, sanitize_for_logging, validate_payload_keys
 from backend.app.services.celery_worker import dispatch_webhook_task
 from backend.app.services.failover import (
     offline_message_buffer,
@@ -222,6 +222,15 @@ async def incoming_webhook_receiver(request: Request, redis_conn = Depends(get_r
             elif cached_event.get("target_url"):
                 target_urls = [cached_event["target_url"]]
             log_payload["forwarding_target_url"] = target_urls[0] if target_urls else cached_event.get("target_url")
+
+            # Validate incoming payload keys & expected data types if configured
+            req_keys = cached_event.get("payload_keys") or metadata_urls.get("payload_keys")
+            req_types = cached_event.get("payload_types") or metadata_urls.get("payload_types")
+            if req_keys and not validate_payload_keys(payload_json, req_keys, req_types):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Payload validation failed: Missing required keys or data type mismatch for event '{incoming_event_type}'."
+                )
 
         await _queue_gateway_log(log_payload, redis_conn=redis_conn)
 
