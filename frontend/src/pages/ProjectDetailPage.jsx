@@ -60,8 +60,10 @@ const blankForm = (project) => ({
       })
     : [{ event_type: 'webhook.received', target_urls: ['https://example.com/webhook'], payload_rules: [{ key: 'event.id', type: 'string' }, { key: 'amount', type: 'number' }, { key: 'status', type: 'string' }], payload_keys: ['event.id', 'amount', 'status'], payload_types: ['string', 'number', 'string'] }],
   isActive: project?.is_active ?? true,
+  retentionMode: project?.retention_mode || 'rolling_days',
   retentionDays: project?.retention_days ?? 30,
-  deleteTime: project?.delete_time ?? '02:00',
+  deleteDate: project?.delete_date || '',
+  deleteTime: project?.delete_time || '02:00',
   purgeEvents: true,
   purgeLogs: true,
 });
@@ -169,7 +171,9 @@ export default function ProjectDetailPage() {
         description: form.description,
         eventConfigs: form.eventConfigs,
         isActive: form.isActive,
+        retentionMode: form.retentionMode,
         retentionDays: form.retentionDays,
+        deleteDate: form.deleteDate,
         deleteTime: form.deleteTime,
       });
 
@@ -539,94 +543,149 @@ export default function ProjectDetailPage() {
 
           {/* Section 2: Compact Data Retention & Automated Log Cleanup Policy */}
           <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-6 sm:p-8 shadow-xl space-y-6">
-            <div className="border-b border-zinc-800/80 pb-4">
-              <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                <Calendar className="h-5 w-5 text-emerald-400" />
-                Data Retention & Auto-Cleanup Policy
-              </h2>
-              <p className="mt-1 text-xs text-zinc-400">
-                Configure project-wide retention. Old webhook event payloads and execution logs are automatically purged on schedule.
-              </p>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-800/80 pb-4">
+              <div>
+                <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                  <Calendar className="h-5 w-5 text-emerald-400" />
+                  Data Retention & Auto-Cleanup Policy
+                </h2>
+                <p className="mt-1 text-xs text-zinc-400">
+                  Configure project-wide retention mode. Old webhook event payloads and execution logs are automatically purged on schedule.
+                </p>
+              </div>
+
+              {/* Retention Mode Tabs */}
+              <div className="flex items-center gap-1 rounded-xl bg-[#080910] p-1 border border-zinc-800 text-xs shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setForm((prev) => ({ ...prev, retentionMode: 'rolling_days' }))}
+                  className={`rounded-lg px-3 py-1.5 font-semibold transition ${form.retentionMode === 'rolling_days' ? 'bg-emerald-500 text-zinc-950 shadow-sm' : 'text-zinc-400 hover:text-white'}`}
+                >
+                  Auto Rolling Days
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setForm((prev) => ({ ...prev, retentionMode: 'specific_date' }))}
+                  className={`rounded-lg px-3 py-1.5 font-semibold transition ${form.retentionMode === 'specific_date' ? 'bg-emerald-500 text-zinc-950 shadow-sm' : 'text-zinc-400 hover:text-white'}`}
+                >
+                  Specific Target Date & Hour
+                </button>
+              </div>
             </div>
 
-            <div className="grid gap-6 sm:grid-cols-2">
-              {/* Retention Period (Days) */}
-              <div className="space-y-3">
-                <label className="block text-xs font-semibold text-zinc-300">Retention Period</label>
-                
-                <div className="flex flex-wrap items-center gap-2">
-                  {[7, 14, 30, 90, 365].map((days) => (
-                    <button
-                      key={days}
-                      type="button"
-                      onClick={() => setForm((prev) => ({ ...prev, retentionDays: days }))}
-                      className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition border ${form.retentionDays === days ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-[#080910] border-zinc-800 text-zinc-400 hover:border-zinc-700'}`}
-                    >
-                      {days} Days
-                    </button>
-                  ))}
-                  <div className="flex items-center gap-1.5 ml-2">
-                    <input
-                      type="number"
-                      min="1"
-                      max="3650"
-                      className="w-20 rounded-xl border border-zinc-800 bg-[#080910] px-2.5 py-1.5 text-xs font-mono text-white outline-none focus:border-emerald-400"
-                      value={form.retentionDays || ''}
-                      onChange={(e) => setForm((prev) => ({ ...prev, retentionDays: parseInt(e.target.value) || 30 }))}
-                    />
-                    <span className="text-xs text-zinc-400">days</span>
+            {form.retentionMode === 'rolling_days' ? (
+              <div className="grid gap-6 sm:grid-cols-2">
+                {/* Retention Period (Days) */}
+                <div className="space-y-3">
+                  <label className="block text-xs font-semibold text-zinc-300">Rolling Expiration Period</label>
+                  
+                  <div className="flex flex-wrap items-center gap-2">
+                    {[3, 7, 14, 30, 90, 365].map((days) => (
+                      <button
+                        key={days}
+                        type="button"
+                        onClick={() => setForm((prev) => ({ ...prev, retentionDays: days }))}
+                        className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition border ${form.retentionDays === days ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-[#080910] border-zinc-800 text-zinc-400 hover:border-zinc-700'}`}
+                      >
+                        {days} Days
+                      </button>
+                    ))}
+                    <div className="flex items-center gap-1.5 ml-1">
+                      <input
+                        type="number"
+                        min="1"
+                        max="3650"
+                        className="w-20 rounded-xl border border-zinc-800 bg-[#080910] px-2.5 py-1.5 text-xs font-mono text-white outline-none focus:border-emerald-400"
+                        value={form.retentionDays || ''}
+                        onChange={(e) => setForm((prev) => ({ ...prev, retentionDays: parseInt(e.target.value) || 30 }))}
+                      />
+                      <span className="text-xs text-zinc-400">days</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Scheduled Daily Deletion Time */}
+                <div className="space-y-3">
+                  <label className="block text-xs font-semibold text-zinc-300">Scheduled Daily Cleanup Time</label>
+                  
+                  <div className="flex flex-wrap items-center gap-2">
+                    {[
+                      { label: '12 AM', value: '00:00' },
+                      { label: '2 AM (Off-peak)', value: '02:00' },
+                      { label: '4 AM', value: '04:00' },
+                      { label: '6 AM', value: '06:00' },
+                      { label: '12 PM', value: '12:00' },
+                    ].map((timeOption) => (
+                      <button
+                        key={timeOption.value}
+                        type="button"
+                        onClick={() => setForm((prev) => ({ ...prev, deleteTime: timeOption.value }))}
+                        className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition border ${form.deleteTime === timeOption.value ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-[#080910] border-zinc-800 text-zinc-400 hover:border-zinc-700'}`}
+                      >
+                        {timeOption.label}
+                      </button>
+                    ))}
                   </div>
                 </div>
               </div>
+            ) : (
+              <div className="grid gap-6 sm:grid-cols-2">
+                {/* Specific Target Date */}
+                <div className="space-y-2">
+                  <label className="block text-xs font-semibold text-zinc-300">Specific Target Expiration Date</label>
+                  <input
+                    type="date"
+                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-4 py-2.5 text-xs font-mono text-white outline-none focus:border-emerald-400"
+                    value={form.deleteDate || ''}
+                    onChange={(e) => setForm((prev) => ({ ...prev, deleteDate: e.target.value }))}
+                  />
+                  <p className="text-[11px] text-zinc-500">Log entries created before this date will be purged automatically at the target hour.</p>
+                </div>
 
-              {/* Scheduled Daily Deletion Time */}
-              <div className="space-y-3">
-                <label className="block text-xs font-semibold text-zinc-300">Scheduled Daily Cleanup Time</label>
-                
-                <div className="flex flex-wrap items-center gap-2">
-                  {[
-                    { label: '12 AM', value: '00:00' },
-                    { label: '2 AM (Off-peak)', value: '02:00' },
-                    { label: '4 AM', value: '04:00' },
-                    { label: '6 AM', value: '06:00' },
-                    { label: '12 PM', value: '12:00' },
-                  ].map((timeOption) => (
-                    <button
-                      key={timeOption.value}
-                      type="button"
-                      onClick={() => setForm((prev) => ({ ...prev, deleteTime: timeOption.value }))}
-                      className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition border ${form.deleteTime === timeOption.value ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-[#080910] border-zinc-800 text-zinc-400 hover:border-zinc-700'}`}
-                    >
-                      {timeOption.label}
-                    </button>
-                  ))}
+                {/* Specific Purge Hour */}
+                <div className="space-y-2">
+                  <label className="block text-xs font-semibold text-zinc-300">Exact Purge Hour</label>
+                  <select
+                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-4 py-2.5 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
+                    value={form.deleteTime || '02:00'}
+                    onChange={(e) => setForm((prev) => ({ ...prev, deleteTime: e.target.value }))}
+                  >
+                    <option value="00:00">12:00 AM (Midnight)</option>
+                    <option value="02:00">02:00 AM (Off-peak)</option>
+                    <option value="04:00">04:00 AM</option>
+                    <option value="06:00">06:00 AM</option>
+                    <option value="12:00">12:00 PM (Noon)</option>
+                    <option value="18:00">06:00 PM</option>
+                    <option value="21:00">09:00 PM</option>
+                  </select>
+                  <p className="text-[11px] text-zinc-500">Purge runs at this specific hour on the target date.</p>
                 </div>
               </div>
+            )}
 
-              {/* Purge Scope Checkboxes */}
-              <div className="sm:col-span-2 rounded-2xl border border-zinc-800/80 bg-[#080910] p-4 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-zinc-300">
-                <span className="font-semibold text-zinc-400">Purge Data Targets:</span>
-                <div className="flex flex-wrap items-center gap-4">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={form.purgeEvents}
-                      onChange={(e) => setForm((prev) => ({ ...prev, purgeEvents: e.target.checked }))}
-                      className="rounded border-zinc-700 bg-zinc-900 text-emerald-500 focus:ring-0"
-                    />
-                    <span>Webhook Ingress Payloads</span>
-                  </label>
+            {/* Target Data Scope Checkboxes */}
+            <div className="rounded-2xl border border-zinc-800/80 bg-[#080910] p-4 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-zinc-300">
+              <span className="font-semibold text-zinc-400">Purge Target Scope:</span>
+              <div className="flex flex-wrap items-center gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.purgeEvents}
+                    onChange={(e) => setForm((prev) => ({ ...prev, purgeEvents: e.target.checked }))}
+                    className="rounded border-zinc-700 bg-zinc-900 text-emerald-500 focus:ring-0"
+                  />
+                  <span>Webhook Ingress Payloads</span>
+                </label>
 
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={form.purgeLogs}
-                      onChange={(e) => setForm((prev) => ({ ...prev, purgeLogs: e.target.checked }))}
-                      className="rounded border-zinc-700 bg-zinc-900 text-emerald-500 focus:ring-0"
-                    />
-                    <span>Execution & Forwarding Logs</span>
-                  </label>
-                </div>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.purgeLogs}
+                    onChange={(e) => setForm((prev) => ({ ...prev, purgeLogs: e.target.checked }))}
+                    className="rounded border-zinc-700 bg-zinc-900 text-emerald-500 focus:ring-0"
+                  />
+                  <span>Execution & Forwarding Logs</span>
+                </label>
               </div>
             </div>
           </section>

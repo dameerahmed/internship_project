@@ -54,16 +54,26 @@ export const buildProjectEventConfigs = (eventConfigs = []) => {
     });
 };
 
-export const createProjectPayload = ({ name, description = '', eventConfigs = [], isActive = true, retentionDays = 30, deleteTime = '' }) => {
+export const createProjectPayload = ({ 
+  name, 
+  description = '', 
+  eventConfigs = [], 
+  isActive = true, 
+  retentionMode = 'rolling_days', 
+  retentionDays = 30, 
+  deleteDate = '', 
+  deleteTime = '02:00' 
+}) => {
   const normalizedRetention = Number.isFinite(Number(retentionDays)) ? Number(retentionDays) : 30;
-  const normalizedDeleteTime = typeof deleteTime === 'string' ? deleteTime.trim() : '';
 
   return {
     name: name?.trim() || '',
     description: description?.trim() || '',
     is_active: isActive,
+    retention_mode: retentionMode || 'rolling_days',
     retention_days: normalizedRetention,
-    delete_time: normalizedDeleteTime || null,
+    delete_date: typeof deleteDate === 'string' ? deleteDate.trim() : null,
+    delete_time: typeof deleteTime === 'string' ? deleteTime.trim() : '02:00',
     event_configs: buildProjectEventConfigs(eventConfigs),
   };
 };

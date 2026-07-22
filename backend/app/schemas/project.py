@@ -14,6 +14,10 @@ def _normalize_project_payload(values):
 
     if "retentionDays" in values and "retention_days" not in values:
         values["retention_days"] = values.pop("retentionDays")
+    if "retentionMode" in values and "retention_mode" not in values:
+        values["retention_mode"] = values.pop("retentionMode")
+    if "deleteDate" in values and "delete_date" not in values:
+        values["delete_date"] = values.pop("deleteDate")
     if "deleteTime" in values and "delete_time" not in values:
         values["delete_time"] = values.pop("deleteTime")
 
@@ -73,8 +77,10 @@ class ProjectBase(BaseModel):
     name: str = Field(..., max_length=255)
     description: Optional[str] = None
     is_active: bool = True
-    retention_days: int = 30
-    delete_time: Optional[str] = None
+    retention_mode: Optional[str] = "rolling_days"
+    retention_days: Optional[int] = 30
+    delete_date: Optional[str] = None
+    delete_time: Optional[str] = "02:00"
 
 class ProjectCreate(ProjectBase):
     event_configs: List[EventConfigBase]
@@ -95,7 +101,9 @@ class ProjectUpdate(BaseModel):
     description: Optional[str] = None
     is_active: Optional[bool] = None
     event_configs: Optional[List[EventConfigBase]] = None
+    retention_mode: Optional[str] = None
     retention_days: Optional[int] = None
+    delete_date: Optional[str] = None
     delete_time: Optional[str] = None
 
     @root_validator(pre=True, skip_on_failure=True)

@@ -412,21 +412,55 @@ def cleanup_old_webhook_logs(self: Task):
 
 async def _cleanup_old_logs():
     async for db_session in get_db():
-        # Fetch all projects with their retention days
-        proj_res = await db_session.execute(select(Project.id, Project.retention_days))
+        # Fetch projects with retention configuration
+        proj_res = await db_session.execute(
+            select(
+                Project.id, 
+                Project.retention_days, 
+                getattr(Project, "retention_mode", None), 
+                getattr(Project, "delete_date", None), 
+                getattr(Project, "delete_time", None)
+            )
+        )
         projects = proj_res.fetchall()
         now = datetime.utcnow()
         for proj in projects:
             project_id = proj[0]
-            retention = proj[1] or 0
-            if retention <= 0:
-                continue
-            cutoff = now - timedelta(days=retention)
+            retention_days = proj[1] or 30
+            retention_mode = proj[2] or "rolling_days"
+            delete_date_val = proj[3]
+            delete_time_val = proj[4] or "02:00"
+
+            if retention_mode == "specific_date" and delete_date_val:
+                try:
+                    time_parts = str(delete_time_val).split(":")
+                    hour = int(time_parts[0]) if len(time_parts) > 0 else 2
+                    minute = int(time_parts[1]) if len(time_parts) > 1 else 0
+
+                    if isinstance(delete_date_val, str):
+                        target_dt = datetime.strptime(delete_date_val, "%Y-%m-%d").replace(hour=hour, minute=minute)
+                    else:
+                        target_dt = delete_date_val.replace(hour=hour, minute=minute)
+
+                    if now < target_dt:
+                        continue  # Target purge time has not arrived yet
+                    cutoff = target_dt
+                except Exception:
+                    cutoff = now - timedelta(days=retention_days)
+            else:
+                cutoff = now - timedelta(days=retention_days)
+
             ec_res = await db_session.execute(select(EventConfig.id).where(EventConfig.project_id == project_id))
             ec_ids = [row[0] for row in ec_res.fetchall()]
-            if not ec_ids:
-                continue
-            del_stmt = delete(WebhookLog).where(WebhookLog.event_config_id.in_(ec_ids), WebhookLog.created_at < cutoff)
-            await db_session.execute(del_stmt)
+            
+            # Delete expired Webhook Logs
+            if ec_ids:
+                del_logs_stmt = delete(WebhookLog).where(WebhookLog.event_config_id.in_(ec_ids), WebhookLog.created_at < cutoff)
+                await db_session.execute(del_logs_stmt)
+
+            # Delete expired Webhook Ingress Events
+            del_events_stmt = delete(WebhookEvent).where(WebhookEvent.project_id == project_id, WebhookEvent.created_at < cutoff)
+            await db_session.execute(del_events_stmt)
+
             await db_session.commit()
         break
