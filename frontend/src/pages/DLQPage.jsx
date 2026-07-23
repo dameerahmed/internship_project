@@ -106,56 +106,75 @@ export default function DLQPage() {
     };
   }, [user?.company_id]);
 
-  // Replay (Push real message back into main RabbitMQ queue & purge from DLQ)
-  const handleReplay = async (targetIds) => {
+  // Replay: push message(s) from DLQ back into main RabbitMQ queue
+  // Sends 'all' when retrying all items — backend drains ALL DLQ messages and requeues them.
+  // For single item, sends the raw_id (AMQP message_id) so backend can match by header.
+  const handleReplay = async (targetIds, isAll = false) => {
     if (!targetIds || targetIds.length === 0) return;
     setActionLoading(true);
 
-    // Optimistic UI removal for zero latency
+    // Optimistic UI — remove immediately for zero-lag feel
     const targetSet = new Set(targetIds.map(String));
-    setItems((prev) => prev.filter((i) => !targetSet.has(String(i.id)) && !targetSet.has(String(i.raw_id))));
-    if (activeItem && (targetSet.has(String(activeItem.id)) || targetSet.has(String(activeItem.raw_id)))) {
+    if (isAll) {
+      setItems([]);
       setActiveItem(null);
+    } else {
+      setItems((prev) => prev.filter((i) => !targetSet.has(String(i.id)) && !targetSet.has(String(i.raw_id))));
+      if (activeItem && (targetSet.has(String(activeItem.id)) || targetSet.has(String(activeItem.raw_id)))) {
+        setActiveItem(null);
+      }
     }
 
     try {
-      const { data } = await apiClient.post('/v1/dlq/replay', { log_ids: targetIds });
+      // Send 'all' to backend for bulk retry so it drains the whole queue
+      const payload = isAll ? { log_ids: ['all'] } : { log_ids: targetIds };
+      const { data } = await apiClient.post('/v1/dlq/replay', payload);
       const count = data.replayed_count || targetIds.length;
       setActionMessage({
         type: 'success',
-        text: `✓ Successfully pushed ${count} message(s) back into RabbitMQ main queue (webhook_delivery_queue)!`
+        text: `✓ Pushed ${count} message(s) back into RabbitMQ webhook_delivery_queue for reprocessing!`
       });
       setSelectedIds([]);
       await loadDlqItems(true);
     } catch {
-      setActionMessage({ type: 'error', text: 'Failed to re-queue message back to RabbitMQ.' });
+      setActionMessage({ type: 'error', text: 'Failed to re-queue messages back to RabbitMQ.' });
       await loadDlqItems(true);
     } finally {
       setActionLoading(false);
-      setTimeout(() => setActionMessage(null), 4500);
+      setTimeout(() => setActionMessage(null), 5000);
     }
   };
 
-  // Discard failed items permanently from RabbitMQ DLQ
-  const handleDiscard = async (targetIds) => {
+  // Discard: permanently ack (delete) message(s) from RabbitMQ DLQ
+  const handleDiscard = async (targetIds, isAll = false) => {
     if (!targetIds || targetIds.length === 0) return;
-    if (!window.confirm(`Discard ${targetIds.length} message(s) permanently from RabbitMQ DLQ?`)) return;
+    const confirmMsg = isAll
+      ? `Permanently delete ALL ${items.length} messages from RabbitMQ DLQ? This cannot be undone.`
+      : `Permanently delete ${targetIds.length} message(s) from RabbitMQ DLQ? This cannot be undone.`;
+    if (!window.confirm(confirmMsg)) return;
 
     setActionLoading(true);
-    const targetSet = new Set(targetIds.map(String));
-    setItems((prev) => prev.filter((i) => !targetSet.has(String(i.id)) && !targetSet.has(String(i.raw_id))));
+    if (isAll) {
+      setItems([]);
+      setActiveItem(null);
+    } else {
+      const targetSet = new Set(targetIds.map(String));
+      setItems((prev) => prev.filter((i) => !targetSet.has(String(i.id)) && !targetSet.has(String(i.raw_id))));
+      if (activeItem && targetSet.has(String(activeItem.id))) setActiveItem(null);
+    }
 
     try {
-      await apiClient.post('/v1/dlq/discard', { log_ids: targetIds });
-      setActionMessage({ type: 'success', text: `✓ Discarded ${targetIds.length} message(s) from RabbitMQ DLQ.` });
+      const payload = isAll ? { log_ids: ['all'] } : { log_ids: targetIds };
+      await apiClient.post('/v1/dlq/discard', payload);
+      setActionMessage({ type: 'success', text: isAll ? `✓ All messages permanently deleted from RabbitMQ DLQ.` : `✓ ${targetIds.length} message(s) permanently deleted from DLQ.` });
       setSelectedIds([]);
       await loadDlqItems(true);
     } catch {
-      setActionMessage({ type: 'error', text: 'Failed to discard items from DLQ.' });
+      setActionMessage({ type: 'error', text: 'Failed to delete messages from DLQ.' });
       await loadDlqItems(true);
     } finally {
       setActionLoading(false);
-      setTimeout(() => setActionMessage(null), 4500);
+      setTimeout(() => setActionMessage(null), 5000);
     }
   };
 
@@ -222,14 +241,24 @@ export default function DLQPage() {
               </button>
 
               {items.length > 0 && (
-                <button
-                  onClick={() => handleReplay(items.map((i) => i.id))}
-                  disabled={actionLoading}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 px-4 py-2 text-xs font-mono font-bold text-zinc-950 transition active:scale-95 shadow-md disabled:opacity-50"
-                >
-                  <Zap className="h-4 w-4" />
-                  RETRY ALL ({items.length})
-                </button>
+                <>
+                  <button
+                    onClick={() => handleReplay(items.map((i) => i.id), true)}
+                    disabled={actionLoading}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 px-4 py-2 text-xs font-mono font-bold text-zinc-950 transition active:scale-95 shadow-md disabled:opacity-50"
+                  >
+                    <Zap className="h-4 w-4" />
+                    RETRY ALL ({items.length})
+                  </button>
+                  <button
+                    onClick={() => handleDiscard(items.map((i) => i.id), true)}
+                    disabled={actionLoading}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/15 hover:bg-rose-500/25 px-4 py-2 text-xs font-mono font-bold text-rose-300 transition active:scale-95 shadow-md disabled:opacity-50"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    DELETE ALL
+                  </button>
+                </>
               )}
             </div>
           </div>
@@ -378,19 +407,33 @@ export default function DLQPage() {
                           </div>
                         </div>
 
-                        {/* RE-QUEUE BUTTON WITH ACTIVE SPINNER STATE */}
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleReplay([item.id]);
-                          }}
-                          disabled={actionLoading}
-                          className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 px-3 py-1.5 text-xs font-mono font-bold text-zinc-950 transition shrink-0 active:scale-95 disabled:opacity-50"
-                          title="Push message back into main RabbitMQ worker queue"
-                        >
-                          <RefreshCw className={`h-3 w-3 ${actionLoading ? 'animate-spin' : ''}`} />
-                          <span>RETRY</span>
-                        </button>
+                        {/* PER-CARD ACTION BUTTONS */}
+                        <div className="flex flex-col gap-1.5 shrink-0">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleReplay([item.id], false);
+                            }}
+                            disabled={actionLoading}
+                            className="inline-flex items-center gap-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 px-2.5 py-1.5 text-[11px] font-mono font-bold text-zinc-950 transition active:scale-95 disabled:opacity-50"
+                            title="Push back into main RabbitMQ queue for reprocessing"
+                          >
+                            <RefreshCw className={`h-3 w-3 ${actionLoading ? 'animate-spin' : ''}`} />
+                            RETRY
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDiscard([item.id], false);
+                            }}
+                            disabled={actionLoading}
+                            className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/15 hover:bg-rose-500/25 px-2.5 py-1.5 text-[11px] font-mono font-bold text-rose-300 transition active:scale-95 disabled:opacity-50"
+                            title="Permanently delete from RabbitMQ DLQ"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                            DELETE
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
@@ -475,16 +518,26 @@ export default function DLQPage() {
                 </div>
 
                 {/* Bottom Action Footer */}
-                <div className="mt-3 pt-3 border-t border-zinc-800 flex items-center justify-between">
-                  <span className="font-mono text-[11px] text-zinc-400 truncate max-w-[200px]">ID: {activeItem.id}</span>
-                  <button
-                    onClick={() => handleReplay([activeItem.id])}
-                    disabled={actionLoading}
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 font-mono text-xs font-bold text-zinc-950 hover:bg-emerald-400 transition active:scale-95"
-                  >
-                    <RefreshCw className={`h-4 w-4 ${actionLoading ? 'animate-spin' : ''}`} />
-                    <span>PUSH TO MAIN QUEUE</span>
-                  </button>
+                <div className="mt-3 pt-3 border-t border-zinc-800 flex items-center justify-between gap-2">
+                  <span className="font-mono text-[11px] text-zinc-400 truncate max-w-[160px]">ID: {activeItem.id}</span>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleDiscard([activeItem.id], false)}
+                      disabled={actionLoading}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/15 px-3 py-2 font-mono text-xs font-bold text-rose-300 hover:bg-rose-500/25 transition active:scale-95"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      DELETE
+                    </button>
+                    <button
+                      onClick={() => handleReplay([activeItem.id], false)}
+                      disabled={actionLoading}
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 font-mono text-xs font-bold text-zinc-950 hover:bg-emerald-400 transition active:scale-95"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${actionLoading ? 'animate-spin' : ''}`} />
+                      PUSH TO MAIN QUEUE
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
