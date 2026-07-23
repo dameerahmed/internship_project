@@ -70,6 +70,11 @@ def _resolve_target_url(target_url: Optional[str], event_config, project_id: int
     if not url.startswith("http://") and not url.startswith("https://"):
         # If running in Docker, map relative URLs to the FastAPI container
         url = f"http://backend:8000{url}" if url.startswith("/") else f"http://backend:8000/{url}"
+    
+    # If the user passed localhost/127.0.0.1 from the frontend, it will fail inside the docker network.
+    # We must explicitly map it to the 'backend' container.
+    url = url.replace("http://localhost:8000", "http://backend:8000")
+    url = url.replace("http://127.0.0.1:8000", "http://backend:8000")
     return url
 
 
