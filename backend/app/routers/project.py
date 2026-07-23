@@ -237,6 +237,17 @@ async def refresh_project_keys(
     await db.commit()
     await db.refresh(db_project)
 
+    try:
+        from backend.app.services.project_service import refresh_project_cache
+        from backend.app.services.redis_client import get_redis_client
+        redis_conn = await get_redis_client()
+        try:
+            await refresh_project_cache(project_id, db, redis_conn)
+        finally:
+            await redis_conn.close()
+    except Exception as redis_err:
+        logger.warning("Redis cache synchronization skipped during key refresh: %s", redis_err)
+
     return {
         "api_key": client_api_key,
         "secret_key": db_project.secret_key,
