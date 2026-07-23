@@ -278,7 +278,7 @@ async def websocket_dlq_stream(websocket: WebSocket, company_id: Optional[str] =
                     last_hash = current_hash
                 except Exception as inner_exc:
                     err_str = str(inner_exc)
-                    if "Cannot call 'send' once a close message has been sent" in err_str or "ConnectionClosed" in err_str or "RuntimeError" in err_str:
+                    if "Cannot call \"send\" once a close message has been sent" in err_str or "ConnectionClosed" in err_str or "RuntimeError" in err_str:
                         logger.debug("DLQ WS client disconnected cleanly.")
                         break
                     logger.warning("DLQ WS inner loop error: %s", inner_exc)
@@ -434,7 +434,7 @@ async def websocket_dashboard_stream(websocket: WebSocket, company_id: str):
 
             except Exception as inner_exc:
                 err_str = str(inner_exc)
-                if "Cannot call 'send' once a close message has been sent" in err_str or "ConnectionClosed" in err_str or "RuntimeError" in err_str:
+                if "Cannot call \"send\" once a close message has been sent" in err_str or "ConnectionClosed" in err_str or "RuntimeError" in err_str:
                     logger.debug("Dashboard WS client disconnected cleanly.")
                     break
                 logger.warning("Dashboard WS inner loop error: %s", inner_exc)

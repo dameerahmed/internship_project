@@ -240,8 +240,18 @@ class RabbitMQManager:
                     timestamp_val = headers.get("timestamp") or time.time()
                     if isinstance(timestamp_val, (int, float)):
                         created_at = datetime.fromtimestamp(timestamp_val, tz=timezone.utc).isoformat()
+                    elif isinstance(timestamp_val, datetime):
+                        created_at = timestamp_val.isoformat()
                     else:
                         created_at = str(timestamp_val)
+
+                    # Ensure headers are JSON serializable (RabbitMQ sometimes injects datetime objects)
+                    safe_headers = {}
+                    for k, v in headers.items():
+                        if isinstance(v, datetime):
+                            safe_headers[k] = v.isoformat()
+                        else:
+                            safe_headers[k] = v
 
                     msg_id = str(msg.message_id or event_id or f"dlq-{i+1}")
 
@@ -259,7 +269,7 @@ class RabbitMQManager:
                         "source_queue": source_queue,
                         "routing_key": msg.routing_key or self.dlq_routing_key,
                         "payload": delivery_packet.get("data_payload") or delivery_packet.get("payload") or packet,
-                        "headers": headers,
+                        "headers": safe_headers,
                     })
 
                 except Exception as parse_err:
