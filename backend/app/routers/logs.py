@@ -19,6 +19,7 @@ from backend.app.models.webhook_event import WebhookEvent
 from backend.app.services.celery_worker import dispatch_webhook_task
 from backend.app.services.failover import service_health_monitor
 from backend.database import get_db
+from backend.app.services.queue_client import rabbitmq_manager
 
 logger = logging.getLogger("logs_router")
 router = APIRouter(tags=["Logs"])
@@ -370,6 +371,9 @@ async def get_dashboard_stats(
     throughput_rpm = throughput_res.scalar() or 0
     throughput_rps = round(throughput_rpm / 60.0, 2)
 
+    # Real RabbitMQ DLQ Message Count
+    real_dlq_count = await rabbitmq_manager.get_dlq_message_count()
+
     return {
         "total_projects": len(projects),
         "active_projects": active_projects,
@@ -381,7 +385,7 @@ async def get_dashboard_stats(
         "failed_count": failed_count,
         "success_rate": success_rate,
         "avg_latency_ms": avg_latency_ms,
-        "dlq_count": failed_count,
+        "dlq_count": real_dlq_count,
         "redis_status": redis_status,
         "redis_latency_ms": redis_latency_ms,
         "rabbitmq_status": rabbitmq_status,
@@ -395,6 +399,10 @@ async def get_dlq_items(
     db: AsyncSession = Depends(get_db),
     current_company = Depends(get_current_company)
 ):
+    """
+    Directly fetches REAL failed messages from the RabbitMQ Dead Letter Queue (webhook_dead_letter_queue).
+    Does NOT query database logs table.
+    """
     company_id = current_company.id
     proj_stmt = select(Project.id, Project.name).where(Project.company_id == company_id)
     if project_id:
@@ -402,74 +410,25 @@ async def get_dlq_items(
     
     proj_res = await db.execute(proj_stmt)
     projects_map = {row[0]: row[1] for row in proj_res.fetchall()}
-    project_ids = list(projects_map.keys())
 
-    if not project_ids:
-        return []
-
-    # Join WebhookLog with WebhookEvent to filter by project_ids safely, bypassing nullable/deleted event_config_id
-    query = (
-        select(WebhookLog)
-        .options(selectinload(WebhookLog.event))
-        .join(WebhookEvent, WebhookLog.event_id == WebhookEvent.event_id)
-        .where(
-            WebhookEvent.project_id.in_(project_ids),
-            WebhookLog.status == WebhookStatus.FAILED,
-            WebhookLog.response_code >= 400
-        )
-        .order_by(WebhookLog.created_at.desc())
-        .limit(limit)
-    )
-
-    logs_res = await db.execute(query)
-    logs = logs_res.scalars().all()
-
-    # Query latest EventConfigs for target_url dynamic resolution
-    ec_res = await db.execute(select(EventConfig).where(EventConfig.project_id.in_(project_ids)))
-    event_configs = ec_res.scalars().all()
-    ec_map = {(ec.project_id, ec.event_type): ec for ec in event_configs}
+    # Direct RabbitMQ DLQ Inspection via AMQP (aio_pika)
+    raw_dlq_items = await rabbitmq_manager.peek_dlq_messages(limit=limit)
 
     items = []
-    for log in logs:
-        event_obj = getattr(log, "event", None)
-        p_id = event_obj.project_id if event_obj else None
-        p_name = projects_map.get(p_id, "Unknown Project")
-        event_payload = event_obj.payload if event_obj and event_obj.payload else {}
-        event_metadata = event_obj.metadata_json if event_obj and isinstance(event_obj.metadata_json, dict) else {}
+    for item in raw_dlq_items:
+        p_id = item.get("project_id")
         
-        event_type = (
-            (event_obj.event_type if event_obj and event_obj.event_type else None)
-            or (event_payload.get("event") if isinstance(event_payload, dict) else None)
-            or "webhook.failed"
-        )
+        # Filter by project_id if provided
+        if project_id and p_id and int(p_id) != int(project_id):
+            continue
         
-        # Prioritize latest configured project target_url dynamically from EventConfig
-        event_config = ec_map.get((p_id, event_type)) if p_id else None
-        target_url = None
-        if event_config and event_config.target_url:
-            target_url = event_config.target_url
-        elif event_obj and event_obj.target_url:
-            target_url = event_obj.target_url
-            
-        if target_url and ";" in target_url:
-            target_url = [u.strip() for u in target_url.split(";") if u.strip()][0]
-        if not target_url:
-            target_url = "/v1/gateway"
-        
-        items.append({
-            "id": log.id,
-            "project_id": p_id,
-            "project_name": p_name,
-            "event_id": log.event_id or f"evt_log_{log.id}",
-            "event_type": event_type,
-            "target_url": target_url,
-            "response_code": log.response_code or 500,
-            "error_message": log.error_message or f"HTTP {log.response_code or 500} Delivery Failed",
-            "attempt_number": log.attempt_number,
-            "created_at": log.created_at.isoformat() if log.created_at else "",
-            "payload": event_payload,
-            "headers": event_metadata.get("incoming_headers") or {},
-        })
+        # Map project name dynamically
+        if p_id and int(p_id) in projects_map:
+            item["project_name"] = projects_map[int(p_id)]
+        elif len(projects_map) > 0:
+            item["project_name"] = list(projects_map.values())[0]
+
+        items.append(item)
 
     return items
 
@@ -480,166 +439,39 @@ async def replay_dlq_logs(
     db: AsyncSession = Depends(get_db),
     current_company = Depends(get_current_company)
 ):
+    """
+    Requeues real messages directly from RabbitMQ DLQ (webhook_dead_letter_queue)
+    back into the main RabbitMQ queue (webhook_delivery_queue).
+    """
     log_ids = payload.get("log_ids") or payload.get("ids") or []
-    company_id = current_company.id
+    if isinstance(log_ids, str) and log_ids != "all":
+        log_ids = [log_ids]
 
-    proj_res = await db.execute(select(Project.id).where(Project.company_id == company_id))
-    company_proj_ids = [row[0] for row in proj_res.fetchall()]
-
-    if not company_proj_ids:
-        raise HTTPException(status_code=404, detail="No projects found for company")
-
-    if log_ids == "all" or not log_ids:
-        failed_logs_query = (
-            select(WebhookLog.id)
-            .join(WebhookEvent, WebhookLog.event_id == WebhookEvent.event_id)
-            .where(
-                WebhookEvent.project_id.in_(company_proj_ids),
-                WebhookLog.status == WebhookStatus.FAILED,
-                WebhookLog.response_code >= 400
-            )
-        )
-        failed_res = await db.execute(failed_logs_query)
-        log_ids = [row[0] for row in failed_res.fetchall()]
-        if not log_ids:
-            return {"status": "replayed", "replayed_count": 0, "replayed_ids": []}
-    elif not isinstance(log_ids, list):
-        raise HTTPException(status_code=400, detail="log_ids must be a list or 'all'")
-
-    # Fetch latest EventConfigs to dynamically map and find latest target_url
-    ec_res = await db.execute(select(EventConfig).where(EventConfig.project_id.in_(company_proj_ids)))
-    event_configs = ec_res.scalars().all()
-    ec_map = {(ec.project_id, ec.event_type): ec for ec in event_configs}
-
-    logs_res = await db.execute(
-        select(WebhookLog)
-        .options(selectinload(WebhookLog.event))
-        .where(WebhookLog.id.in_(log_ids))
-    )
-    logs = logs_res.scalars().all()
-
-    replayed = []
-
-    for log in logs:
-        event_obj = getattr(log, "event", None)
-        if not event_obj:
-            continue
-        p_id = event_obj.project_id
-        if p_id not in company_proj_ids:
-            continue
-
-        event_payload = event_obj.payload if event_obj and event_obj.payload else {}
-        event_type = event_obj.event_type if event_obj and event_obj.event_type else "webhook.retry"
-
-        # Prioritize latest configured project target_url dynamically from EventConfig
-        event_config = ec_map.get((p_id, event_type))
-        target_url = None
-        url_index = 0
-
-        if event_config:
-            # Re-link the log entry to the correct active event config in case it changed/recreated
-            log.event_config_id = event_config.id
-            
-            # Resolve target URL list or single URL
-            metadata_urls = event_config.metadata_json or {}
-            urls_list = metadata_urls.get("urls")
-            
-            if isinstance(urls_list, list) and len(urls_list) > 0:
-                # Find matching index of the log's original URL
-                original_url = event_obj.target_url if event_obj else None
-                if original_url:
-                    try:
-                        url_index = urls_list.index(original_url)
-                    except ValueError:
-                        url_index = 0
-                target_url = urls_list[url_index]
-            elif event_config.target_url:
-                target_url = event_config.target_url
-                url_index = 0
-
-        if not target_url and event_obj and event_obj.target_url:
-            target_url = event_obj.target_url
-            url_index = 0
-
-        if target_url:
-            target_url = unquote(str(target_url))
-            if ";" in target_url:
-                target_url = [u.strip() for u in target_url.split(";") if u.strip()][0]
-
-        if target_url and not (target_url.startswith("http://") or target_url.startswith("https://")):
-            target_url = f"http://127.0.0.1:8000{target_url}" if target_url.startswith("/") else f"http://127.0.0.1:8000/{target_url}"
-
-        if event_obj:
-            event_obj.target_url = target_url
-
-        event_metadata = event_obj.metadata_json if event_obj and isinstance(event_obj.metadata_json, dict) else {}
-
-        log.status = WebhookStatus.PENDING
-        log.response_code = None
-        log.attempt_number += 1
-        log.error_message = None
-
-        delivery_packet = {
-            "event_id": log.event_id,
-            "url_index": url_index,
-        }
-
-        dispatch_webhook_task.delay(delivery_packet)
-        replayed.append(log.id)
-
-    await db.commit()
-    return {"status": "replayed", "replayed_count": len(replayed), "replayed_ids": replayed}
+    result = await rabbitmq_manager.requeue_dlq_messages(target_ids=log_ids)
+    return {
+        "status": "replayed",
+        "replayed_count": result.get("replayed_count", 0),
+        "replayed_ids": result.get("replayed_ids", []),
+    }
 
 
 @router.post("/v1/dlq/discard")
+@router.delete("/v1/dlq")
 async def discard_dlq_logs(
-    payload: dict,
+    payload: dict = {},
     db: AsyncSession = Depends(get_db),
     current_company = Depends(get_current_company)
 ):
+    """
+    Permanently discards/purges real messages directly from RabbitMQ DLQ by calling ack().
+    """
     log_ids = payload.get("log_ids") or payload.get("ids") or []
-    company_id = current_company.id
-    proj_res = await db.execute(select(Project.id).where(Project.company_id == company_id))
-    company_proj_ids = [row[0] for row in proj_res.fetchall()]
+    if isinstance(log_ids, str) and log_ids != "all":
+        log_ids = [log_ids]
 
-    if not company_proj_ids:
-        return {"status": "discarded", "discarded_count": 0}
-
-    if log_ids == "all" or not log_ids:
-        failed_logs_query = (
-            select(WebhookLog.id)
-            .join(WebhookEvent, WebhookLog.event_id == WebhookEvent.event_id)
-            .where(
-                WebhookEvent.project_id.in_(company_proj_ids),
-                WebhookLog.status == WebhookStatus.FAILED,
-                WebhookLog.response_code >= 400
-            )
-        )
-        failed_res = await db.execute(failed_logs_query)
-        log_ids = [row[0] for row in failed_res.fetchall()]
-        if not log_ids:
-            return {"status": "discarded", "discarded_count": 0}
-    elif not isinstance(log_ids, list):
-        raise HTTPException(status_code=400, detail="log_ids must be a list or 'all'")
-
-    # Fetch logs to verify they belong to the user's company's projects safely, bypassing nullable/deleted event_config_id
-    logs_res = await db.execute(
-        select(WebhookLog)
-        .options(selectinload(WebhookLog.event))
-        .where(WebhookLog.id.in_(log_ids))
-    )
-    logs = logs_res.scalars().all()
-
-    logs_to_delete = []
-    for log in logs:
-        event_obj = getattr(log, "event", None)
-        if event_obj and event_obj.project_id in company_proj_ids:
-            logs_to_delete.append(log.id)
-
-    if logs_to_delete:
-        del_stmt = delete(WebhookLog).where(WebhookLog.id.in_(logs_to_delete))
-        res = await db.execute(del_stmt)
-        await db.commit()
-        return {"status": "discarded", "discarded_count": getattr(res, 'rowcount', 0) or len(logs_to_delete)}
-
-    return {"status": "discarded", "discarded_count": 0}
+    result = await rabbitmq_manager.discard_dlq_messages(target_ids=log_ids)
+    return {
+        "status": "discarded",
+        "discarded_count": result.get("discarded_count", 0),
+        "discarded_ids": result.get("discarded_ids", []),
+    }

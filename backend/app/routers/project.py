@@ -23,6 +23,7 @@ from backend.app.models.project import Project
 from backend.app.models.event_config import EventConfig
 from backend.app.models.webhook_log import WebhookLog
 from backend.app.models.webhook_event import WebhookEvent
+from backend.app.services.queue_client import rabbitmq_manager
 
 router = APIRouter(prefix="/v1/projects", tags=["Projects"])
 logger = logging.getLogger("project_router")
@@ -189,11 +190,12 @@ async def replay_dlq_items(
     if db_project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    ids = payload.get("ids") or []
-    if not isinstance(ids, list):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="ids must be provided as a list")
+    ids = payload.get("ids") or payload.get("log_ids") or []
+    if isinstance(ids, str) and ids != "all":
+        ids = [ids]
 
-    return {"status": "queued", "project_id": project_id, "replayed_ids": ids}
+    res = await rabbitmq_manager.requeue_dlq_messages(target_ids=ids)
+    return {"status": "replayed", "project_id": project_id, "replayed_count": res.get("replayed_count", 0), "replayed_ids": res.get("replayed_ids", [])}
 
 
 @router.post("/{project_id}/dlq/discard")
@@ -209,11 +211,12 @@ async def discard_dlq_items(
     if db_project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    ids = payload.get("ids") or []
-    if not isinstance(ids, list):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="ids must be provided as a list")
+    ids = payload.get("ids") or payload.get("log_ids") or []
+    if isinstance(ids, str) and ids != "all":
+        ids = [ids]
 
-    return {"status": "discarded", "project_id": project_id, "discarded_ids": ids}
+    res = await rabbitmq_manager.discard_dlq_messages(target_ids=ids)
+    return {"status": "discarded", "project_id": project_id, "discarded_count": res.get("discarded_count", 0), "discarded_ids": res.get("discarded_ids", [])}
 
 
 @router.get("/{project_id}/refresh_keys", response_model=dict)
