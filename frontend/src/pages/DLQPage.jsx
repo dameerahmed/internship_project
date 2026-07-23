@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { 
   AlertTriangle, 
   RefreshCw, 
@@ -10,12 +10,16 @@ import {
   ShieldCheck, 
   Zap,
   Server,
-  Cpu
+  Activity,
+  ChevronRight,
+  ChevronDown
 } from 'lucide-react';
 import ProtectedLayout from '../components/ProtectedLayout';
+import { useAuth } from '../context/AuthContext';
 import apiClient from '@/api/client';
 
 export default function DLQPage() {
+  const { user } = useAuth();
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeItem, setActiveItem] = useState(null);
@@ -24,78 +28,146 @@ export default function DLQPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('payload');
   const [copied, setCopied] = useState(false);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [expandedPayloadId, setExpandedPayloadId] = useState(null);
 
-  // Fetch Real Failed Messages directly from RabbitMQ DLQ
-  const loadDlqItems = async () => {
-    setLoading(true);
+  const wsRef = useRef(null);
+
+  // Load DLQ Items via REST
+  const loadDlqItems = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const { data } = await apiClient.get('/v1/dlq');
       const list = Array.isArray(data) ? data : [];
       setItems(list);
-      setActiveItem(list[0] || null);
+      setActiveItem((prev) => (prev ? list.find(i => i.id === prev.id) || list[0] || null : list[0] || null));
     } catch {
       setItems([]);
       setActiveItem(null);
-    } finally {
-      setLoading(false);
+    } fontally: {
+      if (!silent) setLoading(false);
     }
   };
 
+  // WebSocket Live Real-Time Stream Setup
   useEffect(() => {
     loadDlqItems();
-  }, []);
 
-  // Requeue real message from RabbitMQ DLQ back to main RabbitMQ exchange/queue
+    const companyId = user?.company_id || '';
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    const wsUrl = `${protocol}//${host}/ws/dlq/${companyId}`;
+
+    let ws = null;
+    let timer = null;
+
+    try {
+      ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setWsConnected(true);
+      };
+
+      ws.onmessage = (evt) => {
+        try {
+          const payload = JSON.parse(evt.data);
+          if (payload.type === 'DLQ_UPDATE' && Array.isArray(payload.items)) {
+            setItems(payload.items);
+            setLoading(false);
+            setActiveItem((prev) => (prev ? payload.items.find(i => i.id === prev.id) || payload.items[0] || null : payload.items[0] || null));
+          }
+        } catch {
+          // Ignore parse errors
+        }
+      };
+
+      ws.onclose = () => {
+        setWsConnected(false);
+      };
+
+      ws.onerror = () => {
+        setWsConnected(false);
+      };
+    } catch {
+      setWsConnected(false);
+    }
+
+    // Polling Fallback (Every 2.5s) if WebSocket is not connected
+    timer = setInterval(() => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        loadDlqItems(true);
+      }
+    }, 2500);
+
+    return () => {
+      if (ws) ws.close();
+      if (timer) clearInterval(timer);
+    };
+  }, [user?.company_id]);
+
+  // Replay (Push real message back into main RabbitMQ queue & purge from DLQ)
   const handleReplay = async (targetIds) => {
     if (!targetIds || targetIds.length === 0) return;
     setActionLoading(true);
+
+    // Optimistic UI removal for zero latency
+    const targetSet = new Set(targetIds.map(String));
+    setItems((prev) => prev.filter((i) => !targetSet.has(String(i.id)) && !targetSet.has(String(i.raw_id))));
+    if (activeItem && (targetSet.has(String(activeItem.id)) || targetSet.has(String(activeItem.raw_id)))) {
+      setActiveItem(null);
+    }
+
     try {
       const { data } = await apiClient.post('/v1/dlq/replay', { log_ids: targetIds });
-      setActionMessage({ 
-        type: 'success', 
-        text: `✓ Re-queued ${data.replayed_count || targetIds.length} message(s) from RabbitMQ DLQ back into main execution queue (webhook_delivery_queue)!` 
+      const count = data.replayed_count || targetIds.length;
+      setActionMessage({
+        type: 'success',
+        text: `✓ Successfully pushed ${count} message(s) back into RabbitMQ main queue (webhook_delivery_queue)!`
       });
       setSelectedIds([]);
-      await loadDlqItems();
+      await loadDlqItems(true);
     } catch {
-      setActionMessage({ type: 'error', text: 'Failed to re-queue messages into RabbitMQ main queue. Please check RabbitMQ connectivity.' });
+      setActionMessage({ type: 'error', text: 'Failed to re-queue message back to RabbitMQ.' });
+      await loadDlqItems(true);
     } finally {
       setActionLoading(false);
       setTimeout(() => setActionMessage(null), 4500);
     }
   };
 
-  // Discard / Purge real failed messages from RabbitMQ DLQ
+  // Discard failed items permanently from RabbitMQ DLQ
   const handleDiscard = async (targetIds) => {
     if (!targetIds || targetIds.length === 0) return;
-    if (!window.confirm(`Permanently discard ${targetIds.length} message(s) directly from RabbitMQ DLQ?`)) return;
-    
+    if (!window.confirm(`Discard ${targetIds.length} message(s) permanently from RabbitMQ DLQ?`)) return;
+
     setActionLoading(true);
+    const targetSet = new Set(targetIds.map(String));
+    setItems((prev) => prev.filter((i) => !targetSet.has(String(i.id)) && !targetSet.has(String(i.raw_id))));
+
     try {
       await apiClient.post('/v1/dlq/discard', { log_ids: targetIds });
-      setActionMessage({ type: 'success', text: `✓ Discarded ${targetIds.length} message(s) permanently from RabbitMQ Dead Letter Queue.` });
+      setActionMessage({ type: 'success', text: `✓ Discarded ${targetIds.length} message(s) from RabbitMQ DLQ.` });
       setSelectedIds([]);
-      await loadDlqItems();
+      await loadDlqItems(true);
     } catch {
-      setActionMessage({ type: 'error', text: 'Failed to discard items from RabbitMQ DLQ.' });
+      setActionMessage({ type: 'error', text: 'Failed to discard items from DLQ.' });
+      await loadDlqItems(true);
     } finally {
       setActionLoading(false);
       setTimeout(() => setActionMessage(null), 4500);
     }
   };
 
-  // Toggle selection
   const toggleSelect = (id) => {
-    setSelectedIds((prev) => 
-      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
-    );
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]));
   };
 
   const toggleSelectAll = () => {
     if (selectedIds.length === items.length) {
       setSelectedIds([]);
     } else {
-      setSelectedIds(items.map(i => i.id));
+      setSelectedIds(items.map((i) => i.id));
     }
   };
 
@@ -108,45 +180,55 @@ export default function DLQPage() {
   };
 
   return (
-    <ProtectedLayout title="Dead Letter Queue Workspace" eyebrow="RabbitMQ DLQ Failure Recovery">
-      <div className="space-y-6">
+    <ProtectedLayout title="Live DLQ Engine Workspace" eyebrow="RabbitMQ Live AMQP Failure Isolation">
+      <div className="space-y-5">
         
-        {/* WORKSPACE HEADER BANNER */}
-        <div className="overflow-hidden rounded-3xl border border-rose-500/30 bg-[#090b12] p-6 shadow-[0_0_35px_-10px_rgba(244,63,94,0.15)]">
+        {/* HEADER WORKSPACE BANNER */}
+        <div className="overflow-hidden rounded-2xl border border-rose-500/30 bg-[#090b12] p-5 shadow-[0_0_35px_-10px_rgba(244,63,94,0.15)]">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div>
+            <div className="space-y-1">
               <div className="flex items-center gap-2">
                 <AlertTriangle className="h-4 w-4 text-rose-400 animate-pulse" />
-                <p className="font-mono text-[10px] font-bold uppercase tracking-[0.35em] text-rose-400">RABBITMQ DLQ ENGINE (LIVE AMQP BOUND)</p>
+                <span className="font-mono text-[10px] font-bold uppercase tracking-[0.25em] text-rose-400">
+                  REAL-TIME RABBITMQ DLQ DASHBOARD
+                </span>
+                
+                {/* LIVE CONNECTION STATUS BADGE */}
+                <div className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full font-mono text-[10px] font-bold border ml-2 ${
+                  wsConnected 
+                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' 
+                    : 'bg-amber-500/10 text-amber-300 border-amber-500/30 animate-pulse'
+                }`}>
+                  <Activity size={10} className={wsConnected ? 'animate-spin text-emerald-400' : ''} />
+                  <span>{wsConnected ? 'LIVE WEBSOCKET STREAM ACTIVE' : 'LIVE POLLING (2.5s)'}</span>
+                </div>
               </div>
-              <h2 className="mt-1 text-2xl font-bold text-white tracking-tight flex items-center gap-3">
-                <span>Dead Letter Queue Workspace</span>
+
+              <h2 className="text-xl font-bold text-white tracking-tight flex items-center gap-3">
+                <span>Dead Letter Queue</span>
                 <span className="text-xs font-mono font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2.5 py-0.5 rounded-full">
-                  {items.length} Active DLQ Message{items.length !== 1 ? 's' : ''}
+                  {items.length} Failed Message{items.length !== 1 ? 's' : ''}
                 </span>
               </h2>
-              <p className="mt-1 font-mono text-xs text-zinc-400 max-w-3xl">
-                Direct integration with RabbitMQ Dead Letter Queue (<code className="text-cyan-300">webhook_dead_letter_queue</code>). Inspect original failed payloads, verify dead-letter headers, and push jobs back into <code className="text-emerald-300">webhook_delivery_queue</code> for execution.
-              </p>
             </div>
 
             <div className="flex items-center gap-3">
               <button
-                onClick={loadDlqItems}
+                onClick={() => loadDlqItems(false)}
                 className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-750 bg-[#121420] hover:bg-zinc-800 px-3.5 py-2 text-xs font-mono font-bold text-zinc-200 transition active:scale-95 shadow-sm"
               >
                 <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-                REFRESH RABBITMQ
+                REFRESH QUEUE
               </button>
 
               {items.length > 0 && (
                 <button
-                  onClick={() => handleReplay(items.map(i => i.id))}
+                  onClick={() => handleReplay(items.map((i) => i.id))}
                   disabled={actionLoading}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 px-4 py-2 text-xs font-mono font-bold text-emerald-400 transition active:scale-95 shadow-md disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 px-4 py-2 text-xs font-mono font-bold text-zinc-950 transition active:scale-95 shadow-md disabled:opacity-50"
                 >
-                  <Zap className="h-4 w-4 text-emerald-400" />
-                  REPLAY ALL ({items.length})
+                  <Zap className="h-4 w-4" />
+                  RETRY ALL ({items.length})
                 </button>
               )}
             </div>
@@ -155,7 +237,7 @@ export default function DLQPage() {
 
         {/* FEEDBACK TOAST MESSAGE */}
         {actionMessage && (
-          <div className={`p-4 rounded-2xl border font-mono text-xs flex items-center justify-between shadow-lg ${
+          <div className={`p-3.5 rounded-xl border font-mono text-xs flex items-center justify-between shadow-md ${
             actionMessage.type === 'success' 
               ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' 
               : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
@@ -165,18 +247,18 @@ export default function DLQPage() {
           </div>
         )}
 
-        {/* BULK ACTION BAR */}
+        {/* BULK SELECTION ACTION BAR */}
         {selectedIds.length > 0 && (
-          <div className="flex items-center justify-between rounded-2xl border border-cyan-500/40 bg-cyan-500/10 px-5 py-3 font-mono text-xs shadow-lg">
-            <span className="font-bold text-cyan-300">{selectedIds.length} RabbitMQ DLQ message(s) selected</span>
+          <div className="flex items-center justify-between rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-4 py-2.5 font-mono text-xs shadow-md">
+            <span className="font-bold text-cyan-300">{selectedIds.length} DLQ message(s) selected</span>
             <div className="flex items-center gap-3">
               <button
                 onClick={() => handleReplay(selectedIds)}
                 disabled={actionLoading}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500 px-3.5 py-1.5 font-bold text-black hover:bg-emerald-400 transition active:scale-95"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3.5 py-1.5 font-bold text-zinc-950 hover:bg-emerald-400 transition active:scale-95"
               >
                 <RefreshCw className="h-3.5 w-3.5" />
-                REQUEUE TO MAIN QUEUE ({selectedIds.length})
+                PUSH TO MAIN QUEUE ({selectedIds.length})
               </button>
               <button
                 onClick={() => handleDiscard(selectedIds)}
@@ -190,14 +272,13 @@ export default function DLQPage() {
           </div>
         )}
 
-        {/* DUAL SPLIT DLQ WORKSPACE */}
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[0.55fr_0.45fr] h-[calc(100vh-20rem)] min-h-[500px]">
+        {/* COMPACT & MODERN REAL-TIME DLQ TABLE VIEW */}
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-[0.58fr_0.42fr] h-[calc(100vh-19rem)] min-h-[500px]">
           
-          {/* LEFT PANEL: REAL RABBITMQ DLQ MESSAGES */}
-          <div className="overflow-y-auto rounded-3xl border border-zinc-800 bg-[#08090e] p-4 scrollbar-thin space-y-2">
-            
-            <div className="flex items-center justify-between px-2 py-1 mb-2 border-b border-zinc-800/80 pb-2">
-              <label className="flex items-center gap-2 font-mono text-xs font-bold text-zinc-400 cursor-pointer">
+          {/* LEFT PANEL: LIVE DLQ MESSAGES TABLE */}
+          <div className="flex flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-[#08090e] shadow-xl">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800 bg-[#0c0e18]">
+              <label className="flex items-center gap-2 font-mono text-xs font-bold text-zinc-300 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={selectedIds.length === items.length && items.length > 0}
@@ -206,103 +287,126 @@ export default function DLQPage() {
                 />
                 SELECT ALL ({items.length})
               </label>
-              <span className="font-mono text-[10px] text-zinc-500 flex items-center gap-1">
-                <Server size={11} className="text-cyan-400" /> RabbitMQ Queue: webhook_dead_letter_queue
+              <span className="font-mono text-[11px] text-zinc-400 flex items-center gap-1">
+                <Server size={12} className="text-cyan-400" /> Queue: <code className="text-cyan-300">webhook_dead_letter_queue</code>
               </span>
             </div>
 
-            {loading ? (
-              <div className="py-20 text-center font-mono text-xs text-zinc-500 flex flex-col items-center justify-center">
-                <RefreshCw className="h-6 w-6 text-rose-400 animate-spin mb-3" />
-                Fetching real messages from RabbitMQ DLQ...
-              </div>
-            ) : items.length === 0 ? (
-              <div className="py-20 text-center font-mono text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-2xl p-8">
-                <CheckCircle2 className="h-10 w-10 text-emerald-400 mx-auto mb-3 opacity-60" />
-                <p className="font-bold text-zinc-300 text-sm">RabbitMQ Dead Letter Queue is empty!</p>
-                <p className="mt-1 text-zinc-500 max-w-xs mx-auto">No undeliverable messages are currently sitting in RabbitMQ queue <code className="text-emerald-400">webhook_dead_letter_queue</code>.</p>
-              </div>
-            ) : (
-              items.map((item) => {
-                const isSelected = activeItem?.id === item.id;
-                const isChecked = selectedIds.includes(item.id);
+            <div className="flex-1 overflow-y-auto p-3 space-y-2.5 scrollbar-thin">
+              {loading ? (
+                <div className="py-20 text-center font-mono text-xs text-zinc-500 flex flex-col items-center justify-center">
+                  <RefreshCw className="h-6 w-6 text-rose-400 animate-spin mb-3" />
+                  Connecting to live RabbitMQ Dead Letter Queue...
+                </div>
+              ) : items.length === 0 ? (
+                <div className="py-20 text-center font-mono text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl p-8">
+                  <CheckCircle2 className="h-10 w-10 text-emerald-400 mx-auto mb-3 opacity-70" />
+                  <p className="font-bold text-zinc-200 text-sm">RabbitMQ Dead Letter Queue is Empty!</p>
+                  <p className="mt-1 text-zinc-400 max-w-xs mx-auto">Zero undeliverable messages currently in RabbitMQ <code className="text-emerald-400">webhook_dead_letter_queue</code>.</p>
+                </div>
+              ) : (
+                items.map((item) => {
+                  const isSelected = activeItem?.id === item.id;
+                  const isChecked = selectedIds.includes(item.id);
+                  const isExpanded = expandedPayloadId === item.id;
 
-                return (
-                  <div
-                    key={item.id}
-                    onClick={() => setActiveItem(item)}
-                    className={`w-full rounded-2xl border p-4 text-left transition cursor-pointer ${
-                      isSelected
-                        ? 'border-rose-500/50 bg-rose-500/10 shadow-[0_0_20px_rgba(244,63,94,0.1)]'
-                        : 'border-zinc-850 bg-[#0d0f19] hover:border-zinc-750 hover:bg-[#121421]'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-start gap-3 min-w-0">
-                        <input
-                          type="checkbox"
-                          checked={isChecked}
-                          onChange={(e) => {
-                            e.stopPropagation();
-                            toggleSelect(item.id);
-                          }}
-                          className="mt-1 rounded border-zinc-700 bg-zinc-900 text-rose-500 focus:ring-rose-500"
-                        />
+                  return (
+                    <div
+                      key={item.id}
+                      onClick={() => setActiveItem(item)}
+                      className={`w-full rounded-xl border p-3.5 text-left transition cursor-pointer ${
+                        isSelected
+                          ? 'border-rose-500/50 bg-rose-500/10 shadow-sm'
+                          : 'border-zinc-800 bg-[#0c0e18] hover:border-zinc-700 hover:bg-[#111422]'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-start gap-3 min-w-0 flex-1">
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={(e) => {
+                              e.stopPropagation();
+                              toggleSelect(item.id);
+                            }}
+                            className="mt-1 rounded border-zinc-700 bg-zinc-900 text-rose-500 focus:ring-rose-500"
+                          />
 
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-mono text-[10px] font-bold text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20">
-                              DLQ MESSAGE
-                            </span>
-                            <span className="font-mono text-xs font-bold text-zinc-200">{item.project_name}</span>
-                            <span className="font-mono text-[10px] text-purple-400 bg-purple-500/10 px-1.5 py-0.5 rounded">
-                              {item.event_type}
-                            </span>
-                          </div>
+                          <div className="min-w-0 flex-1 space-y-1.5">
+                            <div className="flex items-center gap-2 flex-wrap text-xs">
+                              <span className="font-mono font-bold text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20 text-[10px]">
+                                DLQ FAIL
+                              </span>
+                              <span className="font-bold text-zinc-100">{item.project_name}</span>
+                              <span className="font-mono text-[10px] text-purple-300 bg-purple-500/10 px-1.5 py-0.5 rounded">
+                                {item.event_type}
+                              </span>
+                              <span className="font-mono text-[10px] text-zinc-500 ml-auto">
+                                {item.created_at ? new Date(item.created_at).toLocaleTimeString() : ''}
+                              </span>
+                            </div>
 
-                          {/* EXACT FAILURE REASON DISPLAYED */}
-                          <div className="mt-2 rounded-lg border border-rose-500/20 bg-rose-950/20 p-2 font-mono text-xs font-semibold text-rose-300">
-                            Failure Exception: {item.error_message}
-                          </div>
+                            {/* Failure Exception */}
+                            <div className="rounded-lg border border-rose-500/20 bg-rose-950/20 p-2 font-mono text-xs font-semibold text-rose-300 truncate">
+                              Exception: {item.error_message}
+                            </div>
 
-                          <div className="mt-2 flex flex-wrap items-center gap-x-3 text-[11px] font-mono text-zinc-400">
-                            <span className="truncate max-w-[200px] text-zinc-400">Target: {item.target_url}</span>
-                            <span className="text-zinc-600">•</span>
-                            <span className="text-amber-400">Queue: {item.source_queue || 'webhook_delivery_queue'}</span>
-                            <span className="text-zinc-600">•</span>
-                            <span className="text-zinc-500">Retries: {item.attempt_number}</span>
+                            <div className="flex items-center justify-between text-[11px] font-mono text-zinc-400 pt-0.5">
+                              <span className="truncate max-w-[200px] text-zinc-400">{item.target_url}</span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-amber-400">Attempts: {item.attempt_number}</span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setExpandedPayloadId(isExpanded ? null : item.id);
+                                  }}
+                                  className="text-cyan-400 hover:underline flex items-center gap-0.5"
+                                >
+                                  {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                                  <span>Payload</span>
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Collapsible Inline Payload Preview */}
+                            {isExpanded && (
+                              <div className="mt-2 rounded-lg border border-zinc-800 bg-[#040508] p-2.5 font-mono text-[11px] text-emerald-300 max-h-32 overflow-y-auto">
+                                <pre>{JSON.stringify(item.payload || {}, null, 2)}</pre>
+                              </div>
+                            )}
                           </div>
                         </div>
-                      </div>
 
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleReplay([item.id]);
-                        }}
-                        disabled={actionLoading}
-                        className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 px-2.5 py-1 text-[11px] font-mono font-bold text-emerald-400 transition shrink-0"
-                        title="Push message back into main RabbitMQ worker queue for execution"
-                      >
-                        <RefreshCw className="h-3 w-3" />
-                        RETRY
-                      </button>
+                        {/* RE-QUEUE BUTTON WITH ACTIVE SPINNER STATE */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleReplay([item.id]);
+                          }}
+                          disabled={actionLoading}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 px-3 py-1.5 text-xs font-mono font-bold text-zinc-950 transition shrink-0 active:scale-95 disabled:opacity-50"
+                          title="Push message back into main RabbitMQ worker queue"
+                        >
+                          <RefreshCw className={`h-3 w-3 ${actionLoading ? 'animate-spin' : ''}`} />
+                          <span>RETRY</span>
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                );
-              })
-            )}
+                  );
+                })
+              )}
+            </div>
           </div>
 
-          {/* RIGHT PANEL: PAYLOAD & HEADER INSPECTOR */}
-          <div className="flex flex-col overflow-hidden rounded-3xl border border-zinc-800 bg-[#07080d] p-5 shadow-xl">
-            
+          {/* RIGHT PANEL: RAW PAYLOAD & HEADER INSPECTOR */}
+          <div className="flex flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-[#07080d] p-5 shadow-xl">
             <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
               <div className="flex items-center gap-2">
                 <Code2 className="h-5 w-5 text-amber-400" />
                 <div>
-                  <h4 className="font-mono text-xs font-bold text-amber-400 uppercase tracking-wider">RABBITMQ MESSAGE PAYLOAD INSPECTOR</h4>
-                  <p className="text-[10px] font-mono text-zinc-500">Original message body & AMQP metadata headers</p>
+                  <h4 className="font-mono text-xs font-bold text-amber-400 uppercase tracking-wider">PAYLOAD & AMQP HEADERS</h4>
+                  <p className="text-[10px] font-mono text-zinc-500">Live JSON body & dead-letter headers</p>
                 </div>
               </div>
 
@@ -319,15 +423,17 @@ export default function DLQPage() {
 
             {!activeItem ? (
               <div className="flex flex-1 items-center justify-center text-center p-6 font-mono text-xs text-zinc-500">
-                Select a failed RabbitMQ message on the left to inspect raw payload JSON and headers.
+                Select a failed message on the left to inspect raw payload JSON and headers.
               </div>
             ) : (
               <div className="flex flex-1 flex-col overflow-hidden">
                 
-                {/* Error Summary Header */}
-                <div className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 font-mono text-xs">
-                  <p className="font-bold text-rose-300">Failure Reason: {activeItem.error_message}</p>
-                  <p className="mt-0.5 text-zinc-400 text-[11px]">Source Queue: <span className="text-cyan-300 font-bold">{activeItem.source_queue}</span> | Routing Key: <span className="text-purple-300">{activeItem.routing_key}</span></p>
+                {/* Exception Summary Box */}
+                <div className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 font-mono text-xs space-y-1">
+                  <p className="font-bold text-rose-300">Failure Exception: {activeItem.error_message}</p>
+                  <p className="text-zinc-400 text-[11px]">
+                    Source Queue: <code className="text-cyan-300">{activeItem.source_queue}</code> | Routing Key: <code className="text-purple-300">{activeItem.routing_key}</code>
+                  </p>
                 </div>
 
                 {/* Tab Switcher */}
@@ -357,7 +463,7 @@ export default function DLQPage() {
                   </button>
                 </div>
 
-                {/* JSON Display */}
+                {/* JSON Display Box */}
                 <div className="mt-3 flex-1 overflow-auto rounded-xl border border-zinc-800 bg-[#040508] p-4 scrollbar-thin">
                   <pre className="font-mono text-xs text-emerald-300 leading-relaxed select-all">
                     {JSON.stringify(
@@ -368,16 +474,16 @@ export default function DLQPage() {
                   </pre>
                 </div>
 
-                {/* Bottom Replay Action Bar */}
+                {/* Bottom Action Footer */}
                 <div className="mt-3 pt-3 border-t border-zinc-800 flex items-center justify-between">
-                  <span className="font-mono text-[11px] text-zinc-400 truncate max-w-[200px]">Event ID: {activeItem.event_id}</span>
+                  <span className="font-mono text-[11px] text-zinc-400 truncate max-w-[200px]">ID: {activeItem.id}</span>
                   <button
                     onClick={() => handleReplay([activeItem.id])}
                     disabled={actionLoading}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500 px-4 py-2 font-mono text-xs font-bold text-black hover:bg-emerald-400 transition active:scale-95"
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 font-mono text-xs font-bold text-zinc-950 hover:bg-emerald-400 transition active:scale-95"
                   >
-                    <RefreshCw className="h-4 w-4" />
-                    PUSH TO MAIN QUEUE (RETRY)
+                    <RefreshCw className={`h-4 w-4 ${actionLoading ? 'animate-spin' : ''}`} />
+                    <span>PUSH TO MAIN QUEUE</span>
                   </button>
                 </div>
               </div>

@@ -238,6 +238,51 @@ async def websocket_logs(websocket: WebSocket, project_id: str):
         logger.info("Client disconnected from log stream")
 
 
+@router.websocket("/ws/dlq/{company_id}")
+@router.websocket("/ws/dlq")
+async def websocket_dlq_stream(websocket: WebSocket, company_id: Optional[str] = None):
+    await websocket.accept()
+    try:
+        c_id = int(company_id) if company_id and str(company_id).isdigit() else None
+        last_hash = ""
+        while True:
+            raw_dlq_items = await rabbitmq_manager.peek_dlq_messages(limit=100)
+            filtered_items = []
+            
+            async for db_session in get_db():
+                proj_stmt = select(Project.id, Project.name).where(Project.company_id == c_id) if c_id else select(Project.id, Project.name)
+                proj_res = await db_session.execute(proj_stmt)
+                projects_map = {row[0]: row[1] for row in proj_res.fetchall()}
+                proj_ids = set(projects_map.keys())
+                
+                for item in raw_dlq_items:
+                    p_id = item.get("project_id")
+                    if c_id and proj_ids and p_id and int(p_id) not in proj_ids:
+                        continue
+                    if p_id and int(p_id) in projects_map:
+                        item["project_name"] = projects_map[int(p_id)]
+                    elif len(projects_map) > 0:
+                        item["project_name"] = list(projects_map.values())[0]
+                    filtered_items.append(item)
+                break
+
+            current_hash = json.dumps([item.get("id") for item in filtered_items])
+            if current_hash != last_hash:
+                await websocket.send_json({
+                    "type": "DLQ_UPDATE",
+                    "count": len(filtered_items),
+                    "items": filtered_items,
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                last_hash = current_hash
+
+            await asyncio.sleep(2.0)
+    except WebSocketDisconnect:
+        logger.info("Client disconnected from DLQ stream")
+    except Exception as exc:
+        logger.warning("DLQ WebSocket stream exception: %s", exc)
+
+
 @router.get("/v1/dashboard/stats")
 async def get_dashboard_stats(
     db: AsyncSession = Depends(get_db),
