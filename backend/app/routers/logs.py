@@ -283,7 +283,7 @@ async def websocket_dlq_stream(websocket: WebSocket, company_id: Optional[str] =
                         break
                     logger.warning("DLQ WS inner loop error: %s", inner_exc)
 
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(1.0)
     except WebSocketDisconnect:
         logger.info("Client disconnected from DLQ stream")
     except Exception as exc:
@@ -439,7 +439,7 @@ async def websocket_dashboard_stream(websocket: WebSocket, company_id: str):
                     break
                 logger.warning("Dashboard WS inner loop error: %s", inner_exc)
 
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(1.0)
 
     except WebSocketDisconnect:
         logger.info("Client disconnected from dashboard stream")

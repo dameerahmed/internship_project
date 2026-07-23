@@ -79,20 +79,26 @@ class RabbitMQManager:
         Raises if queue does not exist.
         """
         await self._ensure_channel()
-        return await self.channel.declare_queue(
+        queue = await self.channel.declare_queue(
             self.dlq_queue_name,
             durable=True,
             passive=True   # ← CRITICAL FIX: just query, don't re-declare
         )
+        # FORCE AMQP frame: bypass aio_pika channel cache to get real-time message_count
+        await queue.declare(passive=True)
+        return queue
 
     async def _get_main_queue_passive(self):
         """Passively query the main delivery queue state."""
         await self._ensure_channel()
-        return await self.channel.declare_queue(
+        queue = await self.channel.declare_queue(
             self.main_queue_name,
             durable=True,
             passive=True
         )
+        # FORCE AMQP frame: bypass aio_pika channel cache to get real-time message_count
+        await queue.declare(passive=True)
+        return queue
 
     def _get_message_count(self, queue) -> int:
         """
