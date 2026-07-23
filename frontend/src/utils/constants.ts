@@ -36,6 +36,8 @@ export const API_ENDPOINTS = {
 // WebSocket Endpoints
 export const WS_ENDPOINTS = {
   LOGS: (projectId: string | number) => `${WS_BASE_URL}/ws/logs/${projectId}`,
+  DLQ: (companyId: string | number) => `${WS_BASE_URL}/ws/dlq/${companyId}`,
+  DASHBOARD: (companyId: string | number) => `${WS_BASE_URL}/ws/dashboard/${companyId}`,
 };
 
 // Theme Colors (Dark-Modern)

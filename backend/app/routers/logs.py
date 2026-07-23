@@ -283,6 +283,183 @@ async def websocket_dlq_stream(websocket: WebSocket, company_id: Optional[str] =
         logger.warning("DLQ WebSocket stream exception: %s", exc)
 
 
+@router.websocket("/ws/dashboard/{company_id}")
+async def websocket_dashboard_stream(websocket: WebSocket, company_id: str):
+    """
+    Live WebSocket endpoint that pushes real-time dashboard stats directly to the client.
+    Tenant-isolated: only delivers metrics for the authenticated company's projects.
+    Pushes a diff-aware update every 2 seconds — only when values change.
+    """
+    await websocket.accept()
+    try:
+        c_id = int(company_id) if company_id and company_id.isdigit() else None
+        last_payload_hash = ""
+
+        while True:
+            try:
+                # -- Infrastructure health --
+                redis_status = "ONLINE"
+                redis_latency_ms = 0.0
+                try:
+                    t0 = time.perf_counter()
+                    r_client = await get_redis_client()
+                    pong = await r_client.ping()
+                    await r_client.close()
+                    t1 = time.perf_counter()
+                    if pong:
+                        redis_latency_ms = round((t1 - t0) * 1000, 2)
+                except Exception:
+                    redis_status = "DEGRADED"
+
+                rabbitmq_status = "ONLINE"
+                try:
+                    rmq_ok = await service_health_monitor.check_rabbitmq()
+                    rabbitmq_status = "ONLINE" if rmq_ok else "DEGRADED"
+                except Exception:
+                    pass
+
+                # -- Real DLQ count from RabbitMQ --
+                dlq_count = await rabbitmq_manager.get_dlq_message_count()
+
+                # -- Per-tenant DB metrics --
+                async for db_session in get_db():
+                    proj_res = await db_session.execute(
+                        select(Project).where(Project.company_id == c_id)
+                    )
+                    projects = proj_res.scalars().all()
+                    project_ids = [p.id for p in projects]
+                    active_projects = sum(1 for p in projects if p.is_active)
+
+                    if not project_ids:
+                        payload = {
+                            "type": "DASHBOARD_UPDATE",
+                            "total_projects": 0,
+                            "active_projects": 0,
+                            "total_event_routes": 0,
+                            "total_webhooks": 0,
+                            "throughput_rpm": 0,
+                            "throughput_rps": 0.0,
+                            "success_count": 0,
+                            "failed_count": 0,
+                            "success_rate": 100.0,
+                            "avg_latency_ms": 0.0,
+                            "dlq_count": dlq_count,
+                            "redis_status": redis_status,
+                            "redis_latency_ms": redis_latency_ms,
+                            "rabbitmq_status": rabbitmq_status,
+                        }
+                    else:
+                        ec_res = await db_session.execute(
+                            select(EventConfig.id).where(EventConfig.project_id.in_(project_ids))
+                        )
+                        ec_ids = [row[0] for row in ec_res.fetchall()]
+                        total_routes_res = await db_session.execute(
+                            select(func.count(EventConfig.id)).where(
+                                EventConfig.project_id.in_(project_ids),
+                                EventConfig.is_active == True
+                            )
+                        )
+                        total_routes = total_routes_res.scalar() or 0
+
+                        if not ec_ids:
+                            payload = {
+                                "type": "DASHBOARD_UPDATE",
+                                "total_projects": len(projects),
+                                "active_projects": active_projects,
+                                "total_event_routes": total_routes,
+                                "total_webhooks": 0,
+                                "throughput_rpm": 0,
+                                "throughput_rps": 0.0,
+                                "success_count": 0,
+                                "failed_count": 0,
+                                "success_rate": 100.0,
+                                "avg_latency_ms": 0.0,
+                                "dlq_count": dlq_count,
+                                "redis_status": redis_status,
+                                "redis_latency_ms": redis_latency_ms,
+                                "rabbitmq_status": rabbitmq_status,
+                            }
+                        else:
+                            total_res = await db_session.execute(
+                                select(func.count(WebhookLog.id)).where(WebhookLog.event_config_id.in_(ec_ids))
+                            )
+                            total_webhooks = total_res.scalar() or 0
+
+                            success_res = await db_session.execute(
+                                select(func.count(WebhookLog.id)).where(
+                                    WebhookLog.event_config_id.in_(ec_ids),
+                                    WebhookLog.response_code >= 200,
+                                    WebhookLog.response_code < 300,
+                                )
+                            )
+                            success_count = success_res.scalar() or 0
+
+                            failed_res = await db_session.execute(
+                                select(func.count(WebhookLog.id)).where(
+                                    WebhookLog.event_config_id.in_(ec_ids),
+                                    WebhookLog.status == WebhookStatus.FAILED,
+                                    WebhookLog.response_code >= 400,
+                                )
+                            )
+                            failed_count = failed_res.scalar() or 0
+
+                            avg_lat_res = await db_session.execute(
+                                select(func.avg(WebhookLog.processing_duration_ms)).where(
+                                    WebhookLog.event_config_id.in_(ec_ids)
+                                )
+                            )
+                            avg_lat_raw = avg_lat_res.scalar()
+                            avg_latency_ms = round(float(avg_lat_raw), 1) if avg_lat_raw else 0.0
+
+                            evaluated = success_count + failed_count
+                            success_rate = round((success_count / evaluated * 100), 1) if evaluated > 0 else 100.0
+
+                            one_min_ago = datetime.utcnow() - timedelta(seconds=60)
+                            tput_res = await db_session.execute(
+                                select(func.count(WebhookLog.id)).where(
+                                    WebhookLog.event_config_id.in_(ec_ids),
+                                    WebhookLog.created_at >= one_min_ago,
+                                )
+                            )
+                            throughput_rpm = tput_res.scalar() or 0
+                            throughput_rps = round(throughput_rpm / 60.0, 2)
+
+                            payload = {
+                                "type": "DASHBOARD_UPDATE",
+                                "total_projects": len(projects),
+                                "active_projects": active_projects,
+                                "total_event_routes": total_routes,
+                                "total_webhooks": total_webhooks,
+                                "throughput_rpm": throughput_rpm,
+                                "throughput_rps": throughput_rps,
+                                "success_count": success_count,
+                                "failed_count": failed_count,
+                                "success_rate": success_rate,
+                                "avg_latency_ms": avg_latency_ms,
+                                "dlq_count": dlq_count,
+                                "redis_status": redis_status,
+                                "redis_latency_ms": redis_latency_ms,
+                                "rabbitmq_status": rabbitmq_status,
+                            }
+                    break  # exit the `async for get_db()` generator
+
+                # Diff-aware: only send if something changed
+                current_hash = json.dumps(payload, sort_keys=True)
+                if current_hash != last_payload_hash:
+                    await websocket.send_json(payload)
+                    last_payload_hash = current_hash
+
+            except Exception as inner_exc:
+                logger.warning("Dashboard WS inner loop error: %s", inner_exc)
+
+            await asyncio.sleep(2.0)
+
+    except WebSocketDisconnect:
+        logger.info("Client disconnected from dashboard stream")
+    except Exception as exc:
+        logger.warning("Dashboard WebSocket stream exception: %s", exc)
+
+
 @router.get("/v1/dashboard/stats")
 async def get_dashboard_stats(
     db: AsyncSession = Depends(get_db),

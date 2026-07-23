@@ -100,7 +100,10 @@ export default function DashboardPage() {
         </section>
 
         {/* METRICS DASHBOARD COMMAND CENTER */}
-        <MetricsDashboard identityLabel={maskIdentity(user?.company_name || user?.email || 'Operator Console')} />
+        <MetricsDashboard
+          companyId={user?.company_id}
+          identityLabel={maskIdentity(user?.company_name || user?.email || 'Operator Console')}
+        />
       </div>
     </ProtectedLayout>
   );

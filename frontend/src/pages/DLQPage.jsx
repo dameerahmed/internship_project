@@ -17,6 +17,7 @@ import {
 import ProtectedLayout from '../components/ProtectedLayout';
 import { useAuth } from '../context/AuthContext';
 import apiClient from '@/api/client';
+import { WS_ENDPOINTS } from '@/utils/constants';
 
 export default function DLQPage() {
   const { user } = useAuth();
@@ -44,7 +45,7 @@ export default function DLQPage() {
     } catch {
       setItems([]);
       setActiveItem(null);
-    } fontally: {
+    } finally {
       if (!silent) setLoading(false);
     }
   };
@@ -54,10 +55,9 @@ export default function DLQPage() {
     loadDlqItems();
 
     const companyId = user?.company_id || '';
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-    const wsUrl = `${protocol}//${host}/ws/dlq/${companyId}`;
+    if (!companyId) return;
 
+    const wsUrl = WS_ENDPOINTS.DLQ(companyId);
     let ws = null;
     let timer = null;
 
@@ -67,6 +67,8 @@ export default function DLQPage() {
 
       ws.onopen = () => {
         setWsConnected(true);
+        // Clear polling fallback — WS is handling live updates
+        if (timer) clearInterval(timer);
       };
 
       ws.onmessage = (evt) => {
@@ -75,15 +77,18 @@ export default function DLQPage() {
           if (payload.type === 'DLQ_UPDATE' && Array.isArray(payload.items)) {
             setItems(payload.items);
             setLoading(false);
-            setActiveItem((prev) => (prev ? payload.items.find(i => i.id === prev.id) || payload.items[0] || null : payload.items[0] || null));
+            setActiveItem((prev) => (
+              prev ? payload.items.find(i => i.id === prev.id) || payload.items[0] || null
+                   : payload.items[0] || null
+            ));
           }
-        } catch {
-          // Ignore parse errors
-        }
+        } catch { /* ignore parse errors */ }
       };
 
       ws.onclose = () => {
         setWsConnected(false);
+        // Resume polling fallback when WS drops
+        timer = setInterval(() => loadDlqItems(true), 2500);
       };
 
       ws.onerror = () => {
@@ -91,14 +96,9 @@ export default function DLQPage() {
       };
     } catch {
       setWsConnected(false);
+      // Pure polling fallback when WS cannot be established
+      timer = setInterval(() => loadDlqItems(true), 2500);
     }
-
-    // Polling Fallback (Every 2.5s) if WebSocket is not connected
-    timer = setInterval(() => {
-      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-        loadDlqItems(true);
-      }
-    }, 2500);
 
     return () => {
       if (ws) ws.close();
