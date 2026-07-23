@@ -2,8 +2,6 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { 
   ArrowLeft, 
-  Eye, 
-  EyeOff, 
   KeyRound, 
   Plus, 
   Trash2, 
@@ -17,11 +15,10 @@ import {
   Save,
   Check,
   Clock,
-  ChevronDown,
-  ChevronUp,
-  X,
   RefreshCw,
-  Sliders
+  X,
+  Sliders,
+  Sparkles
 } from 'lucide-react';
 import ProtectedLayout from '../components/ProtectedLayout';
 import { useAuth } from '../context/AuthContext';
@@ -73,12 +70,11 @@ const blankForm = (project) => {
           payload_types: ['string', 'number', 'string'] 
         }],
     isActive: project?.is_active ?? true,
-    // Time & Retention Schedule Modes
     retentionMode: project?.retention_mode || metadata?.retention_mode || 'preset_days',
     retentionDays: project?.retention_days ?? 7,
     deleteDate: project?.delete_date || metadata?.delete_date || '',
     deleteTime: project?.delete_time || metadata?.delete_time || '02:00',
-    intervalUnit: metadata?.interval_unit || 'hours', // 'seconds' | 'minutes' | 'hours' | 'days'
+    intervalUnit: metadata?.interval_unit || 'hours',
     intervalValue: metadata?.interval_value ?? 1,
     dayOfWeek: metadata?.day_of_week || 'monday',
     purgeEvents: true,
@@ -99,17 +95,12 @@ export default function ProjectDetailPage() {
   const [purging, setPurging] = useState(false);
   const [feedback, setFeedback] = useState({ type: '', message: '' });
   
-  // Real Credentials State (Unmasked)
+  // Real Credentials State (Always Unmasked, No Dots)
   const [generatedKeys, setGeneratedKeys] = useState(null);
-  const [showCredentialsModal, setShowCredentialsModal] = useState(false);
-  const [revealSecret, setRevealSecret] = useState(true); // Default true so user sees real values without dots
   const [copiedField, setCopiedField] = useState('');
 
   // Form State
   const [form, setForm] = useState(blankForm(null));
-  
-  // Dynamic Option Dropdown State for Schedule Time Settings
-  const [showScheduleOptions, setShowScheduleOptions] = useState(false);
 
   // Webhook Tester Modal State
   const [showTestModal, setShowTestModal] = useState(false);
@@ -156,7 +147,7 @@ export default function ProjectDetailPage() {
       setForm(blankForm(found));
       sessionStorage.setItem('selectedProjectId', String(found.id));
 
-      // Fetch unmasked real keys
+      // Fetch real unmasked credentials immediately on load
       await fetchCredentials(found.id);
     } catch (error) {
       setFeedback({ type: 'error', message: error.message || 'Unable to load project details.' });
@@ -169,23 +160,16 @@ export default function ProjectDetailPage() {
     loadProject();
   }, [projectId, user?.email]);
 
-  const handleOpenCredentialsModal = async () => {
-    setShowCredentialsModal(true);
-    if (!generatedKeys?.api_key || !generatedKeys?.secret_key) {
-      await fetchCredentials(project?.id || projectId);
-    }
-  };
-
   const handleCopy = async (text, label = 'Credential') => {
     let copyVal = text;
 
-    // If text is missing or contains dots placeholder, fetch real keys first!
-    if (!copyVal || copyVal.includes('•••')) {
-      const data = await fetchCredentials(project.id);
+    // Fetch real keys if not yet available
+    if (!copyVal || copyVal.includes('Fetching') || copyVal.includes('•••')) {
+      const data = await fetchCredentials(project?.id || projectId);
       if (data) {
         copyVal = label.toLowerCase().includes('api') ? data.api_key : data.secret_key;
       } else {
-        setFeedback({ type: 'error', message: 'Unable to retrieve real credentials to copy.' });
+        setFeedback({ type: 'error', message: 'Unable to retrieve credentials to copy.' });
         return;
       }
     }
@@ -209,10 +193,10 @@ export default function ProjectDetailPage() {
         textArea.remove();
       }
       setCopiedField(label);
-      setFeedback({ type: 'success', message: `✓ Real ${label} copied to clipboard!` });
-      setTimeout(() => setCopiedField(''), 3000);
+      setFeedback({ type: 'success', message: `✓ ${label} copied to clipboard!` });
+      setTimeout(() => setCopiedField(''), 3500);
     } catch {
-      setFeedback({ type: 'error', message: 'Failed to copy.' });
+      setFeedback({ type: 'error', message: 'Failed to copy to clipboard.' });
     }
   };
 
@@ -235,7 +219,6 @@ export default function ProjectDetailPage() {
         deleteTime: form.deleteTime,
       });
 
-      // Save additional schedule metadata
       payload.metadata_json = {
         ...(project.metadata_json || {}),
         retention_mode: form.retentionMode,
@@ -250,7 +233,7 @@ export default function ProjectDetailPage() {
       setProject((prev) => (prev ? { ...prev, ...updated, event_configs: prev.event_configs } : prev));
       setFeedback({ type: 'success', message: '✓ Project details & schedule saved successfully.' });
     } catch (error) {
-      setFeedback({ type: 'error', message: error.message || 'Failed to save project details.' });
+      setFeedback({ type: 'error', message: error.message || 'Failed to save project settings.' });
     } finally {
       setSaving(false);
     }
@@ -280,7 +263,7 @@ export default function ProjectDetailPage() {
   };
 
   const handleRotateCredentials = async () => {
-    if (!project || !window.confirm('Are you sure you want to regenerate API Credentials? Any existing applications using the old credentials will need to be updated.')) {
+    if (!project || !window.confirm('Regenerate API Credentials? Apps using current keys will need updating.')) {
       return;
     }
     const data = await fetchCredentials(project.id);
@@ -393,29 +376,12 @@ export default function ProjectDetailPage() {
     }));
   };
 
-  // Helper text for current schedule summary
-  const getScheduleSummary = () => {
-    if (form.retentionMode === 'preset_days' || form.retentionMode === 'rolling_days') {
-      return `${form.retentionDays} Days Rolling Retention (Cleanup @ ${form.deleteTime || '02:00'})`;
-    }
-    if (form.retentionMode === 'custom_interval') {
-      return `Every ${form.intervalValue} ${form.intervalUnit} schedule`;
-    }
-    if (form.retentionMode === 'specific_date') {
-      return `Specific Expiration Date: ${form.deleteDate || 'Not set'} @ ${form.deleteTime || '02:00'}`;
-    }
-    if (form.retentionMode === 'specific_day') {
-      return `Weekly on ${form.dayOfWeek.toUpperCase()} @ ${form.deleteTime || '02:00'}`;
-    }
-    return `${form.retentionDays} Days Retention`;
-  };
-
   if (loading) {
     return (
       <ProtectedLayout title="Loading Project Details..." eyebrow="Projects">
-        <div className="flex h-64 items-center justify-center text-xs font-semibold text-zinc-400">
-          <RefreshCw className="mr-2 h-4 w-4 animate-spin text-emerald-400" />
-          Loading project details & credentials…
+        <div className="flex h-72 items-center justify-center text-sm font-semibold text-zinc-400">
+          <RefreshCw className="mr-2.5 h-5 w-5 animate-spin text-emerald-400" />
+          Loading project details & real credentials…
         </div>
       </ProtectedLayout>
     );
@@ -423,126 +389,119 @@ export default function ProjectDetailPage() {
 
   return (
     <ProtectedLayout title={project?.name || 'Project Details'} eyebrow="Project Management">
-      <div className="max-w-6xl mx-auto space-y-5 py-2">
+      <div className="max-w-5xl mx-auto space-y-6 py-4">
         
-        {/* Header Panel */}
-        <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-5 shadow-xl">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="space-y-1">
+        {/* SPACIOUS & ELEGANT HEADER BAR */}
+        <section className="rounded-2xl border border-zinc-800 bg-[#0f111a] p-6 shadow-lg">
+          <div className="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
+            <div className="space-y-2">
               <button 
                 type="button" 
                 onClick={() => navigate('/projects')} 
-                className="inline-flex items-center gap-1.5 text-xs font-semibold text-zinc-400 hover:text-emerald-400 transition"
+                className="inline-flex items-center gap-2 text-xs font-medium text-zinc-400 hover:text-emerald-400 transition"
               >
-                <ArrowLeft className="h-3.5 w-3.5" />
+                <ArrowLeft className="h-4 w-4" />
                 Back to Projects
               </button>
               
-              <div className="flex items-center gap-3 flex-wrap">
-                <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">
+              <div className="flex items-center gap-4 flex-wrap">
+                <h1 className="text-2xl font-bold tracking-tight text-white">
                   {project?.name || 'Project Details'}
                 </h1>
                 
-                {/* Active/Paused Switch */}
-                <div className="flex items-center gap-2 rounded-full border border-zinc-800 bg-[#080910] px-3 py-1 text-xs">
-                  <span className={`font-semibold ${form.isActive ? 'text-emerald-400' : 'text-zinc-400'}`}>
+                {/* Active / Paused Switch */}
+                <div className="flex items-center gap-2.5 rounded-full border border-zinc-800 bg-[#141724] px-4 py-1.5 text-xs font-semibold">
+                  <span className={form.isActive ? 'text-emerald-400' : 'text-zinc-400'}>
                     {form.isActive ? 'Active' : 'Paused'}
                   </span>
                   <button
                     type="button"
                     disabled={toggling}
                     onClick={handleToggleActive}
-                    className={`relative h-4.5 w-8 rounded-full p-0.5 transition ${form.isActive ? 'bg-emerald-500' : 'bg-zinc-700'}`}
+                    className={`relative h-5 w-9 rounded-full p-0.5 transition ${form.isActive ? 'bg-emerald-500' : 'bg-zinc-700'}`}
                   >
-                    <span className={`block h-3.5 w-3.5 rounded-full bg-white transition ${form.isActive ? 'translate-x-3.5' : 'translate-x-0'}`} />
+                    <span className={`block h-4 w-4 rounded-full bg-white transition ${form.isActive ? 'translate-x-4' : 'translate-x-0'}`} />
                   </button>
                 </div>
               </div>
             </div>
             
-            {/* Header Action Buttons (Compact & Feature-rich) */}
-            <div className="flex flex-wrap items-center gap-2">
-              {/* Credentials Trigger Button (Does not consume page height!) */}
-              <button 
-                type="button" 
-                onClick={handleOpenCredentialsModal} 
-                className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 px-3.5 py-2 text-xs font-bold text-emerald-400 transition active:scale-95 shadow-sm"
-              >
-                <KeyRound className="h-3.5 w-3.5" />
-                API Credentials
-              </button>
-
+            {/* Header Action Buttons */}
+            <div className="flex flex-wrap items-center gap-3">
               <button 
                 type="button" 
                 onClick={handleOpenTestModal} 
-                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 px-3.5 py-2 text-xs font-bold text-zinc-950 transition active:scale-95 shadow-md"
+                className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 px-4 py-2.5 text-xs font-bold text-zinc-950 transition active:scale-95 shadow-md"
               >
-                <Zap className="h-3.5 w-3.5" />
+                <Zap className="h-4 w-4" />
                 Test Webhook
               </button>
 
               <button 
                 type="button" 
                 onClick={() => navigate(`/projects/${projectId}/logs`)} 
-                className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-800 bg-[#141522] hover:bg-[#1a1c2e] px-3.5 py-2 text-xs font-semibold text-zinc-200 transition active:scale-95"
+                className="inline-flex items-center gap-2 rounded-xl border border-zinc-700/80 bg-[#161826] hover:bg-[#1f2235] px-4 py-2.5 text-xs font-semibold text-zinc-200 transition active:scale-95"
               >
-                <Database className="h-3.5 w-3.5 text-cyan-400" />
+                <Database className="h-4 w-4 text-cyan-400" />
                 Logs
               </button>
 
               <button 
                 type="button" 
                 onClick={handleDelete} 
-                className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/20 bg-rose-500/10 hover:bg-rose-500/20 px-3.5 py-2 text-xs font-semibold text-rose-400 transition active:scale-95"
+                className="inline-flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 px-4 py-2.5 text-xs font-semibold text-rose-400 transition active:scale-95"
               >
-                <Trash2 className="h-3.5 w-3.5" />
-                Delete
+                <Trash2 className="h-4 w-4" />
+                Delete Project
               </button>
             </div>
           </div>
         </section>
 
-        {/* Feedback Alert Toast */}
+        {/* FEEDBACK NOTIFICATION */}
         {feedback.message && (
-          <div className={`rounded-2xl px-4 py-2.5 text-xs font-semibold flex items-center justify-between gap-2 shadow-md ${feedback.type === 'error' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
-            <div className="flex items-center gap-2">
-              {feedback.type === 'error' ? <AlertTriangle size={15} /> : <CheckCircle2 size={15} />}
+          <div className={`rounded-xl px-5 py-3 text-xs font-medium flex items-center justify-between gap-3 shadow-md border ${feedback.type === 'error' ? 'bg-rose-500/10 text-rose-300 border-rose-500/20' : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'}`}>
+            <div className="flex items-center gap-2.5">
+              {feedback.type === 'error' ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
               <span>{feedback.message}</span>
             </div>
             <button type="button" onClick={() => setFeedback({ type: '', message: '' })} className="hover:opacity-75">
-              <X size={14} />
+              <X size={15} />
             </button>
           </div>
         )}
 
-        <form onSubmit={handleSave} className="space-y-5">
+        <form onSubmit={handleSave} className="space-y-6">
           
-          {/* Card 1: Project Identity & Basic Info (CRUD) */}
-          <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-5 shadow-xl space-y-4">
-            <div className="flex items-center justify-between border-b border-zinc-800/80 pb-3">
-              <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                <ShieldCheck className="h-4 w-4 text-emerald-400" />
-                Project Details (CRUD)
-              </h2>
-              <span className="text-[11px] font-mono text-zinc-500">ID: #{project?.id}</span>
+          {/* SECTION 1: PROJECT BASIC DETAILS */}
+          <section className="rounded-2xl border border-zinc-800 bg-[#0f111a] p-6 shadow-lg space-y-5">
+            <div className="flex items-center justify-between border-b border-zinc-800/80 pb-4">
+              <div>
+                <h2 className="text-base font-bold text-white flex items-center gap-2">
+                  <ShieldCheck className="h-5 w-5 text-emerald-400" />
+                  General Information
+                </h2>
+                <p className="text-xs text-zinc-400 mt-1">Configure project metadata and description.</p>
+              </div>
+              <span className="text-xs font-mono text-zinc-500 bg-zinc-900 border border-zinc-800 px-3 py-1 rounded-lg">ID: #{project?.id}</span>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1">
-                <label className="block text-xs font-semibold text-zinc-300">Project Name</label>
+            <div className="grid gap-5 sm:grid-cols-2">
+              <div className="space-y-2">
+                <label className="block text-xs font-semibold text-zinc-300 uppercase tracking-wider">Project Name</label>
                 <input
-                  className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3 py-2 text-xs text-white outline-none focus:border-emerald-400 transition"
+                  className="w-full rounded-xl border border-zinc-800 bg-[#090a10] px-4 py-2.5 text-sm text-white outline-none focus:border-emerald-400 transition"
                   value={form.name}
                   onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
-                  placeholder="e.g. Payment Webhook Gateway"
+                  placeholder="e.g. Stripe Webhook Handler"
                   required
                 />
               </div>
 
-              <div className="space-y-1">
-                <label className="block text-xs font-semibold text-zinc-300">Description</label>
+              <div className="space-y-2">
+                <label className="block text-xs font-semibold text-zinc-300 uppercase tracking-wider">Description</label>
                 <input
-                  className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3 py-2 text-xs text-zinc-200 outline-none focus:border-emerald-400 transition"
+                  className="w-full rounded-xl border border-zinc-800 bg-[#090a10] px-4 py-2.5 text-sm text-zinc-200 outline-none focus:border-emerald-400 transition"
                   value={form.description}
                   onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
                   placeholder="Optional project description..."
@@ -551,254 +510,321 @@ export default function ProjectDetailPage() {
             </div>
           </section>
 
-          {/* Card 2: Time Set & Retention Schedule (PROGRESSIVE DISCLOSURE UI - Clean & Compact!) */}
-          <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-5 shadow-xl space-y-4">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-800/80 pb-3">
+          {/* SECTION 2: REAL API CREDENTIALS (SPACIOUS, UNMASKED - ABSOLUTELY NO DOTS!) */}
+          <section className="rounded-2xl border border-zinc-800 bg-[#0f111a] p-6 shadow-lg space-y-5">
+            <div className="flex items-center justify-between border-b border-zinc-800/80 pb-4">
               <div>
-                <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                  <Clock className="h-4 w-4 text-cyan-400" />
-                  Time & Data Retention Schedule
+                <h2 className="text-base font-bold text-white flex items-center gap-2">
+                  <KeyRound className="h-5 w-5 text-emerald-400" />
+                  API Credentials & Keys
                 </h2>
-                <p className="text-[11px] text-zinc-400 mt-0.5">
-                  Current Schedule: <span className="font-mono text-emerald-400 font-semibold">{getScheduleSummary()}</span>
-                </p>
+                <p className="text-xs text-zinc-400 mt-1">Real unmasked values for gateway integration and HMAC signing.</p>
               </div>
 
-              {/* Select Button to Reveal Dynamic Options */}
               <button
                 type="button"
-                onClick={() => setShowScheduleOptions((prev) => !prev)}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/30 bg-cyan-500/10 hover:bg-cyan-500/20 px-3.5 py-1.5 text-xs font-bold text-cyan-300 transition active:scale-95 shrink-0"
+                disabled={generating}
+                onClick={handleRotateCredentials}
+                className="inline-flex items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-800/80 hover:bg-zinc-700 px-3.5 py-2 text-xs font-semibold text-zinc-200 transition active:scale-95 shrink-0"
               >
-                <Sliders className="h-3.5 w-3.5" />
-                <span>{showScheduleOptions ? 'Hide Schedule Options' : 'Configure Schedule Options'}</span>
-                {showScheduleOptions ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                <RefreshCw className={`h-3.5 w-3.5 ${generating ? 'animate-spin' : ''}`} />
+                <span>{generating ? 'Refreshing...' : 'Regenerate Keys'}</span>
               </button>
             </div>
 
-            {/* DYNAMIC EXPANDABLE OPTIONS PANEL (Opens only when user clicks/selects option!) */}
-            {showScheduleOptions && (
-              <div className="rounded-2xl border border-zinc-800 bg-[#080910] p-4 space-y-4 animate-in fade-in duration-200">
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-zinc-300">
-                    Select Schedule & Purge Mode
+            <div className="grid gap-5 sm:grid-cols-2">
+              {/* API Key Field */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-semibold text-zinc-300 uppercase tracking-wider">
+                    API Key (X-API-KEY)
                   </label>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setForm((prev) => ({ ...prev, retentionMode: 'preset_days' }))}
-                      className={`rounded-xl p-2.5 text-xs font-semibold border text-left transition ${form.retentionMode === 'preset_days' || form.retentionMode === 'rolling_days' ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400' : 'border-zinc-800 bg-[#0c0d15] text-zinc-400 hover:border-zinc-700'}`}
-                    >
-                      <div className="font-bold">🔄 Preset Days</div>
-                      <div className="text-[10px] opacity-75">7, 14, 30, 90 Days...</div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setForm((prev) => ({ ...prev, retentionMode: 'custom_interval' }))}
-                      className={`rounded-xl p-2.5 text-xs font-semibold border text-left transition ${form.retentionMode === 'custom_interval' ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400' : 'border-zinc-800 bg-[#0c0d15] text-zinc-400 hover:border-zinc-700'}`}
-                    >
-                      <div className="font-bold">⏱️ Custom Interval</div>
-                      <div className="text-[10px] opacity-75">Every X hrs/mins/sec</div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setForm((prev) => ({ ...prev, retentionMode: 'specific_date' }))}
-                      className={`rounded-xl p-2.5 text-xs font-semibold border text-left transition ${form.retentionMode === 'specific_date' ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400' : 'border-zinc-800 bg-[#0c0d15] text-zinc-400 hover:border-zinc-700'}`}
-                    >
-                      <div className="font-bold">📅 Specific Date</div>
-                      <div className="text-[10px] opacity-75">Target Date & Hour</div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setForm((prev) => ({ ...prev, retentionMode: 'specific_day' }))}
-                      className={`rounded-xl p-2.5 text-xs font-semibold border text-left transition ${form.retentionMode === 'specific_day' ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400' : 'border-zinc-800 bg-[#0c0d15] text-zinc-400 hover:border-zinc-700'}`}
-                    >
-                      <div className="font-bold">🗓️ Day of Week</div>
-                      <div className="text-[10px] opacity-75">Every Mon/Fri etc.</div>
-                    </button>
-                  </div>
+                  {copiedField === 'API Key' && (
+                    <span className="text-xs font-bold text-emerald-400 flex items-center gap-1">
+                      <Check size={13} /> Copied!
+                    </span>
+                  )}
                 </div>
-
-                {/* MODE SUB-OPTIONS */}
-                {(form.retentionMode === 'preset_days' || form.retentionMode === 'rolling_days') && (
-                  <div className="grid gap-3 sm:grid-cols-2 pt-2 border-t border-zinc-800/60">
-                    <div className="space-y-1">
-                      <label className="block text-xs font-semibold text-zinc-300">Retention Period (Days)</label>
-                      <select
-                        className="w-full rounded-xl border border-zinc-800 bg-[#0c0d15] px-3 py-2 text-xs font-mono text-emerald-400 outline-none focus:border-emerald-400"
-                        value={form.retentionDays}
-                        onChange={(e) => setForm((prev) => ({ ...prev, retentionDays: parseInt(e.target.value) || 7 }))}
-                      >
-                        <option value={1}>1 Day Retention</option>
-                        <option value={3}>3 Days Retention</option>
-                        <option value={7}>7 Days Retention (Default)</option>
-                        <option value={14}>14 Days Retention</option>
-                        <option value={30}>30 Days Retention</option>
-                        <option value={90}>90 Days Retention</option>
-                        <option value={365}>365 Days Retention</option>
-                      </select>
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="block text-xs font-semibold text-zinc-300">Daily Execution Hour</label>
-                      <select
-                        className="w-full rounded-xl border border-zinc-800 bg-[#0c0d15] px-3 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
-                        value={form.deleteTime || '02:00'}
-                        onChange={(e) => setForm((prev) => ({ ...prev, deleteTime: e.target.value }))}
-                      >
-                        <option value="00:00">12:00 AM (Midnight)</option>
-                        <option value="02:00">02:00 AM (Off-peak standard)</option>
-                        <option value="04:00">04:00 AM</option>
-                        <option value="06:00">06:00 AM</option>
-                        <option value="12:00">12:00 PM (Noon)</option>
-                        <option value="18:00">06:00 PM</option>
-                      </select>
-                    </div>
-                  </div>
-                )}
-
-                {form.retentionMode === 'custom_interval' && (
-                  <div className="grid gap-3 sm:grid-cols-2 pt-2 border-t border-zinc-800/60">
-                    <div className="space-y-1">
-                      <label className="block text-xs font-semibold text-zinc-300">Repeat Interval Amount</label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="1000"
-                        className="w-full rounded-xl border border-zinc-800 bg-[#0c0d15] px-3 py-2 text-xs font-mono text-emerald-400 outline-none focus:border-emerald-400"
-                        value={form.intervalValue}
-                        onChange={(e) => setForm((prev) => ({ ...prev, intervalValue: Math.max(1, parseInt(e.target.value) || 1) }))}
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="block text-xs font-semibold text-zinc-300">Time Unit</label>
-                      <select
-                        className="w-full rounded-xl border border-zinc-800 bg-[#0c0d15] px-3 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
-                        value={form.intervalUnit}
-                        onChange={(e) => setForm((prev) => ({ ...prev, intervalUnit: e.target.value }))}
-                      >
-                        <option value="seconds">Every X Seconds</option>
-                        <option value="minutes">Every X Minutes</option>
-                        <option value="hours">Every X Hours (e.g. Every 1 Hour)</option>
-                        <option value="days">Every X Days (e.g. Every 7 Days)</option>
-                      </select>
-                    </div>
-                  </div>
-                )}
-
-                {form.retentionMode === 'specific_date' && (
-                  <div className="grid gap-3 sm:grid-cols-2 pt-2 border-t border-zinc-800/60">
-                    <div className="space-y-1">
-                      <label className="block text-xs font-semibold text-zinc-300">Target Expiration Date</label>
-                      <input
-                        type="date"
-                        className="w-full rounded-xl border border-zinc-800 bg-[#0c0d15] px-3 py-2 text-xs font-mono text-white outline-none focus:border-emerald-400"
-                        value={form.deleteDate || ''}
-                        onChange={(e) => setForm((prev) => ({ ...prev, deleteDate: e.target.value }))}
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="block text-xs font-semibold text-zinc-300">Purge Hour</label>
-                      <select
-                        className="w-full rounded-xl border border-zinc-800 bg-[#0c0d15] px-3 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
-                        value={form.deleteTime || '02:00'}
-                        onChange={(e) => setForm((prev) => ({ ...prev, deleteTime: e.target.value }))}
-                      >
-                        <option value="00:00">12:00 AM (Midnight)</option>
-                        <option value="02:00">02:00 AM</option>
-                        <option value="06:00">06:00 AM</option>
-                        <option value="12:00">12:00 PM (Noon)</option>
-                        <option value="18:00">06:00 PM</option>
-                      </select>
-                    </div>
-                  </div>
-                )}
-
-                {form.retentionMode === 'specific_day' && (
-                  <div className="grid gap-3 sm:grid-cols-2 pt-2 border-t border-zinc-800/60">
-                    <div className="space-y-1">
-                      <label className="block text-xs font-semibold text-zinc-300">Day of Week</label>
-                      <select
-                        className="w-full rounded-xl border border-zinc-800 bg-[#0c0d15] px-3 py-2 text-xs font-mono text-emerald-400 outline-none focus:border-emerald-400"
-                        value={form.dayOfWeek}
-                        onChange={(e) => setForm((prev) => ({ ...prev, dayOfWeek: e.target.value }))}
-                      >
-                        <option value="monday">Every Monday</option>
-                        <option value="tuesday">Every Tuesday</option>
-                        <option value="wednesday">Every Wednesday</option>
-                        <option value="thursday">Every Thursday</option>
-                        <option value="friday">Every Friday</option>
-                        <option value="saturday">Every Saturday</option>
-                        <option value="sunday">Every Sunday</option>
-                      </select>
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="block text-xs font-semibold text-zinc-300">Execution Hour</label>
-                      <select
-                        className="w-full rounded-xl border border-zinc-800 bg-[#0c0d15] px-3 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
-                        value={form.deleteTime || '02:00'}
-                        onChange={(e) => setForm((prev) => ({ ...prev, deleteTime: e.target.value }))}
-                      >
-                        <option value="00:00">12:00 AM (Midnight)</option>
-                        <option value="02:00">02:00 AM</option>
-                        <option value="06:00">06:00 AM</option>
-                        <option value="12:00">12:00 PM (Noon)</option>
-                      </select>
-                    </div>
-                  </div>
-                )}
-
-                {/* Scope & Purge Action Row */}
-                <div className="rounded-xl border border-zinc-800/80 bg-[#0c0d15] p-3 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-zinc-300">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <span className="font-semibold text-zinc-400 text-[11px]">Purge Target Scope:</span>
-                    <label className="flex items-center gap-1.5 cursor-pointer text-[11px]">
-                      <input
-                        type="checkbox"
-                        checked={form.purgeEvents}
-                        onChange={(e) => setForm((prev) => ({ ...prev, purgeEvents: e.target.checked }))}
-                        className="rounded border-zinc-700 bg-zinc-900 text-emerald-500 focus:ring-0"
-                      />
-                      <span className="font-mono text-cyan-300">`webhook_events`</span>
-                    </label>
-
-                    <label className="flex items-center gap-1.5 cursor-pointer text-[11px]">
-                      <input
-                        type="checkbox"
-                        checked={form.purgeLogs}
-                        onChange={(e) => setForm((prev) => ({ ...prev, purgeLogs: e.target.checked }))}
-                        className="rounded border-zinc-700 bg-zinc-900 text-emerald-500 focus:ring-0"
-                      />
-                      <span className="font-mono text-cyan-300">`webhook_logs`</span>
-                    </label>
-                  </div>
-
+                <div className="flex items-center gap-2 rounded-xl border border-zinc-800 bg-[#090a10] p-2">
+                  <input
+                    type="text"
+                    readOnly
+                    className="w-full bg-transparent outline-none text-cyan-300 font-mono text-xs select-all px-2 border-none truncate"
+                    value={generatedKeys?.api_key || 'Fetching real API key...'}
+                  />
                   <button
                     type="button"
-                    disabled={purging}
-                    onClick={handlePurgeNow}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 px-3 py-1.5 text-xs font-semibold text-rose-400 transition shrink-0"
+                    onClick={() => handleCopy(generatedKeys?.api_key, 'API Key')}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 px-3 py-1.5 text-xs font-bold text-emerald-400 transition active:scale-95 shrink-0"
                   >
-                    <Trash2 size={13} />
-                    <span>{purging ? 'Purging...' : 'Purge Data Now'}</span>
+                    <Copy size={13} />
+                    <span>Copy</span>
                   </button>
                 </div>
               </div>
-            )}
+
+              {/* Webhook Secret Key Field */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-semibold text-zinc-300 uppercase tracking-wider">
+                    Webhook Secret Key
+                  </label>
+                  {copiedField === 'Webhook Secret' && (
+                    <span className="text-xs font-bold text-emerald-400 flex items-center gap-1">
+                      <Check size={13} /> Copied!
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 rounded-xl border border-zinc-800 bg-[#090a10] p-2">
+                  <input
+                    type="text"
+                    readOnly
+                    className="w-full bg-transparent outline-none text-pink-300 font-mono text-xs select-all px-2 border-none truncate"
+                    value={generatedKeys?.secret_key || 'Fetching real secret key...'}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleCopy(generatedKeys?.secret_key, 'Webhook Secret')}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-pink-500/30 bg-pink-500/10 hover:bg-pink-500/20 px-3 py-1.5 text-xs font-bold text-pink-300 transition active:scale-95 shrink-0"
+                  >
+                    <Copy size={13} />
+                    <span>Copy</span>
+                  </button>
+                </div>
+              </div>
+            </div>
           </section>
 
-          {/* Card 3: Event Routing & Payload Schema Rules (CRUD) */}
-          <section className="rounded-3xl border border-zinc-800 bg-[#0c0d15] p-5 shadow-xl space-y-4">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-800/80 pb-3">
+          {/* SECTION 3: TIME SET & DATA RETENTION SCHEDULE (CLEAN & SPACIOUS) */}
+          <section className="rounded-2xl border border-zinc-800 bg-[#0f111a] p-6 shadow-lg space-y-5">
+            <div className="border-b border-zinc-800/80 pb-4">
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <Clock className="h-5 w-5 text-cyan-400" />
+                Time & Data Retention Schedule
+              </h2>
+              <p className="text-xs text-zinc-400 mt-1">
+                Configure auto-cleanup behavior, retention period, or specific purge intervals.
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <label className="block text-xs font-semibold text-zinc-300 uppercase tracking-wider">
+                  Retention Schedule Mode
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setForm((prev) => ({ ...prev, retentionMode: 'preset_days' }))}
+                    className={`rounded-xl p-3 text-xs font-semibold border text-left transition ${form.retentionMode === 'preset_days' || form.retentionMode === 'rolling_days' ? 'border-emerald-500 bg-emerald-500/10 text-emerald-400' : 'border-zinc-800 bg-[#090a10] text-zinc-400 hover:border-zinc-700'}`}
+                  >
+                    <div className="font-bold text-sm">🔄 Rolling Days</div>
+                    <div className="text-[11px] opacity-75 mt-0.5">7, 14, 30, 90 Days</div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setForm((prev) => ({ ...prev, retentionMode: 'custom_interval' }))}
+                    className={`rounded-xl p-3 text-xs font-semibold border text-left transition ${form.retentionMode === 'custom_interval' ? 'border-emerald-500 bg-emerald-500/10 text-emerald-400' : 'border-zinc-800 bg-[#090a10] text-zinc-400 hover:border-zinc-700'}`}
+                  >
+                    <div className="font-bold text-sm">⏱️ Custom Interval</div>
+                    <div className="text-[11px] opacity-75 mt-0.5">Every X hrs/mins/sec</div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setForm((prev) => ({ ...prev, retentionMode: 'specific_date' }))}
+                    className={`rounded-xl p-3 text-xs font-semibold border text-left transition ${form.retentionMode === 'specific_date' ? 'border-emerald-500 bg-emerald-500/10 text-emerald-400' : 'border-zinc-800 bg-[#090a10] text-zinc-400 hover:border-zinc-700'}`}
+                  >
+                    <div className="font-bold text-sm">📅 Specific Date</div>
+                    <div className="text-[11px] opacity-75 mt-0.5">Exact Target Date</div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setForm((prev) => ({ ...prev, retentionMode: 'specific_day' }))}
+                    className={`rounded-xl p-3 text-xs font-semibold border text-left transition ${form.retentionMode === 'specific_day' ? 'border-emerald-500 bg-emerald-500/10 text-emerald-400' : 'border-zinc-800 bg-[#090a10] text-zinc-400 hover:border-zinc-700'}`}
+                  >
+                    <div className="font-bold text-sm">🗓️ Day of Week</div>
+                    <div className="text-[11px] opacity-75 mt-0.5">Weekly Schedule</div>
+                  </button>
+                </div>
+              </div>
+
+              {/* DYNAMIC MODE CONTROLS */}
+              {(form.retentionMode === 'preset_days' || form.retentionMode === 'rolling_days') && (
+                <div className="grid gap-5 sm:grid-cols-2 pt-3 border-t border-zinc-800/60">
+                  <div className="space-y-2">
+                    <label className="block text-xs font-semibold text-zinc-300 uppercase tracking-wider">Retention Period</label>
+                    <select
+                      className="w-full rounded-xl border border-zinc-800 bg-[#090a10] px-4 py-2.5 text-sm font-mono text-emerald-400 outline-none focus:border-emerald-400"
+                      value={form.retentionDays}
+                      onChange={(e) => setForm((prev) => ({ ...prev, retentionDays: parseInt(e.target.value) || 7 }))}
+                    >
+                      <option value={1}>1 Day Retention</option>
+                      <option value={3}>3 Days Retention</option>
+                      <option value={7}>7 Days Retention (Recommended)</option>
+                      <option value={14}>14 Days Retention</option>
+                      <option value={30}>30 Days Retention</option>
+                      <option value={90}>90 Days Retention</option>
+                      <option value={365}>365 Days Retention</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="block text-xs font-semibold text-zinc-300 uppercase tracking-wider">Daily Execution Hour</label>
+                    <select
+                      className="w-full rounded-xl border border-zinc-800 bg-[#090a10] px-4 py-2.5 text-sm font-mono text-zinc-200 outline-none focus:border-emerald-400"
+                      value={form.deleteTime || '02:00'}
+                      onChange={(e) => setForm((prev) => ({ ...prev, deleteTime: e.target.value }))}
+                    >
+                      <option value="00:00">12:00 AM (Midnight)</option>
+                      <option value="02:00">02:00 AM (Off-peak standard)</option>
+                      <option value="04:00">04:00 AM</option>
+                      <option value="06:00">06:00 AM</option>
+                      <option value="12:00">12:00 PM (Noon)</option>
+                      <option value="18:00">06:00 PM</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {form.retentionMode === 'custom_interval' && (
+                <div className="grid gap-5 sm:grid-cols-2 pt-3 border-t border-zinc-800/60">
+                  <div className="space-y-2">
+                    <label className="block text-xs font-semibold text-zinc-300 uppercase tracking-wider">Interval Amount</label>
+                    <input
+                      type="number"
+                      min="1"
+                      className="w-full rounded-xl border border-zinc-800 bg-[#090a10] px-4 py-2.5 text-sm font-mono text-emerald-400 outline-none focus:border-emerald-400"
+                      value={form.intervalValue}
+                      onChange={(e) => setForm((prev) => ({ ...prev, intervalValue: Math.max(1, parseInt(e.target.value) || 1) }))}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="block text-xs font-semibold text-zinc-300 uppercase tracking-wider">Time Unit</label>
+                    <select
+                      className="w-full rounded-xl border border-zinc-800 bg-[#090a10] px-4 py-2.5 text-sm font-mono text-zinc-200 outline-none focus:border-emerald-400"
+                      value={form.intervalUnit}
+                      onChange={(e) => setForm((prev) => ({ ...prev, intervalUnit: e.target.value }))}
+                    >
+                      <option value="seconds">Every X Seconds</option>
+                      <option value="minutes">Every X Minutes</option>
+                      <option value="hours">Every X Hours</option>
+                      <option value="days">Every X Days</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {form.retentionMode === 'specific_date' && (
+                <div className="grid gap-5 sm:grid-cols-2 pt-3 border-t border-zinc-800/60">
+                  <div className="space-y-2">
+                    <label className="block text-xs font-semibold text-zinc-300 uppercase tracking-wider">Target Expiration Date</label>
+                    <input
+                      type="date"
+                      className="w-full rounded-xl border border-zinc-800 bg-[#090a10] px-4 py-2.5 text-sm font-mono text-white outline-none focus:border-emerald-400"
+                      value={form.deleteDate || ''}
+                      onChange={(e) => setForm((prev) => ({ ...prev, deleteDate: e.target.value }))}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="block text-xs font-semibold text-zinc-300 uppercase tracking-wider">Purge Hour</label>
+                    <select
+                      className="w-full rounded-xl border border-zinc-800 bg-[#090a10] px-4 py-2.5 text-sm font-mono text-zinc-200 outline-none focus:border-emerald-400"
+                      value={form.deleteTime || '02:00'}
+                      onChange={(e) => setForm((prev) => ({ ...prev, deleteTime: e.target.value }))}
+                    >
+                      <option value="00:00">12:00 AM (Midnight)</option>
+                      <option value="02:00">02:00 AM</option>
+                      <option value="06:00">06:00 AM</option>
+                      <option value="12:00">12:00 PM (Noon)</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {form.retentionMode === 'specific_day' && (
+                <div className="grid gap-5 sm:grid-cols-2 pt-3 border-t border-zinc-800/60">
+                  <div className="space-y-2">
+                    <label className="block text-xs font-semibold text-zinc-300 uppercase tracking-wider">Day of Week</label>
+                    <select
+                      className="w-full rounded-xl border border-zinc-800 bg-[#090a10] px-4 py-2.5 text-sm font-mono text-emerald-400 outline-none focus:border-emerald-400"
+                      value={form.dayOfWeek}
+                      onChange={(e) => setForm((prev) => ({ ...prev, dayOfWeek: e.target.value }))}
+                    >
+                      <option value="monday">Every Monday</option>
+                      <option value="tuesday">Every Tuesday</option>
+                      <option value="wednesday">Every Wednesday</option>
+                      <option value="thursday">Every Thursday</option>
+                      <option value="friday">Every Friday</option>
+                      <option value="saturday">Every Saturday</option>
+                      <option value="sunday">Every Sunday</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="block text-xs font-semibold text-zinc-300 uppercase tracking-wider">Execution Hour</label>
+                    <select
+                      className="w-full rounded-xl border border-zinc-800 bg-[#090a10] px-4 py-2.5 text-sm font-mono text-zinc-200 outline-none focus:border-emerald-400"
+                      value={form.deleteTime || '02:00'}
+                      onChange={(e) => setForm((prev) => ({ ...prev, deleteTime: e.target.value }))}
+                    >
+                      <option value="00:00">12:00 AM (Midnight)</option>
+                      <option value="02:00">02:00 AM</option>
+                      <option value="06:00">06:00 AM</option>
+                      <option value="12:00">12:00 PM (Noon)</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {/* PURGE TARGET SCOPE & MANUAL PURGE */}
+              <div className="rounded-xl border border-zinc-800 bg-[#090a10] p-4 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-zinc-300">
+                <div className="flex flex-wrap items-center gap-4">
+                  <span className="font-semibold text-zinc-400">Purge Scope:</span>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.purgeEvents}
+                      onChange={(e) => setForm((prev) => ({ ...prev, purgeEvents: e.target.checked }))}
+                      className="h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-emerald-500 focus:ring-0"
+                    />
+                    <span className="font-mono text-cyan-300">webhook_events</span>
+                  </label>
+
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.purgeLogs}
+                      onChange={(e) => setForm((prev) => ({ ...prev, purgeLogs: e.target.checked }))}
+                      className="h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-emerald-500 focus:ring-0"
+                    />
+                    <span className="font-mono text-cyan-300">webhook_logs</span>
+                  </label>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={purging}
+                  onClick={handlePurgeNow}
+                  className="inline-flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 px-4 py-2 text-xs font-semibold text-rose-400 transition shrink-0"
+                >
+                  <Trash2 size={14} />
+                  <span>{purging ? 'Purging Data...' : 'Purge Data Now'}</span>
+                </button>
+              </div>
+            </div>
+          </section>
+
+          {/* SECTION 4: EVENT ROUTING & PAYLOAD RULES (SPACIOUS & PROFESSIONAL) */}
+          <section className="rounded-2xl border border-zinc-800 bg-[#0f111a] p-6 shadow-lg space-y-5">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-800/80 pb-4">
               <div>
-                <h2 className="text-sm font-bold text-white">Event Routing & Payload Schema Rules</h2>
-                <p className="text-xs text-zinc-400">Configure webhook destination URLs and expected payload fields.</p>
+                <h2 className="text-base font-bold text-white">Event Routing & Payload Schema</h2>
+                <p className="text-xs text-zinc-400 mt-1">Configure destination URLs and required payload fields per event.</p>
               </div>
 
               <button
@@ -819,21 +845,22 @@ export default function ProjectDetailPage() {
                     ],
                   }))
                 }
-                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/20 transition active:scale-95 shrink-0"
+                className="inline-flex items-center gap-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30 px-4 py-2 text-xs font-bold text-emerald-400 hover:bg-emerald-500/20 transition active:scale-95 shrink-0"
               >
-                <Plus size={13} />
+                <Plus size={14} />
                 <span>Add Event Rule</span>
               </button>
             </div>
 
-            <div className="space-y-4">
+            <div className="space-y-6">
               {form.eventConfigs.map((config, index) => (
-                <div key={index} className="rounded-2xl border border-zinc-800 bg-[#080910] p-4 space-y-3">
-                  {/* Event Header */}
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-800/60 pb-2">
-                    <div className="flex items-center gap-2 flex-1 max-w-xs">
+                <div key={index} className="rounded-xl border border-zinc-800/90 bg-[#090a10] p-5 space-y-4">
+                  {/* Event Type Header */}
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-800/60 pb-3">
+                    <div className="flex items-center gap-3 flex-1 max-w-sm">
+                      <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider shrink-0">Event Type:</label>
                       <input
-                        className="w-full rounded-lg border border-zinc-800 bg-[#0c0d15] px-3 py-1.5 text-xs font-mono text-emerald-400 outline-none focus:border-emerald-400"
+                        className="w-full rounded-xl border border-zinc-800 bg-[#0f111a] px-3.5 py-2 text-xs font-mono text-emerald-400 outline-none focus:border-emerald-400"
                         value={config.event_type}
                         onChange={(e) =>
                           updateEventConfig(index, (item) => ({ ...item, event_type: e.target.value }))
@@ -843,17 +870,19 @@ export default function ProjectDetailPage() {
                       />
                     </div>
 
-                    <div className="flex items-center gap-3">
-                      <div className="flex items-center gap-2 text-xs">
-                        <span className="text-zinc-400">{config.is_active ? 'Active' : 'Disabled'}</span>
+                    <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-2 text-xs font-semibold">
+                        <span className={config.is_active ? 'text-emerald-400' : 'text-zinc-500'}>
+                          {config.is_active ? 'Active' : 'Disabled'}
+                        </span>
                         <button
                           type="button"
                           onClick={() =>
                             updateEventConfig(index, (item) => ({ ...item, is_active: !item.is_active }))
                           }
-                          className={`relative h-4.5 w-8 rounded-full p-0.5 transition ${config.is_active ? 'bg-emerald-500' : 'bg-zinc-700'}`}
+                          className={`relative h-5 w-9 rounded-full p-0.5 transition ${config.is_active ? 'bg-emerald-500' : 'bg-zinc-700'}`}
                         >
-                          <span className={`block h-3.5 w-3.5 rounded-full bg-white transition ${config.is_active ? 'translate-x-3.5' : 'translate-x-0'}`} />
+                          <span className={`block h-4 w-4 rounded-full bg-white transition ${config.is_active ? 'translate-x-4' : 'translate-x-0'}`} />
                         </button>
                       </div>
 
@@ -866,19 +895,19 @@ export default function ProjectDetailPage() {
                               eventConfigs: prev.eventConfigs.filter((_, i) => i !== index),
                             }))
                           }
-                          className="rounded-lg border border-zinc-800 p-1 text-zinc-400 hover:text-rose-400"
+                          className="rounded-lg border border-zinc-800 p-1.5 text-zinc-400 hover:text-rose-400 transition"
                           title="Remove Event Rule"
                         >
-                          <Trash2 size={13} />
+                          <Trash2 size={14} />
                         </button>
                       )}
                     </div>
                   </div>
 
                   {/* Destination URLs */}
-                  <div className="space-y-1.5">
+                  <div className="space-y-2">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="font-semibold text-zinc-300">Destination URLs</span>
+                      <span className="font-semibold text-zinc-300 uppercase tracking-wider">Destination URLs</span>
                       <button
                         type="button"
                         onClick={() =>
@@ -887,17 +916,17 @@ export default function ProjectDetailPage() {
                             target_urls: [...item.target_urls, 'https://example.com/webhook'],
                           }))
                         }
-                        className="text-[11px] font-semibold text-cyan-400 hover:underline flex items-center gap-1"
+                        className="text-xs font-semibold text-cyan-400 hover:underline flex items-center gap-1"
                       >
-                        <Plus size={11} /> Add URL
+                        <Plus size={12} /> Add URL
                       </button>
                     </div>
 
-                    <div className="space-y-1.5">
+                    <div className="space-y-2">
                       {config.target_urls.map((url, urlIdx) => (
                         <div key={urlIdx} className="flex items-center gap-2">
                           <input
-                            className="flex-1 rounded-xl border border-zinc-800 bg-[#0c0d15] px-3 py-1.5 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
+                            className="flex-1 rounded-xl border border-zinc-800 bg-[#0f111a] px-3.5 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
                             value={url}
                             onChange={(e) =>
                               updateEventConfig(index, (item) => ({
@@ -917,9 +946,9 @@ export default function ProjectDetailPage() {
                                   target_urls: item.target_urls.filter((_, i) => i !== urlIdx),
                                 }))
                               }
-                              className="rounded-lg border border-zinc-800 p-1 text-zinc-500 hover:text-rose-400"
+                              className="rounded-lg border border-zinc-800 p-2 text-zinc-500 hover:text-rose-400 transition"
                             >
-                              <Trash2 size={12} />
+                              <Trash2 size={13} />
                             </button>
                           )}
                         </div>
@@ -927,10 +956,10 @@ export default function ProjectDetailPage() {
                     </div>
                   </div>
 
-                  {/* Payload Keys & Data Types Builder */}
-                  <div className="space-y-1.5 pt-1">
+                  {/* Payload Rules Builder */}
+                  <div className="space-y-2 pt-2">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="font-semibold text-zinc-300">Payload Schema Rules</span>
+                      <span className="font-semibold text-zinc-300 uppercase tracking-wider">Payload Schema Validation</span>
                       <button
                         type="button"
                         onClick={() =>
@@ -944,17 +973,17 @@ export default function ProjectDetailPage() {
                             };
                           })
                         }
-                        className="text-[11px] font-semibold text-emerald-400 hover:underline flex items-center gap-1"
+                        className="text-xs font-semibold text-emerald-400 hover:underline flex items-center gap-1"
                       >
-                        <Plus size={11} /> Add Key Rule
+                        <Plus size={12} /> Add Key Rule
                       </button>
                     </div>
 
-                    <div className="space-y-1.5">
+                    <div className="space-y-2">
                       {(config.payload_rules || []).map((rule, ruleIdx) => (
-                        <div key={ruleIdx} className="flex items-center gap-2 rounded-xl border border-zinc-800/80 bg-[#0c0d15] p-1.5">
+                        <div key={ruleIdx} className="flex items-center gap-3 rounded-xl border border-zinc-800/80 bg-[#0f111a] p-2">
                           <input
-                            className="flex-1 rounded-lg border border-zinc-800 bg-[#080910] px-2.5 py-1 text-xs font-mono text-emerald-300 outline-none focus:border-emerald-400"
+                            className="flex-1 rounded-lg border border-zinc-800 bg-[#090a10] px-3 py-1.5 text-xs font-mono text-emerald-300 outline-none focus:border-emerald-400"
                             value={rule.key}
                             onChange={(e) =>
                               updateEventConfig(index, (item) => {
@@ -971,7 +1000,7 @@ export default function ProjectDetailPage() {
                           />
 
                           <select
-                            className="w-32 rounded-lg border border-zinc-800 bg-[#080910] px-2.5 py-1 text-xs font-mono text-zinc-300 outline-none focus:border-emerald-400"
+                            className="w-36 rounded-lg border border-zinc-800 bg-[#090a10] px-3 py-1.5 text-xs font-mono text-zinc-300 outline-none focus:border-emerald-400"
                             value={rule.type}
                             onChange={(e) =>
                               updateEventConfig(index, (item) => {
@@ -1008,9 +1037,9 @@ export default function ProjectDetailPage() {
                                   };
                                 })
                               }
-                              className="rounded-lg border border-zinc-800 p-1 text-zinc-500 hover:text-rose-400"
+                              className="rounded-lg border border-zinc-800 p-1.5 text-zinc-500 hover:text-rose-400 transition"
                             >
-                              <Trash2 size={12} />
+                              <Trash2 size={13} />
                             </button>
                           )}
                         </div>
@@ -1022,16 +1051,16 @@ export default function ProjectDetailPage() {
             </div>
           </section>
 
-          {/* Sticky Bottom Save Bar */}
-          <div className="sticky bottom-6 z-40 rounded-2xl border border-zinc-800 bg-[#0c0d15]/90 p-3.5 backdrop-blur-md shadow-2xl flex items-center justify-between">
-            <span className="text-xs text-zinc-400">Save project details & schema configuration.</span>
+          {/* STICKY SAVE BAR */}
+          <div className="sticky bottom-6 z-40 rounded-2xl border border-zinc-800 bg-[#0f111a]/95 p-4 backdrop-blur-md shadow-2xl flex items-center justify-between">
+            <span className="text-xs text-zinc-400 font-medium">Save project configurations & schema definitions.</span>
 
             <button
               type="submit"
               disabled={saving}
-              className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 px-5 py-2 text-xs font-bold text-zinc-950 transition active:scale-95 disabled:opacity-50 shadow-md"
+              className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 px-6 py-2.5 text-xs font-bold text-zinc-950 transition active:scale-95 disabled:opacity-50 shadow-md"
             >
-              <Save size={15} />
+              <Save size={16} />
               <span>{saving ? 'Saving...' : 'Save Settings'}</span>
             </button>
           </div>
@@ -1039,158 +1068,36 @@ export default function ProjectDetailPage() {
         </form>
       </div>
 
-      {/* CREDENTIALS MODAL (COMPACT & REAL VALUES COPYING - DOES NOT BLOAT PAGE!) */}
-      {showCredentialsModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm animate-in fade-in duration-150">
-          <div className="w-full max-w-lg overflow-hidden rounded-3xl border border-zinc-800 bg-[#0c0d15] shadow-2xl space-y-4 p-5">
-            
-            {/* Modal Header */}
-            <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
-              <div className="flex items-center gap-2.5">
-                <span className="flex h-8 w-8 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
-                  <KeyRound size={16} />
-                </span>
-                <div>
-                  <h3 className="text-sm font-bold text-white">Project API Credentials</h3>
-                  <p className="text-[11px] text-zinc-400">Real values for gateway ingestion & HMAC signing.</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowCredentialsModal(false)}
-                className="rounded-xl border border-zinc-800 p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white transition"
-              >
-                <X size={15} />
-              </button>
-            </div>
-
-            {/* Modal Body: Unmasked Real Keys & Single Click Copy Buttons */}
-            <div className="space-y-4">
-              
-              {/* API KEY ROW */}
-              <div className="space-y-1">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-semibold text-zinc-300">API Key (X-API-KEY)</span>
-                  {copiedField === 'API Key' && (
-                    <span className="font-bold text-emerald-400 flex items-center gap-1 text-[11px]">
-                      <Check size={12} /> Real Key Copied!
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 rounded-xl border border-zinc-800 bg-[#080910] p-2">
-                  <input
-                    type="text"
-                    readOnly
-                    className="w-full bg-transparent outline-none text-cyan-300 font-mono text-xs select-all border-none focus:ring-0 truncate"
-                    value={generatedKeys?.api_key || 'Fetching real API key...'}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => handleCopy(generatedKeys?.api_key, 'API Key')}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/20 hover:bg-emerald-500/30 px-3 py-1.5 text-xs font-bold text-emerald-400 transition active:scale-95 shrink-0"
-                  >
-                    <Copy size={13} />
-                    <span>Copy</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* WEBHOOK SECRET ROW */}
-              <div className="space-y-1">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-semibold text-zinc-300">Webhook Secret Key</span>
-                  {copiedField === 'Webhook Secret' && (
-                    <span className="font-bold text-emerald-400 flex items-center gap-1 text-[11px]">
-                      <Check size={12} /> Real Secret Copied!
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 rounded-xl border border-zinc-800 bg-[#080910] p-2">
-                  <input
-                    type={revealSecret ? 'text' : 'password'}
-                    readOnly
-                    className="w-full bg-transparent outline-none text-pink-300 font-mono text-xs select-all border-none focus:ring-0 truncate"
-                    value={generatedKeys?.secret_key || 'Fetching real secret key...'}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setRevealSecret((prev) => !prev)}
-                    className="rounded-xl border border-zinc-800 bg-[#141522] hover:bg-zinc-800 p-1.5 text-zinc-300 transition shrink-0"
-                    title={revealSecret ? "Mask with dots" : "Show real characters"}
-                  >
-                    {revealSecret ? <EyeOff size={14} /> : <Eye size={14} />}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleCopy(generatedKeys?.secret_key, 'Webhook Secret')}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-pink-500/30 bg-pink-500/20 hover:bg-pink-500/30 px-3 py-1.5 text-xs font-bold text-pink-300 transition active:scale-95 shrink-0"
-                  >
-                    <Copy size={13} />
-                    <span>Copy</span>
-                  </button>
-                </div>
-              </div>
-
-            </div>
-
-            {/* Modal Footer */}
-            <div className="flex items-center justify-between border-t border-zinc-800 pt-3 text-xs">
-              <button
-                type="button"
-                onClick={handleRotateCredentials}
-                disabled={generating}
-                className="text-zinc-400 hover:text-amber-400 font-semibold flex items-center gap-1"
-              >
-                <RefreshCw size={12} className={generating ? 'animate-spin' : ''} />
-                <span>Rotate / Regenerate Keys</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setShowCredentialsModal(false)}
-                className="rounded-xl bg-zinc-800 hover:bg-zinc-700 px-4 py-1.5 font-bold text-white transition"
-              >
-                Done
-              </button>
-            </div>
-
-          </div>
-        </div>
-      )}
-
       {/* TEST WEBHOOK DISPATCHER MODAL */}
       {showTestModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-2xl overflow-hidden rounded-3xl border border-zinc-800 bg-[#0c0d15] shadow-2xl">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between border-b border-zinc-800 p-4 bg-[#10121d]">
-              <div className="flex items-center gap-2.5">
-                <span className="flex h-7 w-7 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
-                  <Zap size={15} />
+          <div className="w-full max-w-2xl overflow-hidden rounded-3xl border border-zinc-800 bg-[#0f111a] shadow-2xl">
+            <div className="flex items-center justify-between border-b border-zinc-800 p-5 bg-[#141724]">
+              <div className="flex items-center gap-3">
+                <span className="flex h-8 w-8 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
+                  <Zap size={16} />
                 </span>
                 <div>
-                  <h3 className="text-xs font-bold text-white uppercase">Test Webhook Gateway Console</h3>
+                  <h3 className="text-sm font-bold text-white uppercase">Test Webhook Gateway Console</h3>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setShowTestModal(false)}
-                className="rounded-xl border border-zinc-800 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                className="rounded-xl border border-zinc-800 px-3 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-white"
               >
                 ✕
               </button>
             </div>
 
-            {/* Modal Body */}
-            <div className="space-y-4 p-5 max-h-[75vh] overflow-y-auto">
-              
-              <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-4 p-6 max-h-[75vh] overflow-y-auto">
+              <div className="grid gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="block text-xs font-semibold text-zinc-400 mb-1">
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5">
                     Event Type
                   </label>
                   <select
-                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
+                    className="w-full rounded-xl border border-zinc-800 bg-[#090a10] px-3.5 py-2 text-xs font-mono text-zinc-200 outline-none focus:border-emerald-400"
                     value={testEventType}
                     onChange={(e) => setTestEventType(e.target.value)}
                   >
@@ -1201,24 +1108,24 @@ export default function ProjectDetailPage() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-zinc-400 mb-1">
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5">
                     Target Project Node
                   </label>
                   <input
-                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3 py-2 text-xs font-mono text-zinc-400"
+                    className="w-full rounded-xl border border-zinc-800 bg-[#090a10] px-3.5 py-2 text-xs font-mono text-zinc-400"
                     disabled
                     value={project?.name || ''}
                   />
                 </div>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="block text-xs font-semibold text-zinc-400 mb-1">
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5">
                     API Key (X-API-KEY)
                   </label>
                   <input
-                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3 py-2 text-xs font-mono text-cyan-300 outline-none focus:border-emerald-400"
+                    className="w-full rounded-xl border border-zinc-800 bg-[#090a10] px-3.5 py-2 text-xs font-mono text-cyan-300 outline-none focus:border-emerald-400"
                     value={testApiKey}
                     onChange={(e) => setTestApiKey(e.target.value)}
                     placeholder="gw_live:..."
@@ -1226,12 +1133,12 @@ export default function ProjectDetailPage() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-zinc-400 mb-1">
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5">
                     Webhook Secret (HMAC-SHA256)
                   </label>
                   <input
-                    type="password"
-                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3 py-2 text-xs font-mono text-pink-300 outline-none focus:border-emerald-400"
+                    type="text"
+                    className="w-full rounded-xl border border-zinc-800 bg-[#090a10] px-3.5 py-2 text-xs font-mono text-pink-300 outline-none focus:border-emerald-400"
                     value={testSecretKey}
                     onChange={(e) => setTestSecretKey(e.target.value)}
                     placeholder="Secret Key..."
@@ -1240,18 +1147,18 @@ export default function ProjectDetailPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-zinc-400 mb-1">
+                <label className="block text-xs font-semibold text-zinc-400 mb-1.5">
                   Test Payload JSON
                 </label>
                 <textarea
-                  className="min-h-32 w-full rounded-xl border border-zinc-800 bg-[#080910] p-3 text-xs font-mono text-emerald-300 outline-none focus:border-emerald-400"
+                  className="min-h-36 w-full rounded-xl border border-zinc-800 bg-[#090a10] p-3.5 text-xs font-mono text-emerald-300 outline-none focus:border-emerald-400"
                   value={testPayloadStr}
                   onChange={(e) => setTestPayloadStr(e.target.value)}
                   placeholder='{ "event": "order.created", "amount": 99.99 }'
                 />
               </div>
 
-              <div className="flex justify-end gap-2">
+              <div className="flex justify-end gap-3 pt-2">
                 <button
                   type="button"
                   onClick={() => setShowTestModal(false)}
@@ -1263,32 +1170,32 @@ export default function ProjectDetailPage() {
                   type="button"
                   disabled={testLoading}
                   onClick={handleDispatchTestWebhook}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-zinc-950 hover:bg-emerald-400 disabled:opacity-50 transition active:scale-95 shadow-md"
+                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-5 py-2 text-xs font-bold text-zinc-950 hover:bg-emerald-400 disabled:opacity-50 transition active:scale-95 shadow-md"
                 >
-                  <Zap size={14} />
+                  <Zap size={15} />
                   <span>{testLoading ? 'Dispatching...' : 'Dispatch Test Webhook'}</span>
                 </button>
               </div>
 
               {testResult && (
-                <div className="mt-4 space-y-2 rounded-2xl border border-zinc-800 bg-[#080910] p-4 text-xs font-mono">
+                <div className="mt-4 space-y-2 rounded-2xl border border-zinc-800 bg-[#090a10] p-4 text-xs font-mono">
                   <div className="flex items-center justify-between border-b border-zinc-800/80 pb-2">
                     <span className="font-bold text-white">GATEWAY TEST EXECUTION RESULT</span>
-                    <span className={`px-2 py-0.5 rounded font-bold ${testResult.gateway_http_code < 400 || testResult.status === 'Gateway_Accepted' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>
+                    <span className={`px-2.5 py-1 rounded-lg font-bold ${testResult.gateway_http_code < 400 || testResult.status === 'Gateway_Accepted' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>
                       {testResult.gateway_http_code ? `HTTP ${testResult.gateway_http_code}` : testResult.status}
                     </span>
                   </div>
 
                   {testResult.generated_headers?.['X-HUB-SIGNATURE'] && (
-                    <div className="text-[11px]">
+                    <div className="text-[11px] pt-1">
                       <span className="text-zinc-500 font-bold">HMAC Signature: </span>
                       <span className="text-cyan-400 font-bold break-all">{testResult.generated_headers['X-HUB-SIGNATURE']}</span>
                     </div>
                   )}
 
-                  <div>
+                  <div className="pt-1">
                     <span className="text-zinc-500 font-bold">Gateway Response: </span>
-                    <pre className="mt-1 max-h-36 overflow-y-auto rounded-xl bg-black/60 p-3 text-[11px] text-zinc-300">
+                    <pre className="mt-1.5 max-h-40 overflow-y-auto rounded-xl bg-black/60 p-3.5 text-[11px] text-zinc-300">
                       {JSON.stringify(testResult.gateway_response || testResult, null, 2)}
                     </pre>
                   </div>
