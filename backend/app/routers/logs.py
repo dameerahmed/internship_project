@@ -7,7 +7,7 @@ from urllib.parse import unquote
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Query, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import delete, func
+from sqlalchemy import delete, func, case
 from sqlalchemy.orm import selectinload
 import time
 from backend.app.services.dependencies import get_current_company
@@ -391,17 +391,42 @@ async def websocket_dashboard_stream(websocket: WebSocket, company_id: str):
                             }
                         else:
                             # Use RabbitMQ queues for Real-Time metrics instead of hitting DB table
-                            total_messages = main_queue_count + dlq_count
-                            success_rate = 100.0 if total_messages == 0 else round(100.0 - (dlq_count / total_messages * 100), 1)
+                            # Hybrid Metrics: Real-time RabbitMQ counts + PostgreSQL historical stats
+                            now = datetime.utcnow()
+                            last_24h = now - timedelta(hours=24)
+                            last_1m = now - timedelta(minutes=1)
 
-                            # Set DB metrics to zero or mock since user requested purely RabbitMQ based stats
-                            total_webhooks = total_messages
-                            total_24h = total_messages
-                            throughput_rpm = main_queue_count  # Mock throughput as pending messages
+                            metrics_res = await db_session.execute(
+                                select(
+                                    func.count(WebhookLog.id),
+                                    func.sum(case((WebhookLog.response_code < 300, 1), else_=0)),
+                                    func.sum(case((WebhookLog.response_code >= 300, 1), else_=0)),
+                                    func.avg(WebhookLog.processing_duration_ms)
+                                ).where(
+                                    WebhookLog.event_config_id.in_(ec_ids),
+                                    WebhookLog.created_at >= last_24h
+                                )
+                            )
+                            total_24h, success_24h, failed_24h, avg_latency = metrics_res.first()
+                            total_24h = total_24h or 0
+                            success_count = success_24h or 0
+                            failed_count = failed_24h or 0
+                            avg_latency_ms = round(avg_latency or 0.0, 2)
+                            success_rate = 100.0 if total_24h == 0 else round((success_count / total_24h) * 100, 1)
+
+                            lifetime_res = await db_session.execute(
+                                select(func.count(WebhookLog.id)).where(WebhookLog.event_config_id.in_(ec_ids))
+                            )
+                            total_webhooks = lifetime_res.scalar() or 0
+
+                            rpm_res = await db_session.execute(
+                                select(func.count(WebhookLog.id)).where(
+                                    WebhookLog.event_config_id.in_(ec_ids),
+                                    WebhookLog.created_at >= last_1m
+                                )
+                            )
+                            throughput_rpm = rpm_res.scalar() or 0
                             throughput_rps = round(throughput_rpm / 60.0, 2)
-                            success_count = main_queue_count
-                            failed_count = dlq_count
-                            avg_latency_ms = 0.0
 
                             payload = {
                                 "type": "DASHBOARD_UPDATE",
@@ -538,20 +563,41 @@ async def get_dashboard_stats(
     real_dlq_count = await rabbitmq_manager.get_dlq_message_count()
     real_main_queue_count = await rabbitmq_manager.get_main_queue_message_count()
 
-    # ── METRICS BASED ON RABBITMQ INSTEAD OF LOGS ──────────────
-    total_messages = real_main_queue_count + real_dlq_count
-    success_rate = 100.0 if total_messages == 0 else round(100.0 - (real_dlq_count / total_messages * 100), 1)
+    # Hybrid Metrics: Real-time RabbitMQ counts + PostgreSQL historical stats
+    now = datetime.utcnow()
+    last_24h = now - timedelta(hours=24)
+    last_1m = now - timedelta(minutes=1)
 
-    total_webhooks = total_messages
-    total_24h = total_messages
-    success_count = real_main_queue_count
-    failed_count = real_dlq_count
-    latency_result = await db.execute(
-        select(func.avg(WebhookLog.processing_duration_ms))
-        .where(WebhookLog.event_config_id.in_(ec_ids))
+    metrics_res = await db.execute(
+        select(
+            func.count(WebhookLog.id),
+            func.sum(case((WebhookLog.response_code < 300, 1), else_=0)),
+            func.sum(case((WebhookLog.response_code >= 300, 1), else_=0)),
+            func.avg(WebhookLog.processing_duration_ms)
+        ).where(
+            WebhookLog.event_config_id.in_(ec_ids),
+            WebhookLog.created_at >= last_24h
+        )
     )
-    avg_latency_ms = round(latency_result.scalar() or 0.0, 2)
-    throughput_rpm = real_main_queue_count
+    total_24h, success_24h, failed_24h, avg_latency = metrics_res.first()
+    total_24h = total_24h or 0
+    success_count = success_24h or 0
+    failed_count = failed_24h or 0
+    avg_latency_ms = round(avg_latency or 0.0, 2)
+    success_rate = 100.0 if total_24h == 0 else round((success_count / total_24h) * 100, 1)
+
+    lifetime_res = await db.execute(
+        select(func.count(WebhookLog.id)).where(WebhookLog.event_config_id.in_(ec_ids))
+    )
+    total_webhooks = lifetime_res.scalar() or 0
+
+    rpm_res = await db.execute(
+        select(func.count(WebhookLog.id)).where(
+            WebhookLog.event_config_id.in_(ec_ids),
+            WebhookLog.created_at >= last_1m
+        )
+    )
+    throughput_rpm = rpm_res.scalar() or 0
     throughput_rps = round(throughput_rpm / 60.0, 2)
 
     return {
