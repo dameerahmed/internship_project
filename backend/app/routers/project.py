@@ -401,23 +401,41 @@ async def update_project(
             db_project.retention_days = payload.retention_days
 
         if payload.event_configs is not None:
-            await db.execute(delete(EventConfig).where(EventConfig.project_id == project_id))
+            existing_events_res = await db.execute(select(EventConfig).where(EventConfig.project_id == project_id))
+            existing_events = {e.event_type: e for e in existing_events_res.scalars().all()}
+            
             allowed_events_list = []
             for event in payload.event_configs:
                 normalized_event = normalize_event_config_payload(event)
-                db_event = EventConfig(
-                    project_id=project_id,
-                    event_type=normalized_event["event_type"],
-                    target_url=normalized_event["target_url"],
-                    metadata_json=normalized_event["metadata_json"],
-                    is_active=getattr(event, "is_active", True),
-                    retention_days=normalized_event.get("retention_days"),
-                    delete_time=normalized_event.get("delete_time"),
-                    payload_keys=normalized_event.get("payload_keys") or None,
-                    payload_types=normalized_event.get("payload_types") or None,
-                )
-                db.add(db_event)
-                allowed_events_list.append(normalized_event["event_type"])
+                event_type = normalized_event["event_type"]
+                allowed_events_list.append(event_type)
+                
+                if event_type in existing_events:
+                    db_event = existing_events[event_type]
+                    db_event.target_url = normalized_event["target_url"]
+                    db_event.metadata_json = normalized_event["metadata_json"]
+                    db_event.is_active = getattr(event, "is_active", True)
+                    db_event.retention_days = normalized_event.get("retention_days")
+                    db_event.delete_time = normalized_event.get("delete_time")
+                    db_event.payload_keys = normalized_event.get("payload_keys") or None
+                    db_event.payload_types = normalized_event.get("payload_types") or None
+                else:
+                    db_event = EventConfig(
+                        project_id=project_id,
+                        event_type=event_type,
+                        target_url=normalized_event["target_url"],
+                        metadata_json=normalized_event["metadata_json"],
+                        is_active=getattr(event, "is_active", True),
+                        retention_days=normalized_event.get("retention_days"),
+                        delete_time=normalized_event.get("delete_time"),
+                        payload_keys=normalized_event.get("payload_keys") or None,
+                        payload_types=normalized_event.get("payload_types") or None,
+                    )
+                    db.add(db_event)
+            
+            for event_type, db_event in existing_events.items():
+                if event_type not in allowed_events_list:
+                    await db.delete(db_event)
         else:
             allowed_events_list = [
                 event_config.event_type for event_config in db_project.event_configs if getattr(event_config, "is_active", True)

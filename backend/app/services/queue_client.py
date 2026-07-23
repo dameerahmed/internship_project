@@ -1,3 +1,4 @@
+from backend.app.services.celery_worker import celery_app
 import json
 import logging
 import time
@@ -316,8 +317,6 @@ class RabbitMQManager:
         """
         Takes REAL messages directly from RabbitMQ DLQ and pushes them BACK into the main queue.
         Removes them from DLQ via ack() and publishes to main exchange.
-
-        FIX: Uses declaration_result (not declare_result) for message count.
         """
         await self._ensure_channel()
 
@@ -355,14 +354,20 @@ class RabbitMQManager:
                 if should_requeue:
                     # 1. Acknowledge and remove from DLQ
                     await msg.ack()
-                    # 2. Publish back into main queue
-                    await self.channel.default_exchange.publish(
-                        aio_pika.Message(
-                            body=msg.body,
-                            headers=msg.headers,
-                            delivery_mode=aio_pika.DeliveryMode.PERSISTENT
-                        ),
-                        routing_key=self.main_queue_name
+                    
+                    # 2. Parse payload to get the delivery packet
+                    try:
+                        import json
+                        parsed_body = json.loads(raw_body)
+                        delivery_packet = parsed_body.get("delivery_packet") or parsed_body
+                    except Exception:
+                        delivery_packet = {"raw_content": raw_body}
+
+                    # 3. Publish back into main queue AS A PROPER CELERY TASK
+                    celery_app.send_task(
+                        "backend.app.services.celery_worker.dispatch_webhook_task",
+                        kwargs={"delivery_packet": delivery_packet},
+                        queue="webhook_delivery_queue"
                     )
                     requeued_ids.append(raw_id or f"msg_{len(requeued_ids)+1}")
                 else:

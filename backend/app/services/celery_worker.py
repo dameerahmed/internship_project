@@ -20,6 +20,7 @@ from backend.app.models.event_config import EventConfig
 from backend.app.models.webhook_log import WebhookLog, WebhookStatus
 from backend.app.models.project import Project
 from backend.app.models.webhook_event import WebhookEvent
+from backend.app.services.metrics_service import metrics_service
 from backend.app.utils.security import WebhookSecurity, sanitize_for_logging
 from backend.app.services.failover import service_health_monitor, sanitize_response_payload
 from backend.app.services.redis_client import get_redis_client
@@ -108,6 +109,16 @@ async def _persist_webhook_log(**kwargs):
                 db_session.add(log_entry)
             
             await db_session.commit()
+            
+            # Redis Real-Time Metrics Update
+            status_val = kwargs.get("status")
+            if status_val in [WebhookStatus.SUCCESS, WebhookStatus.FAILED]:
+                company_id = kwargs.get("company_id")
+                if company_id:
+                    is_success = (status_val == WebhookStatus.SUCCESS)
+                    latency = kwargs.get("processing_duration_ms") or 0.0
+                    await metrics_service.record_delivery_result(company_id, is_success, latency)
+            
             break
     except Exception as exc:
         logger.exception("Failed to persist webhook log", exc_info=exc)

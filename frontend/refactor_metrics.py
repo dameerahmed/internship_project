@@ -1,4 +1,8 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import os
+
+file_path = r'd:\internship\frontend\src\components\dashboard\MetricsDashboard.jsx'
+
+new_content = """import { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -408,3 +412,7 @@ export default function MetricsDashboard({ companyId, identityLabel = 'Operator 
     </section>
   );
 }
+"""
+
+with open(file_path, "w", encoding="utf-8") as f:
+    f.write(new_content)

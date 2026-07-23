@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, Depends, HTTPException, status
+from fastapi import APIRouter, Request, Depends, HTTPException, status, BackgroundTasks
 from pydantic import BaseModel
 import asyncio
 import httpx
@@ -22,6 +22,7 @@ from backend.app.models.event_config import EventConfig
 from backend.app.models.project import Project
 from backend.app.models.webhook_event import WebhookEvent
 from backend.app.models.webhook_log import WebhookLog, WebhookStatus
+from backend.app.services.metrics_service import metrics_service
 from backend.database import get_db
 
 router = APIRouter(tags=["Gateway"])
@@ -114,7 +115,7 @@ async def _queue_gateway_log(log_payload: dict, redis_conn=None) -> None:
 
 
 @router.post("/v1/gateway")
-async def incoming_webhook_receiver(request: Request, redis_conn = Depends(get_redis)):
+async def incoming_webhook_receiver(request: Request, background_tasks: BackgroundTasks, redis_conn = Depends(get_redis)):
     started_at = time.time()
     event_id = f"evt_{uuid.uuid4().hex}"
 
@@ -233,6 +234,7 @@ async def incoming_webhook_receiver(request: Request, redis_conn = Depends(get_r
                 )
 
         await _queue_gateway_log(log_payload, redis_conn=redis_conn)
+        background_tasks.add_task(metrics_service.increment_gateway_throughput, company_id)
 
         if not target_urls:
             target_urls = [None]

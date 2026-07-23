@@ -5,6 +5,7 @@ from typing import Optional
 from datetime import datetime, timezone, timedelta
 from urllib.parse import unquote
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Query, HTTPException
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import delete, func, case
@@ -17,6 +18,8 @@ from backend.app.models.project import Project
 from backend.app.models.webhook_log import WebhookLog, WebhookStatus
 from backend.app.models.webhook_event import WebhookEvent
 from backend.app.services.celery_worker import dispatch_webhook_task
+from backend.app.services.metrics_service import metrics_service
+from starlette.websockets import WebSocketState
 from backend.app.services.failover import service_health_monitor
 from backend.database import get_db
 from backend.app.services.queue_client import rabbitmq_manager
@@ -269,12 +272,12 @@ async def websocket_dlq_stream(websocket: WebSocket, company_id: Optional[str] =
             current_hash = json.dumps([item.get("id") for item in filtered_items])
             if current_hash != last_hash:
                 try:
-                    await websocket.send_json({
+                    await websocket.send_json(jsonable_encoder({
                         "type": "DLQ_UPDATE",
                         "count": len(filtered_items),
                         "items": filtered_items,
                         "timestamp": datetime.utcnow().isoformat()
-                    })
+                    }))
                     last_hash = current_hash
                 except Exception as inner_exc:
                     err_str = str(inner_exc)
@@ -292,17 +295,15 @@ async def websocket_dlq_stream(websocket: WebSocket, company_id: Optional[str] =
 
 @router.websocket("/ws/dashboard/{company_id}")
 async def websocket_dashboard_stream(websocket: WebSocket, company_id: str):
-    """
-    Live WebSocket endpoint that pushes real-time dashboard stats directly to the client.
-    Tenant-isolated: only delivers metrics for the authenticated company's projects.
-    Pushes a diff-aware update every 2 seconds — only when values change.
-    """
     await websocket.accept()
     try:
         c_id = int(company_id) if company_id and company_id.isdigit() else None
         last_payload_hash = ""
 
         while True:
+            if websocket.client_state != WebSocketState.CONNECTED:
+                break
+                
             try:
                 # -- Infrastructure health --
                 redis_status = "ONLINE"
@@ -325,151 +326,66 @@ async def websocket_dashboard_stream(websocket: WebSocket, company_id: str):
                 except Exception:
                     pass
 
-                # -- Real DLQ count from RabbitMQ --
+                # -- Real Queue counts --
                 dlq_count = await rabbitmq_manager.get_dlq_message_count()
                 main_queue_count = await rabbitmq_manager.get_main_queue_message_count()
 
-                # -- Per-tenant DB metrics --
+                # -- DB Metadata (Projects/Routes) --
                 async for db_session in get_db():
-                    proj_res = await db_session.execute(
-                        select(Project).where(Project.company_id == c_id)
-                    )
+                    proj_res = await db_session.execute(select(Project).where(Project.company_id == c_id))
                     projects = proj_res.scalars().all()
-                    project_ids = [p.id for p in projects]
                     active_projects = sum(1 for p in projects if p.is_active)
+                    project_ids = [p.id for p in projects]
 
-                    if not project_ids:
-                        payload = {
-                            "type": "DASHBOARD_UPDATE",
-                            "total_projects": 0,
-                            "active_projects": 0,
-                            "total_event_routes": 0,
-                            "total_webhooks": 0,
-                            "throughput_rpm": 0,
-                            "throughput_rps": 0.0,
-                            "success_count": 0,
-                            "failed_count": 0,
-                            "success_rate": 100.0,
-                            "avg_latency_ms": 0.0,
-                            "dlq_count": dlq_count,
-                            "main_queue_count": main_queue_count,
-                            "redis_status": redis_status,
-                            "redis_latency_ms": redis_latency_ms,
-                            "rabbitmq_status": rabbitmq_status,
-                        }
-                    else:
+                    total_routes = 0
+                    if project_ids:
                         ec_res = await db_session.execute(
-                            select(EventConfig.id).where(EventConfig.project_id.in_(project_ids))
+                            select(func.count(EventConfig.id)).where(EventConfig.project_id.in_(project_ids), EventConfig.is_active == True)
                         )
-                        ec_ids = [row[0] for row in ec_res.fetchall()]
-                        total_routes_res = await db_session.execute(
-                            select(func.count(EventConfig.id)).where(
-                                EventConfig.project_id.in_(project_ids),
-                                EventConfig.is_active == True
-                            )
-                        )
-                        total_routes = total_routes_res.scalar() or 0
+                        total_routes = ec_res.scalar() or 0
 
-                        if not ec_ids:
-                            payload = {
-                                "type": "DASHBOARD_UPDATE",
-                                "total_projects": len(projects),
-                                "active_projects": active_projects,
-                                "total_event_routes": total_routes,
-                                "total_webhooks": 0,
-                                "throughput_rpm": 0,
-                                "throughput_rps": 0.0,
-                                "success_count": 0,
-                                "failed_count": 0,
-                                "success_rate": 100.0,
-                                "avg_latency_ms": 0.0,
-                                "dlq_count": dlq_count,
-                                "main_queue_count": main_queue_count,
-                                "redis_status": redis_status,
-                                "redis_latency_ms": redis_latency_ms,
-                                "rabbitmq_status": rabbitmq_status,
-                            }
-                        else:
-                            # Use RabbitMQ queues for Real-Time metrics instead of hitting DB table
-                            # Hybrid Metrics: Real-time RabbitMQ counts + PostgreSQL historical stats
-                            now = datetime.utcnow()
-                            last_24h = now - timedelta(hours=24)
-                            last_1m = now - timedelta(minutes=1)
+                    # -- Fetch Redis Metrics --
+                    metrics = await metrics_service.get_or_hydrate_metrics(c_id, db_session)
+                    
+                    payload = {
+                        "type": "DASHBOARD_UPDATE",
+                        "total_projects": len(projects),
+                        "active_projects": active_projects,
+                        "total_event_routes": total_routes,
+                        "total_webhooks": metrics["total_webhooks"],
+                        "throughput_rpm": metrics["throughput_rpm"],
+                        "throughput_rps": metrics["throughput_rps"],
+                        "success_count": metrics["success_count"],
+                        "failed_count": metrics["failed_count"],
+                        "success_rate": metrics["success_rate"],
+                        "avg_latency_ms": metrics["avg_latency_ms"],
+                        "dlq_count": dlq_count,
+                        "main_queue_count": main_queue_count,
+                        "redis_status": redis_status,
+                        "redis_latency_ms": redis_latency_ms,
+                        "rabbitmq_status": rabbitmq_status,
+                    }
+                    break  # exit db generator
+                    
+                if websocket.client_state != WebSocketState.CONNECTED:
+                    break
 
-                            metrics_res = await db_session.execute(
-                                select(
-                                    func.count(WebhookLog.id),
-                                    func.sum(case((WebhookLog.response_code < 300, 1), else_=0)),
-                                    func.sum(case((WebhookLog.response_code >= 300, 1), else_=0)),
-                                    func.avg(WebhookLog.processing_duration_ms)
-                                ).where(
-                                    WebhookLog.event_config_id.in_(ec_ids),
-                                    WebhookLog.created_at >= last_24h
-                                )
-                            )
-                            total_24h, success_24h, failed_24h, avg_latency = metrics_res.first()
-                            total_24h = total_24h or 0
-                            success_count = success_24h or 0
-                            failed_count = failed_24h or 0
-                            avg_latency_ms = round(avg_latency or 0.0, 2)
-                            success_rate = 100.0 if total_24h == 0 else round((success_count / total_24h) * 100, 1)
-
-                            lifetime_res = await db_session.execute(
-                                select(func.count(WebhookLog.id)).where(WebhookLog.event_config_id.in_(ec_ids))
-                            )
-                            total_webhooks = lifetime_res.scalar() or 0
-
-                            rpm_res = await db_session.execute(
-                                select(func.count(WebhookLog.id)).where(
-                                    WebhookLog.event_config_id.in_(ec_ids),
-                                    WebhookLog.created_at >= last_1m
-                                )
-                            )
-                            throughput_rpm = rpm_res.scalar() or 0
-                            throughput_rps = round(throughput_rpm / 60.0, 2)
-
-                            payload = {
-                                "type": "DASHBOARD_UPDATE",
-                                "total_projects": len(projects),
-                                "active_projects": active_projects,
-                                "total_event_routes": total_routes,
-                                "total_webhooks": total_webhooks,   # lifetime
-                                "total_webhooks": total_webhooks,
-                                "total_24h": total_24h,
-                                "throughput_rpm": throughput_rpm,
-                                "throughput_rps": throughput_rps,
-                                "success_count": success_count,
-                                "failed_count": failed_count,
-                                "success_rate": success_rate,
-                                "avg_latency_ms": avg_latency_ms,
-                                "dlq_count": dlq_count,
-                                "main_queue_count": main_queue_count,
-                                "redis_status": redis_status,
-                                "redis_latency_ms": redis_latency_ms,
-                                "rabbitmq_status": rabbitmq_status,
-                                "stats_window": "24h",
-                            }
-                    break  # exit the `async for get_db()` generator
-
-                # Diff-aware: only send if something changed
-                current_hash = json.dumps(payload, sort_keys=True)
+                current_hash = json.dumps(jsonable_encoder(payload), sort_keys=True)
                 if current_hash != last_payload_hash:
-                    await websocket.send_json(payload)
+                    await websocket.send_json(jsonable_encoder(payload))
                     last_payload_hash = current_hash
 
             except Exception as inner_exc:
                 err_str = str(inner_exc)
-                if "Cannot call \"send\" once a close message has been sent" in err_str or "ConnectionClosed" in err_str or "RuntimeError" in err_str:
-                    logger.debug("Dashboard WS client disconnected cleanly.")
+                if "Cannot call" in err_str or "ConnectionClosed" in err_str or "RuntimeError" in err_str:
                     break
-                logger.warning("Dashboard WS inner loop error: %s", inner_exc)
-
+                
             await asyncio.sleep(1.0)
 
     except WebSocketDisconnect:
-        logger.info("Client disconnected from dashboard stream")
+        pass
     except Exception as exc:
-        logger.warning("Dashboard WebSocket stream exception: %s", exc)
+        pass
 
 
 @router.get("/v1/dashboard/stats")
@@ -479,7 +395,6 @@ async def get_dashboard_stats(
 ):
     company_id = current_company.id
 
-    # 1. Real Redis Liveness & Ping Latency Test
     redis_status = "ONLINE"
     redis_latency_ms = 0.5
     try:
@@ -492,132 +407,49 @@ async def get_dashboard_stats(
             redis_status = "ONLINE"
             redis_latency_ms = round((t1 - t0) * 1000, 2)
     except Exception as exc:
-        logger.warning("Redis health check in stats failed: %s", exc)
         redis_status = "DEGRADED"
 
-    # 2. Real RabbitMQ Status Test
     rabbitmq_status = "ONLINE"
     try:
         rmq_ok = await service_health_monitor.check_rabbitmq()
         rabbitmq_status = "ONLINE" if rmq_ok else "DEGRADED"
     except Exception:
-        rabbitmq_status = "ONLINE"
+        pass
 
-    # 3. Fetch company's projects
-    proj_result = await db.execute(
-        select(Project).where(Project.company_id == company_id)
-    )
-    projects = proj_result.scalars().all()
-    project_ids = [p.id for p in projects]
-
-    if not project_ids:
-        return {
-            "total_projects": 0,
-            "active_projects": 0,
-            "total_event_routes": 0,
-            "total_webhooks": 0,
-            "success_count": 0,
-            "failed_count": 0,
-            "success_rate": 100.0,
-            "avg_latency_ms": 0.0,
-            "dlq_count": 0,
-            "main_queue_count": 0,
-            "redis_status": redis_status,
-            "redis_latency_ms": redis_latency_ms,
-            "rabbitmq_status": rabbitmq_status,
-            "recent_logs": [],
-        }
-
-    active_projects = sum(1 for p in projects if p.is_active)
-
-    # 4. Fetch event configs count
-    ec_result = await db.execute(
-        select(func.count(EventConfig.id)).where(EventConfig.project_id.in_(project_ids), EventConfig.is_active == True)
-    )
-    total_routes = ec_result.scalar() or 0
-
-    ec_all_result = await db.execute(
-        select(EventConfig.id).where(EventConfig.project_id.in_(project_ids))
-    )
-    ec_ids = [row[0] for row in ec_all_result.fetchall()]
-
-    if not ec_ids:
-        return {
-            "total_projects": len(projects),
-            "active_projects": active_projects,
-            "total_event_routes": total_routes,
-            "total_webhooks": 0,
-            "success_count": 0,
-            "failed_count": 0,
-            "success_rate": 100.0,
-            "avg_latency_ms": 0.0,
-            "dlq_count": 0,
-            "main_queue_count": 0,
-            "redis_status": redis_status,
-            "redis_latency_ms": redis_latency_ms,
-            "rabbitmq_status": rabbitmq_status,
-            "recent_logs": [],
-        }
-
-    # Real RabbitMQ DLQ Message Count
     real_dlq_count = await rabbitmq_manager.get_dlq_message_count()
     real_main_queue_count = await rabbitmq_manager.get_main_queue_message_count()
 
-    # Hybrid Metrics: Real-time RabbitMQ counts + PostgreSQL historical stats
-    now = datetime.utcnow()
-    last_24h = now - timedelta(hours=24)
-    last_1m = now - timedelta(minutes=1)
+    proj_result = await db.execute(select(Project).where(Project.company_id == company_id))
+    projects = proj_result.scalars().all()
+    project_ids = [p.id for p in projects]
+    active_projects = sum(1 for p in projects if p.is_active)
 
-    metrics_res = await db.execute(
-        select(
-            func.count(WebhookLog.id),
-            func.sum(case((WebhookLog.response_code < 300, 1), else_=0)),
-            func.sum(case((WebhookLog.response_code >= 300, 1), else_=0)),
-            func.avg(WebhookLog.processing_duration_ms)
-        ).where(
-            WebhookLog.event_config_id.in_(ec_ids),
-            WebhookLog.created_at >= last_24h
+    total_routes = 0
+    if project_ids:
+        ec_result = await db.execute(
+            select(func.count(EventConfig.id)).where(EventConfig.project_id.in_(project_ids), EventConfig.is_active == True)
         )
-    )
-    total_24h, success_24h, failed_24h, avg_latency = metrics_res.first()
-    total_24h = total_24h or 0
-    success_count = success_24h or 0
-    failed_count = failed_24h or 0
-    avg_latency_ms = round(avg_latency or 0.0, 2)
-    success_rate = 100.0 if total_24h == 0 else round((success_count / total_24h) * 100, 1)
+        total_routes = ec_result.scalar() or 0
 
-    lifetime_res = await db.execute(
-        select(func.count(WebhookLog.id)).where(WebhookLog.event_config_id.in_(ec_ids))
-    )
-    total_webhooks = lifetime_res.scalar() or 0
-
-    rpm_res = await db.execute(
-        select(func.count(WebhookLog.id)).where(
-            WebhookLog.event_config_id.in_(ec_ids),
-            WebhookLog.created_at >= last_1m
-        )
-    )
-    throughput_rpm = rpm_res.scalar() or 0
-    throughput_rps = round(throughput_rpm / 60.0, 2)
+    metrics = await metrics_service.get_or_hydrate_metrics(company_id, db)
 
     return {
         "total_projects": len(projects),
         "active_projects": active_projects,
         "total_event_routes": total_routes,
-        "total_webhooks": total_webhooks,       # lifetime total (indexed COUNT)
-        "total_24h": total_24h,                  # last 24h processed
-        "throughput_rpm": throughput_rpm,
-        "throughput_rps": throughput_rps,
-        "success_count": success_count,          # last 24h
-        "failed_count": failed_count,            # last 24h
-        "success_rate": success_rate,            # last 24h
-        "avg_latency_ms": avg_latency_ms,        # last 24h
+        "total_webhooks": metrics["total_webhooks"],
+        "throughput_rpm": metrics["throughput_rpm"],
+        "throughput_rps": metrics["throughput_rps"],
+        "success_count": metrics["success_count"],
+        "failed_count": metrics["failed_count"],
+        "success_rate": metrics["success_rate"],
+        "avg_latency_ms": metrics["avg_latency_ms"],
         "dlq_count": real_dlq_count,
         "main_queue_count": real_main_queue_count,
         "redis_status": redis_status,
         "redis_latency_ms": redis_latency_ms,
         "rabbitmq_status": rabbitmq_status,
-        "stats_window": "24h",
+        "stats_window": "lifetime",
     }
 
 

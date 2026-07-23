@@ -52,48 +52,51 @@ export default function DashboardPage() {
     <ProtectedLayout title="Webhook Gateway Dashboard" eyebrow="Overview">
       <div className="space-y-6">
         
-        {/* SLEEK ENVATO-STYLE COMMAND BANNER */}
-        <section className="relative overflow-hidden rounded-2xl border border-zinc-800/80 bg-gradient-to-r from-[#0d0e17] via-[#10121e] to-[#0d0e17] p-6 shadow-2xl">
+        {/* VERCEL/SUPABASE STYLE BANNER */}
+        <section className="relative overflow-hidden rounded-xl border border-zinc-800/60 bg-[#0A0A0A] p-6 shadow-sm">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-ping" />
-                <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-emerald-400">
-                  SYSTEM ONLINE • 100% OPERATIONAL
+              <div className="flex items-center gap-2 mb-2">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </span>
+                <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-400">
+                  System Operational
                 </span>
               </div>
-              <h1 className="mt-1 text-2xl font-bold text-white tracking-tight">
+              <h1 className="text-2xl font-semibold text-zinc-100 tracking-tight">
                 Welcome back, {maskIdentity(user?.company_name || user?.email || 'Operator Console')}
               </h1>
-              <p className="mt-1 text-xs text-zinc-400 font-mono">
-                {loading ? 'Connecting telemetry...' : `${activeProjects} Active Projects • Real-Time Ingress Traffic & Redis/RabbitMQ Engine`}
+              <p className="mt-1 text-sm text-zinc-500">
+                {loading ? 'Connecting telemetry...' : `${activeProjects} Active Projects`}
               </p>
             </div>
 
             {/* Action Buttons Toolbar */}
-            <div className="flex flex-wrap items-center gap-2.5">
+            <div className="flex flex-wrap items-center gap-3">
               <Link
                 to="/projects"
-                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 px-3.5 py-2 text-xs font-mono font-bold text-zinc-950 transition active:scale-95 shadow-md"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-100 hover:bg-white px-3.5 py-2 text-sm font-medium text-zinc-900 transition shadow-sm"
               >
-                <Plus size={14} />
+                <Plus size={16} />
                 <span>New Project</span>
               </Link>
 
               <Link
                 to="/logs"
-                className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-800 bg-[#141624] hover:bg-[#1a1d30] px-3.5 py-2 text-xs font-mono font-bold text-zinc-200 transition active:scale-95 shadow-sm"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900/50 hover:bg-zinc-800 px-3.5 py-2 text-sm font-medium text-zinc-300 transition shadow-sm"
               >
-                <Terminal size={14} className="text-cyan-400" />
+                <Terminal size={16} className="text-zinc-400" />
                 <span>Live Stream</span>
               </Link>
 
               <Link
                 to="/dlq"
-                className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 px-3.5 py-2 text-xs font-mono font-bold text-rose-400 transition active:scale-95 shadow-sm"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900/50 hover:bg-zinc-800 px-3.5 py-2 text-sm font-medium text-zinc-300 transition shadow-sm"
               >
-                <AlertTriangle size={14} />
-                <span>DLQ Queue</span>
+                <AlertTriangle size={16} className="text-zinc-400" />
+                <span>DLQ</span>
               </Link>
             </div>
           </div>
