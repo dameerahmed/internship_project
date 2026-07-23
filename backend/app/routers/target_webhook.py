@@ -24,28 +24,24 @@ PROCESSED_EVENTS: set = set()
 def verify_gateway_signature(raw_body: bytes, signature_str: Optional[str]) -> bool:
     """
     Verifies the incoming asymmetric signature from the gateway.
-
-    FIX: signature_str is now Optional — if not provided, test receivers
-    still accept the request so integration tests work without full PKI setup.
+    STRICT PRODUCTION MODE: Fails if signature is missing or invalid.
     """
     try:
-        # If no signature header was sent, skip verification for test receivers
         if not signature_str:
-            logger.debug("No X-GATEWAY-SIGNATURE header — skipping signature check for test receiver")
-            return True
+            logger.warning("Missing X-GATEWAY-SIGNATURE header — rejecting request")
+            return False
 
-        # If no public key configured, accept all (dev mode)
         if not GATEWAY_PUBLIC_KEY:
-            logger.info("SYSTEM_PUBLIC_KEY not set — accepting test receiver delivery without verification")
-            return True
+            logger.error("SYSTEM_PUBLIC_KEY not configured on target receiver!")
+            return False
 
         public_key = serialization.load_pem_public_key(GATEWAY_PUBLIC_KEY.encode("utf-8"))
 
         try:
             signature_bytes = base64.b64decode(signature_str)
         except Exception:
-            logger.warning("Signature base64 decode failed — accepting anyway for test receiver")
-            return True
+            logger.warning("Signature base64 decode failed")
+            return False
 
         public_key.verify(
             signature_bytes,
@@ -56,16 +52,20 @@ def verify_gateway_signature(raw_body: bytes, signature_str: Optional[str]) -> b
         return True
 
     except Exception as exc:
-        logger.debug("Signature verification exception (ignored for test receiver): %s", exc)
-        return True  # Test receivers always accept — don't block integration tests
+        logger.warning("Signature verification failed (tampered payload or wrong key): %s", exc)
+        return False
 
 
 def _safe_parse_body(raw_body: bytes) -> dict:
-    """Safely parse request body to dict, never raises."""
+    """Safely parse request body to dict, NEVER raises and ALWAYS returns a dict."""
     try:
         if not raw_body:
             return {}
-        return json.loads(raw_body.decode("utf-8"))
+        parsed = json.loads(raw_body.decode("utf-8"))
+        if isinstance(parsed, dict):
+            return parsed
+        # If payload was a list or string, wrap it in a dict so .get() won't crash
+        return {"data": parsed}
     except Exception:
         return {"raw_content": raw_body.decode("utf-8", errors="replace")}
 
