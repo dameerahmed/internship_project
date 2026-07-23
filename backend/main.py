@@ -13,7 +13,7 @@ from backend.app.routers import company
 from backend.app.routers import gateway
 from backend.app.routers import logs
 from backend.app.routers import target_webhook
-from backend.database import async_session
+from backend.database import SessionLocal
 from backend.app.models.webhook_log import WebhookLog, WebhookStatus
 from backend.app.services.celery_worker import dispatch_webhook_task
 
@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
     # Startup DB Recovery Routine
     try:
         logger.info("Initializing Webhook Gateway Server & Checking for lost DB messages...")
-        async with async_session() as session:
+        async with SessionLocal() as session:
             stmt = select(WebhookLog.event_id).where(
                 WebhookLog.status.in_([WebhookStatus.PENDING, WebhookStatus.PROCESSING])
             )
