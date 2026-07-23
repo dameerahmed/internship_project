@@ -138,6 +138,51 @@ export default function ProjectDetailPage() {
     return null;
   };
 
+  // 1. Auto-Hide Credentials Modal after 60 seconds
+  useEffect(() => {
+    let timer;
+    if (showCredentialsModal) {
+      timer = setTimeout(() => {
+        setShowCredentialsModal(false);
+      }, 60000);
+    }
+    return () => clearTimeout(timer);
+  }, [showCredentialsModal]);
+
+  // 2. Load credentials from storage when Test Modal opens
+  useEffect(() => {
+    if (showTestModal) {
+      const storedApi = localStorage.getItem('test_api_key');
+      const storedSecret = localStorage.getItem('test_secret_key');
+      if (storedApi && storedSecret) {
+        setTestApiKey(storedApi);
+        setTestSecretKey(storedSecret);
+      }
+    }
+  }, [showTestModal]);
+
+  // Handle Pasting the "Copy Both" JSON in Test Modal
+  const handlePasteBoth = (text) => {
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed.api_key && parsed.secret_key) {
+        setTestApiKey(parsed.api_key);
+        setTestSecretKey(parsed.secret_key);
+        localStorage.setItem('test_api_key', parsed.api_key);
+        localStorage.setItem('test_secret_key', parsed.secret_key);
+      }
+    } catch {
+      // Not a valid JSON, ignore
+    }
+  };
+
+  const clearStoredTestKeys = () => {
+    localStorage.removeItem('test_api_key');
+    localStorage.removeItem('test_secret_key');
+    setTestApiKey('');
+    setTestSecretKey('');
+  };
+
   const loadProject = async () => {
     if (!projectId) {
       setLoading(false);
@@ -1090,18 +1135,35 @@ export default function ProjectDetailPage() {
                     className="w-full bg-transparent outline-none text-pink-300 font-mono text-xs select-all px-2 border-none truncate"
                     value={generatedKeys?.secret_key || 'Fetching real secret key...'}
                   />
+                    <button
+                      type="button"
+                      onClick={() => handleCopy(generatedKeys?.secret_key, 'Webhook Secret')}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-pink-500/40 bg-pink-500/20 hover:bg-pink-500/30 px-3.5 py-2 text-xs font-bold text-pink-300 transition active:scale-95 shrink-0"
+                    >
+                      <Copy size={14} />
+                      <span>Copy</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* COPY BOTH BUTTON */}
+                <div className="pt-2">
                   <button
                     type="button"
-                    onClick={() => handleCopy(generatedKeys?.secret_key, 'Webhook Secret')}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-pink-500/40 bg-pink-500/20 hover:bg-pink-500/30 px-3.5 py-2 text-xs font-bold text-pink-300 transition active:scale-95 shrink-0"
+                    onClick={() => {
+                      const bothStr = JSON.stringify({
+                        api_key: generatedKeys?.api_key,
+                        secret_key: generatedKeys?.secret_key
+                      });
+                      handleCopy(bothStr, 'Both');
+                    }}
+                    className="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-indigo-500/40 bg-indigo-500/20 hover:bg-indigo-500/30 px-4 py-3 text-sm font-bold text-indigo-300 transition active:scale-95"
                   >
-                    <Copy size={14} />
-                    <span>Copy</span>
+                    {copiedField === 'Both' ? <Check size={16} /> : <Copy size={16} />}
+                    <span>{copiedField === 'Both' ? 'COPIED BOTH CREDENTIALS!' : 'COPY BOTH CREDENTIALS (JSON)'}</span>
                   </button>
                 </div>
               </div>
-
-            </div>
 
             {/* Modal Footer */}
             <div className="flex items-center justify-between border-t border-zinc-800 pt-4 text-xs">
@@ -1179,32 +1241,36 @@ export default function ProjectDetailPage() {
                 </div>
               </div>
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div>
-                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5">
-                    API Key (X-API-KEY)
-                  </label>
-                  <input
-                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3.5 py-2.5 text-xs font-mono text-cyan-300 outline-none focus:border-emerald-400"
-                    value={testApiKey}
-                    onChange={(e) => setTestApiKey(e.target.value)}
-                    placeholder="gw_live:..."
-                  />
+              {/* CREDENTIALS SECTION */}
+              {testApiKey && testSecretKey ? (
+                <div className="flex items-center justify-between rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-4">
+                  <div className="flex items-center gap-3 text-emerald-400 text-xs font-bold">
+                    <CheckCircle2 size={16} />
+                    <span>Credentials Loaded from Storage</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={clearStoredTestKeys}
+                    className="text-xs font-bold text-rose-400 hover:text-rose-300 underline underline-offset-2"
+                  >
+                    Clear & Set New
+                  </button>
                 </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5">
-                    Webhook Secret (HMAC-SHA256)
+              ) : (
+                <div className="rounded-xl border border-dashed border-indigo-500/40 bg-indigo-500/5 p-4">
+                  <label className="block text-xs font-semibold text-indigo-300 mb-1.5">
+                    Paste "Copy Both" JSON Here
                   </label>
-                  <input
-                    type="text"
-                    className="w-full rounded-xl border border-zinc-800 bg-[#080910] px-3.5 py-2.5 text-xs font-mono text-pink-300 outline-none focus:border-emerald-400"
-                    value={testSecretKey}
-                    onChange={(e) => setTestSecretKey(e.target.value)}
-                    placeholder="Secret Key..."
+                  <textarea
+                    className="w-full rounded-xl border border-indigo-500/40 bg-[#080910] px-3.5 py-2.5 text-xs font-mono text-indigo-200 outline-none focus:border-indigo-400 h-16 resize-none"
+                    placeholder='{"api_key": "...", "secret_key": "..."}'
+                    onChange={(e) => handlePasteBoth(e.target.value)}
                   />
+                  <div className="text-[10px] text-zinc-500 mt-2">
+                    Paste the JSON string from the "Copy Both Credentials" button. It will be saved securely in your local storage and hidden automatically.
+                  </div>
                 </div>
-              </div>
+              )}
 
               <div>
                 <label className="block text-xs font-semibold text-zinc-400 mb-1.5">
