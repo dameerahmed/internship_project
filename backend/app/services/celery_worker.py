@@ -68,7 +68,8 @@ def _resolve_target_url(target_url: Optional[str], event_config, project_id: int
         urls = [u.strip() for u in url.split(";") if u.strip()]
         url = urls[0] if urls else url
     if not url.startswith("http://") and not url.startswith("https://"):
-        url = f"http://127.0.0.1:8000{url}" if url.startswith("/") else f"http://127.0.0.1:8000/{url}"
+        # If running in Docker, map relative URLs to the FastAPI container
+        url = f"http://backend:8000{url}" if url.startswith("/") else f"http://backend:8000/{url}"
     return url
 
 
@@ -271,7 +272,11 @@ async def _process_webhook_delivery(
     cached_config = None
     redis_client = None
     try:
-        redis_client = await get_redis_client()
+        import redis.asyncio as aioredis
+        from backend.config import settings
+        # Instantiate a fresh connection to avoid "Event loop is closed" errors
+        # caused by mixing asyncio.run() with a global connection pool
+        redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True, protocol=2)
         cached_data_raw = await redis_client.get(f"auth:project_{project_id}")
         if cached_data_raw:
             cached_config = json.loads(cached_data_raw)
