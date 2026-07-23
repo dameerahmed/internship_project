@@ -546,7 +546,11 @@ async def get_dashboard_stats(
     total_24h = total_messages
     success_count = real_main_queue_count
     failed_count = real_dlq_count
-    avg_latency_ms = 0.0
+    latency_result = await db.execute(
+        select(func.avg(WebhookLog.processing_duration_ms))
+        .where(WebhookLog.event_config_id.in_(ec_ids))
+    )
+    avg_latency_ms = round(latency_result.scalar() or 0.0, 2)
     throughput_rpm = real_main_queue_count
     throughput_rps = round(throughput_rpm / 60.0, 2)
 

@@ -332,7 +332,11 @@ async def _process_webhook_delivery(
             urls = [u.strip() for u in target_url.split(";") if u.strip()]
             target_url = urls[0] if urls else target_url
         if not target_url.startswith("http://") and not target_url.startswith("https://"):
-            target_url = f"http://127.0.0.1:8000{target_url}" if target_url.startswith("/") else f"http://127.0.0.1:8000/{target_url}"
+            target_url = f"http://backend:8000{target_url}" if target_url.startswith("/") else f"http://backend:8000/{target_url}"
+            
+        # Map localhost to the backend container for Docker networking
+        target_url = target_url.replace("http://localhost:8000", "http://backend:8000")
+        target_url = target_url.replace("http://127.0.0.1:8000", "http://backend:8000")
 
     # Update WebhookEvent target_url in DB to match resolved target_url (keeps UI reports consistent)
     if target_url:
