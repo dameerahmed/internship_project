@@ -36,11 +36,11 @@ class RabbitMQManager:
 
                 # 1. DEAD LETTER QUEUE (DLQ) INFRASTRUCTURE
                 dlq_exchange = await self.channel.declare_exchange(
-                    self.dlq_exchange_name, 
+                    self.dlq_exchange_name,
                     type=aio_pika.ExchangeType.DIRECT,
                     durable=True
                 )
-                
+
                 dlq_queue = await self.channel.declare_queue(self.dlq_queue_name, durable=True)
                 await dlq_queue.bind(dlq_exchange, routing_key=self.dlq_routing_key)
 
@@ -58,7 +58,7 @@ class RabbitMQManager:
                 )
 
                 logger.info("RabbitMQ and Dead Letter Queue (DLQ) safely initialized.")
-                
+
             except AMQPConnectionError as net_err:
                 logger.critical(f"RabbitMQ connection error: {str(net_err)}")
                 raise RuntimeError(f"RabbitMQ connection failed: {net_err}")
@@ -66,14 +66,47 @@ class RabbitMQManager:
                 logger.critical(f"Failed setting up RabbitMQ queues/exchanges: {str(generic_err)}")
                 raise
 
+    async def _ensure_channel(self):
+        """Ensure we have an open channel, reconnecting if needed."""
+        if not self.channel or self.channel.is_closed:
+            logger.warning("RabbitMQ channel closed — reconnecting...")
+            await self.connect()
+
+    async def _get_dlq_queue_passive(self):
+        """
+        Passively query the DLQ state without re-declaring or modifying it.
+        passive=True → RabbitMQ returns current message_count without touching the queue.
+        Raises if queue does not exist.
+        """
+        await self._ensure_channel()
+        return await self.channel.declare_queue(
+            self.dlq_queue_name,
+            durable=True,
+            passive=True   # ← CRITICAL FIX: just query, don't re-declare
+        )
+
+    def _get_message_count(self, queue) -> int:
+        """
+        Safely extract message_count from aio_pika Queue.
+        aio_pika stores the AMQP DeclareOk frame as .declaration_result (NOT .declare_result).
+        Using declare_result was silently throwing AttributeError → always returned 0.
+        """
+        try:
+            return queue.declaration_result.message_count  # ← CRITICAL FIX
+        except AttributeError:
+            # Fallback for different aio_pika versions
+            try:
+                return queue._declaration_result.message_count
+            except AttributeError:
+                logger.warning("Cannot read declaration_result from queue object — aio_pika version mismatch?")
+                return -1  # -1 signals "unknown" so callers can still try iterating
+
     async def publish_message(self, payload: dict, routing_key: str = "webhook_delivery_queue"):
         """
         Securely converts python dictionaries to structured bytes and writes them to the queue.
         """
-        if not self.channel or self.channel.is_closed:
-            logger.warning("Pipeline channel closed. Attempting emergency reconnection...")
-            await self.connect()
-        
+        await self._ensure_channel()
+
         try:
             serialized_payload = json.dumps(payload).encode("utf-8")
             await self.channel.default_exchange.publish(
@@ -91,12 +124,16 @@ class RabbitMQManager:
             raise
 
     async def get_dlq_message_count(self) -> int:
-        """Returns the real-time number of messages waiting in RabbitMQ DLQ."""
+        """
+        Returns the real-time number of messages waiting in RabbitMQ DLQ.
+
+        FIX: Uses passive=True + declaration_result (not declare_result which doesn't exist).
+        """
         try:
-            if not self.channel or self.channel.is_closed:
-                await self.connect()
-            dlq_queue = await self.channel.declare_queue(self.dlq_queue_name, durable=True)
-            return dlq_queue.declare_result.message_count
+            dlq_queue = await self._get_dlq_queue_passive()
+            count = self._get_message_count(dlq_queue)
+            logger.debug("DLQ message count: %d", count)
+            return max(0, count)
         except Exception as err:
             logger.warning("Failed to fetch RabbitMQ DLQ message count: %s", err)
             return 0
@@ -104,25 +141,38 @@ class RabbitMQManager:
     async def peek_dlq_messages(self, limit: int = 100) -> list:
         """
         Fetches REAL messages directly from RabbitMQ Dead Letter Queue without destroying them.
-        Uses non-destructive nack(requeue=True) after inspecting headers and payloads.
-        """
-        if not self.channel or self.channel.is_closed:
-            await self.connect()
 
+        KEY FIX: We drain all messages into a local list FIRST, then nack them all back.
+        Previous approach: get → nack(requeue=True) in same loop → RabbitMQ puts message back
+        at front of queue → next get() returns the SAME message → infinite cycle on msg 1.
+
+        Correct approach: drain N messages (they're "unacked" and off the queue head),
+        process them all, then nack all at once to put them back.
+        """
         try:
-            dlq_queue = await self.channel.declare_queue(self.dlq_queue_name, durable=True)
-            queue_count = dlq_queue.declare_result.message_count
+            dlq_queue = await self._get_dlq_queue_passive()
+            queue_count = self._get_message_count(dlq_queue)
+
             if queue_count == 0:
                 return []
 
-            inspect_count = min(queue_count, limit)
-            messages_data = []
+            inspect_count = min(queue_count if queue_count > 0 else limit, limit)
+            raw_messages = []  # hold drained AMQP messages before processing
 
-            for i in range(inspect_count):
+            # ── PHASE 1: DRAIN messages off the queue head into local memory ──────────
+            # While they're held here (unacked), RabbitMQ won't serve them to any other consumer.
+            for _ in range(inspect_count):
                 msg = await dlq_queue.get(fail=False)
-                if not msg:
+                if msg is None:
                     break
+                raw_messages.append(msg)
 
+            if not raw_messages:
+                return []
+
+            # ── PHASE 2: PARSE collected messages ────────────────────────────────────
+            messages_data = []
+            for i, msg in enumerate(raw_messages):
                 try:
                     raw_body = msg.body.decode("utf-8") if isinstance(msg.body, (bytes, bytearray)) else str(msg.body)
                     parsed_body = {}
@@ -150,12 +200,12 @@ class RabbitMQManager:
                     source_queue = death_info.get("queue", self.main_queue_name)
 
                     event_id = (
-                        packet.get("event_id") 
-                        or headers.get("event_id") 
-                        or msg.message_id 
-                        or f"dlq_{i+1}_{hash(raw_body)}"
+                        packet.get("event_id")
+                        or headers.get("event_id")
+                        or msg.message_id
+                        or f"dlq_{i+1}_{abs(hash(raw_body))}"
                     )
-                    
+
                     project_id = packet.get("project_id") or headers.get("project_id")
                     event_type = packet.get("event_type") or headers.get("event_type") or "webhook.failed"
                     target_url = packet.get("target_url") or headers.get("target_url") or "/v1/gateway"
@@ -168,9 +218,11 @@ class RabbitMQManager:
                     else:
                         created_at = str(timestamp_val)
 
+                    msg_id = str(msg.message_id or event_id or f"dlq-{i+1}")
+
                     messages_data.append({
-                        "id": str(msg.message_id or event_id or f"dlq-{i+1}"),
-                        "raw_id": str(msg.message_id or event_id),
+                        "id": msg_id,
+                        "raw_id": msg_id,
                         "event_id": event_id,
                         "project_id": project_id,
                         "project_name": f"Project #{project_id}" if project_id else "Global DLQ Node",
@@ -185,9 +237,16 @@ class RabbitMQManager:
                         "headers": headers,
                     })
 
-                finally:
-                    # Put message safely back in DLQ position
+                except Exception as parse_err:
+                    logger.warning("Failed to parse DLQ message #%d: %s", i, parse_err)
+
+            # ── PHASE 3: NACK ALL messages back to DLQ (non-destructive) ─────────────
+            # Done AFTER parsing so we don't cycle on the same message in the get() loop.
+            for msg in raw_messages:
+                try:
                     await msg.nack(requeue=True)
+                except Exception as nack_err:
+                    logger.warning("Failed to nack DLQ message back: %s", nack_err)
 
             return messages_data
 
@@ -197,47 +256,47 @@ class RabbitMQManager:
 
     async def requeue_dlq_messages(self, target_ids: list = None) -> dict:
         """
-        Takes REAL messages directly from RabbitMQ DLQ and pushes them BACK into the main RabbitMQ queue.
-        Removes them from DLQ via ack() and publishes them to main exchange.
+        Takes REAL messages directly from RabbitMQ DLQ and pushes them BACK into the main queue.
+        Removes them from DLQ via ack() and publishes to main exchange.
+
+        FIX: Uses declaration_result (not declare_result) for message count.
         """
-        if not self.channel or self.channel.is_closed:
-            await self.connect()
+        await self._ensure_channel()
 
         try:
-            dlq_queue = await self.channel.declare_queue(self.dlq_queue_name, durable=True)
-            queue_count = dlq_queue.declare_result.message_count
+            dlq_queue = await self._get_dlq_queue_passive()
+            queue_count = self._get_message_count(dlq_queue)
+
             if queue_count == 0:
                 return {"replayed_count": 0, "replayed_ids": []}
 
             requeued_ids = []
             target_set = set(str(i) for i in target_ids) if target_ids and "all" not in target_ids else None
+            drain_limit = queue_count if queue_count > 0 else 500
 
-            for _ in range(queue_count):
+            for _ in range(drain_limit):
                 msg = await dlq_queue.get(fail=False)
                 if not msg:
                     break
 
                 raw_id = str(msg.message_id or "")
                 raw_body = msg.body.decode("utf-8") if isinstance(msg.body, (bytes, bytearray)) else str(msg.body)
-                
-                # Check matching ID
+
                 should_requeue = False
-                if target_set is None: # "all"
+                if target_set is None:  # "all"
                     should_requeue = True
                 else:
-                    # Check if ID or event_id matches target_set
                     if raw_id in target_set:
                         should_requeue = True
                     else:
                         for tid in target_set:
-                            if tid in raw_id or tid in raw_body or f"log-{tid}" in raw_id or f"evt_{tid}" in raw_body:
+                            if tid in raw_id or tid in raw_body:
                                 should_requeue = True
                                 break
 
                 if should_requeue:
                     # 1. Acknowledge and remove from DLQ
                     await msg.ack()
-                    
                     # 2. Publish back into main queue
                     await self.channel.default_exchange.publish(
                         aio_pika.Message(
@@ -249,7 +308,7 @@ class RabbitMQManager:
                     )
                     requeued_ids.append(raw_id or f"msg_{len(requeued_ids)+1}")
                 else:
-                    # Return to DLQ
+                    # Return unmatched message to DLQ
                     await msg.nack(requeue=True)
 
             return {"replayed_count": len(requeued_ids), "replayed_ids": requeued_ids}
@@ -261,20 +320,23 @@ class RabbitMQManager:
     async def discard_dlq_messages(self, target_ids: list = None) -> dict:
         """
         Permanently purges/discards REAL messages from RabbitMQ DLQ by calling ack().
+
+        FIX: Uses declaration_result (not declare_result) for message count.
         """
-        if not self.channel or self.channel.is_closed:
-            await self.connect()
+        await self._ensure_channel()
 
         try:
-            dlq_queue = await self.channel.declare_queue(self.dlq_queue_name, durable=True)
-            queue_count = dlq_queue.declare_result.message_count
+            dlq_queue = await self._get_dlq_queue_passive()
+            queue_count = self._get_message_count(dlq_queue)
+
             if queue_count == 0:
                 return {"discarded_count": 0, "discarded_ids": []}
 
             discarded_ids = []
             target_set = set(str(i) for i in target_ids) if target_ids and "all" not in target_ids else None
+            drain_limit = queue_count if queue_count > 0 else 500
 
-            for _ in range(queue_count):
+            for _ in range(drain_limit):
                 msg = await dlq_queue.get(fail=False)
                 if not msg:
                     break
@@ -283,23 +345,23 @@ class RabbitMQManager:
                 raw_body = msg.body.decode("utf-8") if isinstance(msg.body, (bytes, bytearray)) else str(msg.body)
 
                 should_discard = False
-                if target_set is None: # "all"
+                if target_set is None:  # "all"
                     should_discard = True
                 else:
                     if raw_id in target_set:
                         should_discard = True
                     else:
                         for tid in target_set:
-                            if tid in raw_id or tid in raw_body or f"log-{tid}" in raw_id or f"evt_{tid}" in raw_body:
+                            if tid in raw_id or tid in raw_body:
                                 should_discard = True
                                 break
 
                 if should_discard:
-                    # Ack to delete from RabbitMQ DLQ
+                    # Ack to permanently delete from RabbitMQ DLQ
                     await msg.ack()
                     discarded_ids.append(raw_id or f"msg_{len(discarded_ids)+1}")
                 else:
-                    # Keep in DLQ
+                    # Keep unmatched message in DLQ
                     await msg.nack(requeue=True)
 
             return {"discarded_count": len(discarded_ids), "discarded_ids": discarded_ids}
