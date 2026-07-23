@@ -3,6 +3,8 @@ import logging
 import time
 from datetime import datetime, timezone
 import aio_pika
+import httpx
+from urllib.parse import urlparse
 from aio_pika.exceptions import AMQPConnectionError, AMQPChannelError
 from backend.config import settings
 
@@ -140,32 +142,45 @@ class RabbitMQManager:
             logger.error(f"WRITE ERROR: System failed serialization or payload transport: {str(write_err)}")
             raise
 
+    async def _http_get_message_count(self, queue_name: str) -> int:
+        """
+        Uses RabbitMQ Management HTTP API to fetch the TRUE total message count (Ready + Unacked).
+        aio_pika's queue.declare only returns the 'Ready' count, hiding actively processing messages.
+        """
+        try:
+            parsed = urlparse(self.url)
+            host = parsed.hostname or "rabbitmq"
+            user = parsed.username or "admin"
+            password = parsed.password or "admin123"
+            vhost = "%2F" if parsed.path in ["", "/"] else parsed.path.lstrip("/").replace("/", "%2F")
+            
+            # Usually the management port is 15672 internally in the container network
+            url = f"http://{host}:15672/api/queues/{vhost}/{queue_name}"
+            
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                res = await client.get(url, auth=(user, password))
+                if res.status_code == 200:
+                    data = res.json()
+                    # Return total messages (ready + unacknowledged)
+                    return int(data.get("messages", 0))
+                elif res.status_code == 404:
+                    return 0
+                return 0
+        except Exception as e:
+            logger.warning("RabbitMQ HTTP API count fallback failed: %s", e)
+            return 0
+
     async def get_dlq_message_count(self) -> int:
         """
         Returns the real-time number of messages waiting in RabbitMQ DLQ.
-
-        FIX: Uses passive=True + declaration_result (not declare_result which doesn't exist).
         """
-        try:
-            dlq_queue = await self._get_dlq_queue_passive()
-            count = self._get_message_count(dlq_queue)
-            logger.debug("DLQ message count: %d", count)
-            return max(0, count)
-        except Exception as err:
-            logger.warning("Failed to fetch RabbitMQ DLQ message count: %s", err)
-            return 0
+        return await self._http_get_message_count(self.dlq_queue_name)
 
     async def get_main_queue_message_count(self) -> int:
         """
         Returns the real-time number of messages waiting in the Main Delivery Queue.
         """
-        try:
-            main_queue = await self._get_main_queue_passive()
-            count = self._get_message_count(main_queue)
-            return max(0, count)
-        except Exception as err:
-            logger.warning("Failed to fetch RabbitMQ Main Queue message count: %s", err)
-            return 0
+        return await self._http_get_message_count(self.main_queue_name)
 
     async def peek_dlq_messages(self, limit: int = 100) -> list:
         """

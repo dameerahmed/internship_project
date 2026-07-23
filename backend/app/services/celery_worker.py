@@ -81,18 +81,32 @@ def _resolve_target_url(target_url: Optional[str], event_config, project_id: int
 async def _persist_webhook_log(**kwargs):
     try:
         async for db_session in get_db():
-            log_entry = WebhookLog(
-                event_id=kwargs.get("event_id"),
-                event_config_id=kwargs.get("event_config_id"),
-                status=kwargs.get("status"),
-                attempt_number=kwargs.get("attempt_number", 1),
-                response_code=kwargs.get("response_code"),
-                error_message=kwargs.get("error_message"),
-                processing_duration_ms=kwargs.get("processing_duration_ms"),
-                source_ip=kwargs.get("source_ip"),
-                http_method=kwargs.get("http_method"),
-            )
-            db_session.add(log_entry)
+            event_id = kwargs.get("event_id")
+            stmt = select(WebhookLog).where(WebhookLog.event_id == event_id)
+            result = await db_session.execute(stmt)
+            existing_log = result.scalars().first()
+
+            if existing_log:
+                existing_log.status = kwargs.get("status")
+                existing_log.attempt_number = kwargs.get("attempt_number", 1)
+                existing_log.response_code = kwargs.get("response_code")
+                existing_log.error_message = kwargs.get("error_message")
+                existing_log.processing_duration_ms = kwargs.get("processing_duration_ms")
+                existing_log.http_method = kwargs.get("http_method")
+            else:
+                log_entry = WebhookLog(
+                    event_id=event_id,
+                    event_config_id=kwargs.get("event_config_id"),
+                    status=kwargs.get("status"),
+                    attempt_number=kwargs.get("attempt_number", 1),
+                    response_code=kwargs.get("response_code"),
+                    error_message=kwargs.get("error_message"),
+                    processing_duration_ms=kwargs.get("processing_duration_ms"),
+                    source_ip=kwargs.get("source_ip"),
+                    http_method=kwargs.get("http_method"),
+                )
+                db_session.add(log_entry)
+            
             await db_session.commit()
             break
     except Exception as exc:
