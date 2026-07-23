@@ -144,11 +144,8 @@ def sanitize_response_payload(value: Any) -> Any:
                 sanitized[key] = "[REDACTED]"
                 continue
 
-            if str(key).lower() in {"error", "errors", "exception", "detail", "details", "traceback", "stacktrace"}:
-                if isinstance(child, dict):
-                    sanitized[key] = {"message": SAFE_ERROR_MESSAGE, "traceback": "[REDACTED]"}
-                else:
-                    sanitized[key] = SAFE_ERROR_MESSAGE
+            if str(key).lower() in {"traceback", "stacktrace"}:
+                sanitized[key] = "[REDACTED]"
                 continue
 
             sanitized[key] = sanitize_response_payload(child)
@@ -158,7 +155,7 @@ def sanitize_response_payload(value: Any) -> Any:
         return [sanitize_response_payload(item) for item in value]
 
     if isinstance(value, str):
-        if SENSITIVE_KEY_PATTERN.search(value) or "traceback" in value.lower() or "sql" in value.lower():
+        if "Traceback (most recent call last):" in value:
             return SAFE_ERROR_MESSAGE
         if len(value) > 1800:
             return value[:1800] + "..."
