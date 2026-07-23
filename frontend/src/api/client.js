@@ -3,57 +3,10 @@ import { API_BASE_URL, API_ENDPOINTS } from '@/utils/constants';
 import { useAuthStore } from '@/store/useAuthStore';
 
 const MASKED_VALUE = '••••••••';
-const AUTH_TOKEN_KEYS = new Set(['access_token', 'refresh_token', 'token', 'token_type']);
 let isRefreshing = false;
 let failedQueue = [];
 
 const isUsableToken = (value) => typeof value === 'string' && value.trim() !== '' && value !== MASKED_VALUE && value.length > 20;
-
-const shouldMaskValue = (key) => {
-  const normalizedKey = key.toLowerCase();
-
-  if (AUTH_TOKEN_KEYS.has(normalizedKey)) {
-    return false;
-  }
-
-  return (
-    normalizedKey.includes('secret') ||
-    normalizedKey.includes('token') ||
-    normalizedKey.includes('password') ||
-    normalizedKey.includes('api_key') ||
-    normalizedKey.includes('authorization') ||
-    normalizedKey.includes('cookie') ||
-    normalizedKey.includes('traceback') ||
-    normalizedKey.includes('stacktrace') ||
-    normalizedKey.includes('query') ||
-    normalizedKey.includes('schema')
-  );
-};
-
-const sanitizeApiPayload = (value) => {
-  if (Array.isArray(value)) {
-    return value.map(sanitizeApiPayload);
-  }
-
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, child]) => {
-        const normalizedKey = key.toLowerCase();
-        if (shouldMaskValue(key)) {
-          return [key, MASKED_VALUE];
-        }
-
-        if (normalizedKey === 'error' || normalizedKey === 'errors' || normalizedKey === 'detail' || normalizedKey === 'details') {
-          return [key, 'ERR_GATEWAY_HANDSHAKE_FAILED'];
-        }
-
-        return [key, sanitizeApiPayload(child)];
-      })
-    );
-  }
-
-  return value;
-};
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL || undefined,
@@ -131,12 +84,7 @@ const processQueue = (error, token = null) => {
 };
 
 apiClient.interceptors.response.use(
-  (response) => {
-    if (response?.data) {
-      response.data = sanitizeApiPayload(response.data);
-    }
-    return response;
-  },
+  (response) => response,
   async (error) => {
     const originalRequest = error?.config;
     const isAuthEndpoint = originalRequest?.url?.includes('/auth/refresh') || originalRequest?.url?.includes('/auth/login');
