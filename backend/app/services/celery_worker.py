@@ -216,9 +216,14 @@ async def orchestrate_webhook_lifecycle(task_instance: Task, delivery_packet: di
 
         logger.warning("Retries exhausted for project %s; routing packet to DLQ", project_id)
         
-        # Route minimalist payload to DLQ to avoid stale configurations on recovery replay
+        # Route FULL payload to DLQ so the UI can render it and requeues work correctly
         dlq_packet = {
             "event_id": event_id,
+            "project_id": project_id,
+            "company_id": company_id,
+            "event_type": event_type,
+            "data_payload": data_payload,
+            "target_url": result.get("target_url") or target_url,
             "url_index": url_index
         }
         try:

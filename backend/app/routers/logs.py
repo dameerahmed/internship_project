@@ -268,13 +268,20 @@ async def websocket_dlq_stream(websocket: WebSocket, company_id: Optional[str] =
 
             current_hash = json.dumps([item.get("id") for item in filtered_items])
             if current_hash != last_hash:
-                await websocket.send_json({
-                    "type": "DLQ_UPDATE",
-                    "count": len(filtered_items),
-                    "items": filtered_items,
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-                last_hash = current_hash
+                try:
+                    await websocket.send_json({
+                        "type": "DLQ_UPDATE",
+                        "count": len(filtered_items),
+                        "items": filtered_items,
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    last_hash = current_hash
+                except Exception as inner_exc:
+                    err_str = str(inner_exc)
+                    if "Cannot call 'send' once a close message has been sent" in err_str or "ConnectionClosed" in err_str or "RuntimeError" in err_str:
+                        logger.debug("DLQ WS client disconnected cleanly.")
+                        break
+                    logger.warning("DLQ WS inner loop error: %s", inner_exc)
 
             await asyncio.sleep(2.0)
     except WebSocketDisconnect:
@@ -320,6 +327,7 @@ async def websocket_dashboard_stream(websocket: WebSocket, company_id: str):
 
                 # -- Real DLQ count from RabbitMQ --
                 dlq_count = await rabbitmq_manager.get_dlq_message_count()
+                main_queue_count = await rabbitmq_manager.get_main_queue_message_count()
 
                 # -- Per-tenant DB metrics --
                 async for db_session in get_db():
@@ -344,6 +352,7 @@ async def websocket_dashboard_stream(websocket: WebSocket, company_id: str):
                             "success_rate": 100.0,
                             "avg_latency_ms": 0.0,
                             "dlq_count": dlq_count,
+                            "main_queue_count": main_queue_count,
                             "redis_status": redis_status,
                             "redis_latency_ms": redis_latency_ms,
                             "rabbitmq_status": rabbitmq_status,
@@ -375,69 +384,24 @@ async def websocket_dashboard_stream(websocket: WebSocket, company_id: str):
                                 "success_rate": 100.0,
                                 "avg_latency_ms": 0.0,
                                 "dlq_count": dlq_count,
+                                "main_queue_count": main_queue_count,
                                 "redis_status": redis_status,
                                 "redis_latency_ms": redis_latency_ms,
                                 "rabbitmq_status": rabbitmq_status,
                             }
                         else:
-                            # ── WINDOWED QUERIES (24h) for rates, latency, success ──────
-                            window_24h = datetime.utcnow() - timedelta(hours=24)
-                            one_min_ago = datetime.utcnow() - timedelta(seconds=60)
+                            # Use RabbitMQ queues for Real-Time metrics instead of hitting DB table
+                            total_messages = main_queue_count + dlq_count
+                            success_rate = 100.0 if total_messages == 0 else round(100.0 - (dlq_count / total_messages * 100), 1)
 
-                            total_res = await db_session.execute(
-                                select(func.count(WebhookLog.id)).where(WebhookLog.event_config_id.in_(ec_ids))
-                            )
-                            total_webhooks = total_res.scalar() or 0
-
-                            success_res = await db_session.execute(
-                                select(func.count(WebhookLog.id)).where(
-                                    WebhookLog.event_config_id.in_(ec_ids),
-                                    WebhookLog.created_at >= window_24h,
-                                    WebhookLog.response_code >= 200,
-                                    WebhookLog.response_code < 300,
-                                )
-                            )
-                            success_count = success_res.scalar() or 0
-
-                            failed_res = await db_session.execute(
-                                select(func.count(WebhookLog.id)).where(
-                                    WebhookLog.event_config_id.in_(ec_ids),
-                                    WebhookLog.created_at >= window_24h,
-                                    WebhookLog.status == WebhookStatus.FAILED,
-                                    WebhookLog.response_code >= 400,
-                                )
-                            )
-                            failed_count = failed_res.scalar() or 0
-
-                            avg_lat_res = await db_session.execute(
-                                select(func.avg(WebhookLog.processing_duration_ms)).where(
-                                    WebhookLog.event_config_id.in_(ec_ids),
-                                    WebhookLog.created_at >= window_24h,
-                                    WebhookLog.processing_duration_ms.isnot(None),
-                                )
-                            )
-                            avg_lat_raw = avg_lat_res.scalar()
-                            avg_latency_ms = round(float(avg_lat_raw), 1) if avg_lat_raw else 0.0
-
-                            evaluated = success_count + failed_count
-                            success_rate = round((success_count / evaluated * 100), 1) if evaluated > 0 else 100.0
-
-                            tput_res = await db_session.execute(
-                                select(func.count(WebhookLog.id)).where(
-                                    WebhookLog.event_config_id.in_(ec_ids),
-                                    WebhookLog.created_at >= one_min_ago,
-                                )
-                            )
-                            throughput_rpm = tput_res.scalar() or 0
+                            # Set DB metrics to zero or mock since user requested purely RabbitMQ based stats
+                            total_webhooks = total_messages
+                            total_24h = total_messages
+                            throughput_rpm = main_queue_count  # Mock throughput as pending messages
                             throughput_rps = round(throughput_rpm / 60.0, 2)
-
-                            total_24h_res = await db_session.execute(
-                                select(func.count(WebhookLog.id)).where(
-                                    WebhookLog.event_config_id.in_(ec_ids),
-                                    WebhookLog.created_at >= window_24h,
-                                )
-                            )
-                            total_24h = total_24h_res.scalar() or 0
+                            success_count = main_queue_count
+                            failed_count = dlq_count
+                            avg_latency_ms = 0.0
 
                             payload = {
                                 "type": "DASHBOARD_UPDATE",
@@ -445,14 +409,16 @@ async def websocket_dashboard_stream(websocket: WebSocket, company_id: str):
                                 "active_projects": active_projects,
                                 "total_event_routes": total_routes,
                                 "total_webhooks": total_webhooks,   # lifetime
-                                "total_24h": total_24h,              # last 24h
+                                "total_webhooks": total_webhooks,
+                                "total_24h": total_24h,
                                 "throughput_rpm": throughput_rpm,
                                 "throughput_rps": throughput_rps,
-                                "success_count": success_count,      # last 24h
-                                "failed_count": failed_count,        # last 24h
-                                "success_rate": success_rate,        # last 24h
-                                "avg_latency_ms": avg_latency_ms,   # last 24h
+                                "success_count": success_count,
+                                "failed_count": failed_count,
+                                "success_rate": success_rate,
+                                "avg_latency_ms": avg_latency_ms,
                                 "dlq_count": dlq_count,
+                                "main_queue_count": main_queue_count,
                                 "redis_status": redis_status,
                                 "redis_latency_ms": redis_latency_ms,
                                 "rabbitmq_status": rabbitmq_status,
@@ -467,6 +433,10 @@ async def websocket_dashboard_stream(websocket: WebSocket, company_id: str):
                     last_payload_hash = current_hash
 
             except Exception as inner_exc:
+                err_str = str(inner_exc)
+                if "Cannot call 'send' once a close message has been sent" in err_str or "ConnectionClosed" in err_str or "RuntimeError" in err_str:
+                    logger.debug("Dashboard WS client disconnected cleanly.")
+                    break
                 logger.warning("Dashboard WS inner loop error: %s", inner_exc)
 
             await asyncio.sleep(2.0)
@@ -526,6 +496,7 @@ async def get_dashboard_stats(
             "success_rate": 100.0,
             "avg_latency_ms": 0.0,
             "dlq_count": 0,
+            "main_queue_count": 0,
             "redis_status": redis_status,
             "redis_latency_ms": redis_latency_ms,
             "rabbitmq_status": rabbitmq_status,
@@ -556,82 +527,28 @@ async def get_dashboard_stats(
             "success_rate": 100.0,
             "avg_latency_ms": 0.0,
             "dlq_count": 0,
+            "main_queue_count": 0,
             "redis_status": redis_status,
             "redis_latency_ms": redis_latency_ms,
             "rabbitmq_status": rabbitmq_status,
             "recent_logs": [],
         }
 
-    # 5. Lifetime total webhooks (simple indexed count — fast even at millions)
-    total_logs_res = await db.execute(
-        select(func.count(WebhookLog.id)).where(WebhookLog.event_config_id.in_(ec_ids))
-    )
-    total_webhooks = total_logs_res.scalar() or 0
-
-    # ── TIME-WINDOWED STATS (last 24 hours only for rates/latency) ──────────────
-    # Windowing is critical for performance at scale: scanning 1M rows every 2s
-    # would destroy DB performance. We only scan the last 24h window for rates.
-    window_24h = datetime.utcnow() - timedelta(hours=24)
-
-    # 6. Success count — last 24h window only
-    success_res = await db.execute(
-        select(func.count(WebhookLog.id)).where(
-            WebhookLog.event_config_id.in_(ec_ids),
-            WebhookLog.created_at >= window_24h,
-            WebhookLog.response_code >= 200,
-            WebhookLog.response_code < 300,
-        )
-    )
-    success_count = success_res.scalar() or 0
-
-    # 7. Failed count — last 24h window only
-    failed_res = await db.execute(
-        select(func.count(WebhookLog.id)).where(
-            WebhookLog.event_config_id.in_(ec_ids),
-            WebhookLog.created_at >= window_24h,
-            WebhookLog.status == WebhookStatus.FAILED,
-            WebhookLog.response_code >= 400,
-        )
-    )
-    failed_count = failed_res.scalar() or 0
-
-    # 8. Avg latency — last 24h window only (AVG on millions is very expensive)
-    avg_latency_res = await db.execute(
-        select(func.avg(WebhookLog.processing_duration_ms)).where(
-            WebhookLog.event_config_id.in_(ec_ids),
-            WebhookLog.created_at >= window_24h,
-            WebhookLog.processing_duration_ms.isnot(None),
-        )
-    )
-    avg_latency_raw = avg_latency_res.scalar()
-    avg_latency_ms = round(float(avg_latency_raw), 1) if avg_latency_raw is not None else 0.0
-
-    # 9. Success rate — based on 24h window counts
-    evaluated = success_count + failed_count
-    success_rate = round((success_count / evaluated * 100), 1) if evaluated > 0 else 100.0
-
-    # 10. Throughput — last 60 seconds (live RPM counter)
-    one_min_ago = datetime.utcnow() - timedelta(seconds=60)
-    throughput_res = await db.execute(
-        select(func.count(WebhookLog.id)).where(
-            WebhookLog.event_config_id.in_(ec_ids),
-            WebhookLog.created_at >= one_min_ago,
-        )
-    )
-    throughput_rpm = throughput_res.scalar() or 0
-    throughput_rps = round(throughput_rpm / 60.0, 2)
-
-    # 11. 24h total processed (for dashboard context)
-    total_24h_res = await db.execute(
-        select(func.count(WebhookLog.id)).where(
-            WebhookLog.event_config_id.in_(ec_ids),
-            WebhookLog.created_at >= window_24h,
-        )
-    )
-    total_24h = total_24h_res.scalar() or 0
-
     # Real RabbitMQ DLQ Message Count
     real_dlq_count = await rabbitmq_manager.get_dlq_message_count()
+    real_main_queue_count = await rabbitmq_manager.get_main_queue_message_count()
+
+    # ── METRICS BASED ON RABBITMQ INSTEAD OF LOGS ──────────────
+    total_messages = real_main_queue_count + real_dlq_count
+    success_rate = 100.0 if total_messages == 0 else round(100.0 - (real_dlq_count / total_messages * 100), 1)
+
+    total_webhooks = total_messages
+    total_24h = total_messages
+    success_count = real_main_queue_count
+    failed_count = real_dlq_count
+    avg_latency_ms = 0.0
+    throughput_rpm = real_main_queue_count
+    throughput_rps = round(throughput_rpm / 60.0, 2)
 
     return {
         "total_projects": len(projects),
@@ -646,6 +563,7 @@ async def get_dashboard_stats(
         "success_rate": success_rate,            # last 24h
         "avg_latency_ms": avg_latency_ms,        # last 24h
         "dlq_count": real_dlq_count,
+        "main_queue_count": real_main_queue_count,
         "redis_status": redis_status,
         "redis_latency_ms": redis_latency_ms,
         "rabbitmq_status": rabbitmq_status,

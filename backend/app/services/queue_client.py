@@ -85,6 +85,15 @@ class RabbitMQManager:
             passive=True   # ← CRITICAL FIX: just query, don't re-declare
         )
 
+    async def _get_main_queue_passive(self):
+        """Passively query the main delivery queue state."""
+        await self._ensure_channel()
+        return await self.channel.declare_queue(
+            self.main_queue_name,
+            durable=True,
+            passive=True
+        )
+
     def _get_message_count(self, queue) -> int:
         """
         Safely extract message_count from aio_pika Queue.
@@ -136,6 +145,18 @@ class RabbitMQManager:
             return max(0, count)
         except Exception as err:
             logger.warning("Failed to fetch RabbitMQ DLQ message count: %s", err)
+            return 0
+
+    async def get_main_queue_message_count(self) -> int:
+        """
+        Returns the real-time number of messages waiting in the Main Delivery Queue.
+        """
+        try:
+            main_queue = await self._get_main_queue_passive()
+            count = self._get_message_count(main_queue)
+            return max(0, count)
+        except Exception as err:
+            logger.warning("Failed to fetch RabbitMQ Main Queue message count: %s", err)
             return 0
 
     async def peek_dlq_messages(self, limit: int = 100) -> list:
@@ -199,17 +220,21 @@ class RabbitMQManager:
                     death_reason = death_info.get("reason", "rejected")
                     source_queue = death_info.get("queue", self.main_queue_name)
 
+                    # Handle nested delivery_packet structure from updated Celery worker
+                    delivery_packet = packet.get("delivery_packet") or packet
+
                     event_id = (
                         packet.get("event_id")
+                        or delivery_packet.get("event_id")
                         or headers.get("event_id")
                         or msg.message_id
                         or f"dlq_{i+1}_{abs(hash(raw_body))}"
                     )
 
-                    project_id = packet.get("project_id") or headers.get("project_id")
-                    event_type = packet.get("event_type") or headers.get("event_type") or "webhook.failed"
-                    target_url = packet.get("target_url") or headers.get("target_url") or "/v1/gateway"
-                    error_msg = headers.get("error_message") or headers.get("exception") or f"Dead Lettered: {death_reason}"
+                    project_id = delivery_packet.get("project_id") or headers.get("project_id")
+                    event_type = delivery_packet.get("event_type") or headers.get("event_type") or "webhook.failed"
+                    target_url = delivery_packet.get("target_url") or headers.get("target_url") or "/v1/gateway"
+                    error_msg = packet.get("reason") or headers.get("error_message") or headers.get("exception") or f"Dead Lettered: {death_reason}"
 
                     # ISO timestamp
                     timestamp_val = headers.get("timestamp") or time.time()
@@ -233,7 +258,7 @@ class RabbitMQManager:
                         "created_at": created_at,
                         "source_queue": source_queue,
                         "routing_key": msg.routing_key or self.dlq_routing_key,
-                        "payload": packet.get("data_payload") or packet.get("payload") or packet,
+                        "payload": delivery_packet.get("data_payload") or delivery_packet.get("payload") or packet,
                         "headers": headers,
                     })
 

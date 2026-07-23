@@ -29,6 +29,7 @@ const EMPTY_STATS = {
   success_rate: 100.0,
   avg_latency_ms: 0.0,
   dlq_count: 0,
+  main_queue_count: 0,
   redis_status: 'CHECKING',
   redis_latency_ms: 0.0,
   rabbitmq_status: 'CHECKING',
@@ -195,7 +196,7 @@ export default function MetricsDashboard({ companyId, identityLabel = 'Operator 
       </div>
 
       {/* ── TOP STAT CARDS ─────────────────────────────────────── */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
 
         {/* Total Webhook Volume */}
         <div className="relative overflow-hidden rounded-2xl border border-zinc-800/80 bg-gradient-to-b from-[#11131f] to-[#0a0b12] p-5 shadow-xl transition hover:border-emerald-500/30">
@@ -272,6 +273,25 @@ export default function MetricsDashboard({ companyId, identityLabel = 'Operator 
             </span>
           </div>
           <p className="mt-2 text-[11px] text-zinc-500">Avg target response time <span className="text-zinc-600 font-mono">(last 24h)</span></p>
+        </div>
+
+        {/* Main Processing Queue */}
+        <div className="relative overflow-hidden rounded-2xl border border-zinc-800/80 bg-gradient-to-b from-[#11131f] to-[#0a0b12] p-5 shadow-xl transition hover:border-indigo-500/30">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-mono font-bold uppercase tracking-wider text-zinc-400">RABBITMQ MAIN QUEUE</span>
+            <span className="flex h-8 w-8 items-center justify-center rounded-xl border border-indigo-500/30 bg-indigo-500/10 text-indigo-400">
+              <Server size={16} />
+            </span>
+          </div>
+          <div className="mt-4 flex items-baseline justify-between">
+            {loading
+              ? <Skeleton className="h-9 w-16" />
+              : <h3 className="text-3xl font-black font-mono tracking-tight text-white">{stats.main_queue_count}</h3>
+            }
+          </div>
+          <p className="mt-2 text-[11px] text-zinc-500">
+            Messages processing in real-time
+          </p>
         </div>
 
         {/* DLQ / Failed Payloads — reads from RabbitMQ directly */}
