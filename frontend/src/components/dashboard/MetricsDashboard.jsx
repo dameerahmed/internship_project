@@ -17,6 +17,7 @@ import apiClient from '@/api/client';
 import { API_ENDPOINTS, WS_ENDPOINTS } from '@/utils/constants';
 
 const EMPTY_STATS = {
+  total_24h: 0,
   total_projects: 0,
   active_projects: 0,
   total_event_routes: 0,
@@ -214,7 +215,11 @@ export default function MetricsDashboard({ companyId, identityLabel = 'Operator 
               {stats.throughput_rps} rps
             </span>
           </div>
-          <p className="mt-2 text-[11px] text-zinc-500">Live webhook ingress · all your endpoints</p>
+          <p className="mt-1 text-[11px] text-zinc-500">
+            Last 24h: <span className="text-emerald-400 font-bold">{(stats.total_24h ?? 0).toLocaleString()}</span>
+            <span className="text-zinc-700 mx-1">·</span>
+            Lifetime: <span className="text-zinc-300">{stats.total_webhooks.toLocaleString()}</span>
+          </p>
         </div>
 
         {/* Successful Deliveries */}
@@ -266,7 +271,7 @@ export default function MetricsDashboard({ companyId, identityLabel = 'Operator 
               {stats.avg_latency_ms === 0 ? 'No data' : stats.avg_latency_ms < 500 ? 'Ultra Fast' : 'Nominal'}
             </span>
           </div>
-          <p className="mt-2 text-[11px] text-zinc-500">Average target server response time</p>
+          <p className="mt-2 text-[11px] text-zinc-500">Avg target response time <span className="text-zinc-600 font-mono">(last 24h)</span></p>
         </div>
 
         {/* DLQ / Failed Payloads — reads from RabbitMQ directly */}
