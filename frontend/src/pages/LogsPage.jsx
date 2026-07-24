@@ -1,35 +1,29 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { Virtuoso } from 'react-virtuoso';
 import { 
-  Maximize2, 
-  Minimize2, 
-  Terminal, 
-  Trash2, 
-  Clock, 
-  Code2, 
-  Copy,
-  Check,
   Search,
   RefreshCw,
-  Zap,
-  Activity,
-  Play,
-  Pause,
-  ShieldCheck,
-  Server,
-  Filter,
-  Trash
+  Clock,
+  X,
+  Database,
+  Calendar,
+  Download,
+  Eye,
+  Terminal
 } from 'lucide-react';
-import ProtectedLayout from '../components/ProtectedLayout';
 import apiClient from '@/api/client';
-import { API_ENDPOINTS } from '@/utils/constants';
+import { API_ENDPOINTS, WS_ENDPOINTS } from '@/utils/constants';
+
+// We'll bring in Sidebar to maintain app navigation
+import Sidebar from '../components/Sidebar';
 
 const statusBadgeStyle = (statusCode) => {
-  if (!statusCode) return 'bg-zinc-800 text-zinc-400 border border-zinc-700/50';
-  if (statusCode === 429) return 'bg-orange-500/10 text-orange-400 border border-orange-500/30 shadow-[0_0_10px_rgba(249,115,22,0.2)]';
-  if (statusCode >= 500) return 'bg-rose-500/10 text-rose-400 border border-rose-500/30 shadow-[0_0_10px_rgba(244,63,94,0.2)]';
-  if (statusCode >= 400) return 'bg-amber-500/10 text-amber-400 border border-amber-500/30 shadow-[0_0_10px_rgba(245,158,11,0.2)]';
-  return 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 shadow-[0_0_10px_rgba(16,185,129,0.2)]';
+  if (!statusCode) return 'bg-gray-100 text-gray-500 border border-gray-200';
+  if (statusCode >= 500) return 'bg-red-50 text-red-600 border border-red-100';
+  if (statusCode >= 400) return 'bg-orange-50 text-orange-600 border border-orange-100';
+  if (statusCode >= 300) return 'bg-amber-50 text-amber-600 border border-amber-100';
+  return 'bg-gray-50 text-gray-600 border border-gray-200'; // 200 is gray in supabase
 };
 
 const sanitizeHeaders = (headers) => {
@@ -46,28 +40,24 @@ export default function LogsPage() {
   const { projectId: urlProjectId } = useParams();
   const navigate = useNavigate();
 
-  const [fullscreen, setFullscreen] = useState(false);
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeLog, setActiveLog] = useState(null);
-  const [activeTab, setActiveTab] = useState('payload');
+  const [activeTab, setActiveTab] = useState('details');
   const [projects, setProjects] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(() => urlProjectId || sessionStorage.getItem('selectedProjectId') || null);
   
   // Controls & Filters
-  const [autoScroll, setAutoScroll] = useState(true);
   const [polling, setPolling] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
-  const [activePreset, setActivePreset] = useState('LIVE');
-  const [clearedAt, setClearedAt] = useState(null);
-  const [startFilter, setStartFilter] = useState('');
-  const [copied, setCopied] = useState(false);
+  const [methodFilter, setMethodFilter] = useState('ALL');
+  const [showChart, setShowChart] = useState(true);
   const [page, setPage] = useState(1);
-
-  const containerRef = useRef(null);
-  const MAX_ITEMS = 50;
-
+  const [customRange, setCustomRange] = useState({ start: '', end: '' });
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const MAX_ITEMS = 500;
+  
   // Sync URL parameter if present
   useEffect(() => {
     if (urlProjectId && urlProjectId !== selectedProjectId) {
@@ -100,7 +90,7 @@ export default function LogsPage() {
     return () => { cancelled = true; };
   }, []);
 
-  // Fetch initial logs when selected project, page, or filters change
+  // Initial logs fetch
   useEffect(() => {
     if (!selectedProjectId) {
       setLogs([]);
@@ -117,25 +107,22 @@ export default function LogsPage() {
         if (statusFilter && statusFilter !== 'ALL') {
           params.push(`status_code=${encodeURIComponent(statusFilter.toLowerCase())}`);
         }
-        if (clearedAt) {
-          params.push(`start=${encodeURIComponent(clearedAt)}`);
-        } else if (startFilter) {
-          params.push(`start=${encodeURIComponent(new Date(startFilter).toISOString())}`);
+        if (customRange.start) {
+          params.push(`start=${encodeURIComponent(new Date(customRange.start).toISOString())}`);
         }
-
+        if (customRange.end) {
+          params.push(`end=${encodeURIComponent(new Date(customRange.end).toISOString())}`);
+        }
+        
         const queryString = `?${params.join('&')}`;
         const { data } = await apiClient.get(API_ENDPOINTS.WEBHOOKS.LOGS(selectedProjectId) + queryString);
         
         if (!cancelled) {
           const normalized = (Array.isArray(data) ? data : []).slice(0, MAX_ITEMS);
           setLogs(normalized);
-          setActiveLog(normalized[0] || null);
         }
       } catch {
-        if (!cancelled) {
-          setLogs([]);
-          setActiveLog(null);
-        }
+        if (!cancelled) setLogs([]);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -143,500 +130,481 @@ export default function LogsPage() {
 
     fetchLogs();
     return () => { cancelled = true; };
-  }, [selectedProjectId, page, clearedAt, startFilter, statusFilter]);
+  }, [selectedProjectId, page, statusFilter, customRange.start, customRange.end]);
 
-  // Lightweight Live Stream Polling
+  // Production-grade WebSocket Live Stream
   useEffect(() => {
-    const isLiveMode = activePreset === 'LIVE' && page === 1;
-    if (!selectedProjectId || !polling || !isLiveMode) return undefined;
+    if (!selectedProjectId || !polling) return undefined;
 
-    const interval = setInterval(async () => {
-      try {
-        const newestTimestamp = logs[0]?.timestamp || clearedAt;
-        let params = [`limit=${MAX_ITEMS}`, `page=1`];
-        if (newestTimestamp) {
-          params.push(`start=${encodeURIComponent(newestTimestamp)}`);
-        }
-        if (statusFilter && statusFilter !== 'ALL') {
-          params.push(`status_code=${encodeURIComponent(statusFilter.toLowerCase())}`);
-        }
+    let ws = null;
+    let isCancelled = false;
+    let reconnectTimeout = null;
 
-        const queryString = `?${params.join('&')}`;
-        const { data: newLogs } = await apiClient.get(API_ENDPOINTS.WEBHOOKS.LOGS(selectedProjectId) + queryString);
-        const normalized = Array.isArray(newLogs) ? newLogs : [];
+    const connectWs = () => {
+      if (isCancelled) return;
+      
+      const wsUrl = WS_ENDPOINTS.LOGS(selectedProjectId);
+      ws = new WebSocket(wsUrl);
 
-        if (normalized.length > 0) {
+      ws.onmessage = (event) => {
+        if (isCancelled) return;
+        try {
+          const newLog = JSON.parse(event.data);
+          
           setLogs((prev) => {
-            const merged = [...normalized, ...prev];
-            const seen = new Set();
-            const deduplicated = merged.filter((log) => {
-              if (seen.has(log.id)) return false;
-              seen.add(log.id);
-              return true;
-            });
-            return deduplicated.slice(0, MAX_ITEMS);
+            if (prev.some(p => p.id === newLog.id)) return prev;
+            return [newLog, ...prev].slice(0, MAX_ITEMS);
           });
-
-          if (!activeLog) {
-            setActiveLog(normalized[0]);
-          }
-
-          if (autoScroll && containerRef.current) {
-            containerRef.current.scrollTop = 0;
-          }
+        } catch (err) {
+          // Silent parse error
         }
-      } catch {
-        // Silent
-      }
-    }, 1500);
+      };
 
-    return () => clearInterval(interval);
-  }, [selectedProjectId, polling, autoScroll, logs, clearedAt, statusFilter, activePreset, page]);
+      ws.onclose = () => {
+        if (!isCancelled && polling) {
+          reconnectTimeout = setTimeout(connectWs, 3000);
+        }
+      };
+      
+      ws.onerror = () => {
+        if (ws) ws.close();
+      };
+    };
 
-  // Clear Terminal View (Only stream new events going forward)
-  const handleClearView = () => {
-    const nowIso = new Date().toISOString();
-    setClearedAt(nowIso);
-    setLogs([]);
-    setActiveLog(null);
-    setStartFilter('');
-    setActivePreset('LIVE');
-    setPage(1);
-  };
+    connectWs();
 
-  // Purge Backend DB Logs Permanently
-  const handlePurgeDbLogs = async () => {
-    if (!selectedProjectId) return;
-    if (!window.confirm('Purge all stored database logs for this project? This action cannot be undone.')) return;
-    try {
-      await apiClient.delete(API_ENDPOINTS.WEBHOOKS.LOGS(selectedProjectId));
-      handleClearView();
-    } catch {
-      // Keep state
-    }
-  };
+    return () => {
+      isCancelled = true;
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (ws) ws.close();
+    };
+  }, [selectedProjectId, polling]);
 
-  // Time Range Presets
-  const applyPreset = (minutes, label) => {
-    setActivePreset(label);
-    setClearedAt(null);
-    setPage(1);
-    if (label !== 'LIVE') {
-      setPolling(false);
-    } else {
-      setPolling(true);
-    }
-    if (minutes === null) {
-      setStartFilter('');
-      return;
-    }
-    const past = new Date(Date.now() - minutes * 60 * 1000);
-    setStartFilter(past.toISOString());
-  };
-
-  // Filter logs by search query
+  // Filter logs by search query and method
   const filteredLogs = useMemo(() => {
-    if (!searchQuery.trim()) return logs;
-    const q = searchQuery.toLowerCase();
-    return logs.filter((log) => {
-      const logId = String(log.id || '').toLowerCase();
-      const eventType = String(log.metadata?.event_type || '').toLowerCase();
-      const status = String(log.metadata?.response_code || log.metadata?.status || '').toLowerCase();
-      const message = String(log.message || '').toLowerCase();
-      return logId.includes(q) || eventType.includes(q) || status.includes(q) || message.includes(q);
-    });
-  }, [logs, searchQuery]);
+    let result = logs;
 
-  // Deep Packet Inspector Data Formatter
+    if (methodFilter !== 'ALL') {
+      result = result.filter(log => (log.metadata?.http_method || 'POST').toUpperCase() === methodFilter);
+    }
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter((log) => {
+        const logId = String(log.id || '').toLowerCase();
+        const status = String(log.metadata?.response_code || '').toLowerCase();
+        const path = String(log.metadata?.target_url || '').toLowerCase();
+        return logId.includes(q) || status.includes(q) || path.includes(q);
+      });
+    }
+
+    return result;
+  }, [logs, searchQuery, methodFilter]);
+
+  // Dynamic Histogram Data based on logs
+  const histogramData = useMemo(() => {
+    if (!logs || logs.length === 0) return { buckets: [], minLabel: '', maxLabel: '' };
+    
+    const times = logs.map(l => new Date(l.timestamp).getTime());
+    const minTime = Math.min(...times);
+    const maxTime = Math.max(...times) || Date.now();
+    
+    const formatLabel = (ms) => {
+      const d = new Date(ms);
+      return `${d.toLocaleString('en-US', { month: 'short' })} ${d.getDate()}, ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
+    };
+
+    const BUCKETS = 60; // More dense bars like Supabase
+    const timeRange = maxTime - minTime;
+    const bucketSize = timeRange / BUCKETS || 1000;
+    
+    const buckets = Array(BUCKETS).fill(0);
+    logs.forEach(log => {
+      const t = new Date(log.timestamp).getTime();
+      let index = Math.floor((t - minTime) / bucketSize);
+      if (index >= BUCKETS) index = BUCKETS - 1;
+      buckets[index]++;
+    });
+    
+    const maxVal = Math.max(...buckets) || 1;
+    
+    return {
+      buckets: buckets.map((count, i) => ({
+        id: i,
+        value: (count / maxVal) * 100,
+        count
+      })),
+      minLabel: formatLabel(minTime),
+      maxLabel: formatLabel(maxTime)
+    };
+  }, [logs]);
+
+  const selectedProject = projects.find(p => p.id === selectedProjectId);
+
+  // Inspector Data Formatter
   const inspectorData = useMemo(() => {
     if (!activeLog) return null;
     const metadata = activeLog.metadata || {};
-
+    
     const rawHeaders = metadata.incoming_headers || metadata.headers || {
       "Content-Type": "application/json",
-      "X-Gateway-Verified": "HMAC-SHA256 (Constant Time Match)",
-      "Source-IP": metadata.source_ip || "127.0.0.1",
       "User-Agent": "Webhook-Gateway/2.0",
-      "X-HUB-SIGNATURE": "sha256=5f187a0b3c8e..."
     };
     const headers = sanitizeHeaders(rawHeaders);
 
     const payload = metadata.request_payload || metadata.event_payload || metadata.payload || {
       "event": metadata.event_type || "webhook.received",
       "log_id": activeLog.id,
-      "message": activeLog.message,
-      "timestamp": activeLog.timestamp
     };
 
-    const response = metadata.response_data || {
-      "status_code": metadata.response_code || 200,
-      "status": metadata.status || "SUCCESS",
-      "delivery_duration_ms": metadata.processing_duration_ms || 1,
-      "target_url": metadata.target_url || "Forwarded to target receiver",
-      "error_message": metadata.error_message || null
-    };
-
-    return { headers, payload, response };
+    return { headers, payload, metadata };
   }, [activeLog]);
 
-  const copyInspectorJson = () => {
-    if (!inspectorData) return;
-    const content = activeTab === 'headers' ? inspectorData.headers : activeTab === 'payload' ? inspectorData.payload : inspectorData.response;
-    navigator.clipboard.writeText(JSON.stringify(content, null, 2));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  // Handle Download JSON
+  const handleDownload = () => {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(filteredLogs, null, 2));
+    const downloadAnchorNode = document.createElement('a');
+    downloadAnchorNode.setAttribute("href", dataStr);
+    downloadAnchorNode.setAttribute("download", `webhook_logs_${selectedProjectId || 'export'}.json`);
+    document.body.appendChild(downloadAnchorNode); 
+    downloadAnchorNode.click();
+    downloadAnchorNode.remove();
   };
 
-  return (
-    <ProtectedLayout title="Developer Telemetry Console" eyebrow="Real-time Webhook Tunnel" sidebarCollapsed={fullscreen}>
-      <div className={`flex flex-col overflow-hidden rounded-2xl text-zinc-100 transition-all font-jetbrains glass-panel-heavy ${fullscreen ? 'fixed inset-0 z-50 h-screen w-screen rounded-none border-0' : 'h-[calc(100vh-9.5rem)]'}`}>
-        
-        {/* CRT Scanline Overlay Effect */}
-        <div className="absolute inset-0 pointer-events-none opacity-[0.015] bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_4px,3px_100%] z-50" />
+  // Virtuoso row renderer
+  const renderRow = useCallback((index, log) => {
+    const statusCode = log.metadata?.response_code;
+    const method = log.metadata?.http_method || 'POST';
+    const path = log.metadata?.target_url || '/v1/webhook';
+    const isSelected = activeLog?.id === log.id;
+    
+    // Format timestamp: "23 Oct 17:49:18"
+    const date = new Date(log.timestamp);
+    const day = date.getDate().toString().padStart(2, '0');
+    const month = date.toLocaleString('en-US', { month: 'short' });
+    const time = date.toLocaleTimeString('en-GB'); // 24hr format HH:MM:SS
+    const timeString = `${day} ${month} ${time}`;
 
-        {/* 1. UNIFIED TERMINAL HEADER */}
-        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-zinc-800/90 bg-[#0b0c13] px-6 py-3">
-          
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-800 px-2.5 py-1.5 rounded-lg">
-              <span className="w-2.5 h-2.5 rounded-full bg-rose-500/90 animate-pulse" />
-              <span className="w-2.5 h-2.5 rounded-full bg-amber-500/90" />
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/90" />
-            </div>
-
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-xs font-black tracking-widest text-emerald-400 uppercase">TELEMETRY_TERMINAL_v3.0</span>
-                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-bold ${polling ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'}`}>
-                  <Activity size={10} className={polling ? 'animate-spin text-emerald-400' : 'text-amber-400'} />
-                  {polling ? 'LIVE STREAMING' : 'PAUSED'}
-                </span>
-              </div>
-              <p className="text-[11px] font-mono text-zinc-400 mt-0.5">
-                Showing {filteredLogs.length} events • Virtualized buffer (Max 50)
-              </p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            {/* Target Project Dropdown */}
-            <select 
-              value={selectedProjectId || ''} 
-              onChange={(e) => { 
-                const newId = e.target.value;
-                setSelectedProjectId(newId); 
-                sessionStorage.setItem('selectedProjectId', newId); 
-                setClearedAt(null);
-                setLogs([]);
-                setActiveLog(null);
-                if (urlProjectId) {
-                  navigate('/logs');
-                }
-              }} 
-              className="rounded-xl border border-zinc-800 bg-[#121420] px-3.5 py-2 text-xs font-mono font-bold text-emerald-400 outline-none focus:border-emerald-500/50 cursor-pointer shadow-inner"
-            >
-              <option value="" className="text-zinc-500">Select Target Project</option>
-              {projects.map((p) => <option key={p.id} value={p.id}>{p.name.toUpperCase()} (ID: {p.id})</option>)}
-            </select>
-
-            {/* Pause/Resume Live Stream Button */}
-            <button
-              onClick={() => setPolling((v) => !v)}
-              className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-mono font-bold transition active:scale-95 ${
-                polling 
-                  ? 'border-amber-500/30 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20' 
-                  : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
-              }`}
-            >
-              {polling ? <Pause size={13} /> : <Play size={13} />}
-              {polling ? 'PAUSE STREAM' : 'RESUME STREAM'}
-            </button>
-
-            {/* Fullscreen Toggle */}
-            <button 
-              onClick={() => setFullscreen((v) => !v)} 
-              className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-800 bg-[#121420] hover:bg-[#1a1d2e] px-3 py-2 text-xs font-mono font-bold text-zinc-300 transition active:scale-95"
-            >
-              {fullscreen ? <Minimize2 size={13} className="text-rose-400" /> : <Maximize2 size={13} className="text-cyan-400" />}
-              {fullscreen ? 'EXIT_FULL' : 'MAXIMIZE'}
-            </button>
-          </div>
+    return (
+      <div 
+        onClick={() => setActiveLog(log)}
+        className={`flex items-center gap-4 px-4 py-1.5 text-[12px] font-mono cursor-pointer border-b border-gray-100 transition-colors ${
+          isSelected ? 'bg-gray-100' : 'bg-white hover:bg-gray-50'
+        }`}
+      >
+        <div className="w-36 text-gray-500 whitespace-nowrap">{timeString}</div>
+        <div className="w-14">
+          <span className={`px-1.5 py-0.5 rounded text-[11px] font-medium border ${statusBadgeStyle(statusCode)}`}>
+            {statusCode || '200'}
+          </span>
         </div>
+        <div className="w-12 text-gray-700">{method}</div>
+        <div className="flex-1 truncate text-gray-600">{path}</div>
+      </div>
+    );
+  }, [activeLog]);
 
-        {/* 2. CONTROLS TOOLBAR & SMART FILTERS */}
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800/80 bg-[#090a10] px-6 py-2.5">
+  return (
+    <div className="flex h-screen w-screen overflow-hidden bg-white text-gray-900 font-sans">
+      <Sidebar />
+      <div className="flex-1 flex flex-col min-w-0 bg-white">
+        
+        {/* Logs List Area */}
+        <div className="flex-1 flex flex-col min-w-0 bg-white">
           
-          {/* Filters & Presets */}
-          <div className="flex flex-wrap items-center gap-2">
-            
-            {/* Status Code Filter */}
-            <div className="flex items-center gap-1 bg-[#10121d] border border-zinc-800 rounded-lg p-0.5">
-              {['ALL', '2XX', '4XX', '5XX'].map((code) => (
-                <button
-                  key={code}
-                  onClick={() => setStatusFilter(code)}
-                  className={`px-2.5 py-1 rounded-md text-[11px] font-mono font-bold transition ${
-                    statusFilter === code
-                      ? 'bg-cyan-500 text-black shadow-[0_0_8px_rgba(6,182,212,0.4)]'
-                      : 'text-zinc-400 hover:text-zinc-200'
-                  }`}
-                >
-                  {code}
-                </button>
-              ))}
-            </div>
-
-            {/* Time Presets */}
-            <div className="flex items-center gap-1.5 ml-2">
-              <span className="text-[11px] font-mono text-zinc-500 flex items-center gap-1">
-                <Clock size={11} className="text-cyan-400" />
-                PRESETS:
-              </span>
-              {[
-                { label: 'LIVE', min: 0 },
-                { label: '15M', min: 15 },
-                { label: '1H', min: 60 },
-                { label: '24H', min: 1440 },
-                { label: 'ALL HISTORY', min: null },
-              ].map((preset) => (
-                <button
-                  key={preset.label}
-                  onClick={() => applyPreset(preset.min, preset.label)}
-                  className={`px-2 py-1 rounded-md text-[11px] font-mono font-bold transition ${
-                    activePreset === preset.label
-                      ? 'bg-emerald-500 text-black shadow-[0_0_8px_rgba(16,185,129,0.4)]'
-                      : 'bg-[#10121d] text-zinc-400 hover:bg-zinc-800 border border-zinc-800'
-                  }`}
-                >
-                  {preset.label}
-                </button>
-              ))}
-            </div>
-
-            {/* Live Search Input */}
-            <div className="relative ml-2">
-              <Search size={12} className="absolute left-2.5 top-2.5 text-zinc-500" />
-              <input
-                type="text"
-                placeholder="Filter logs by ID or status..."
+          {/* Secondary Filter Bar - Exact match to image */}
+          <div className="flex items-center p-3 border-b border-gray-200 shrink-0 flex-wrap gap-2 text-[13px]">
+            {/* Search */}
+            <div className="relative flex-1 min-w-[200px] max-w-sm">
+              <Search size={14} className="absolute left-2.5 top-2.5 text-gray-400" />
+              <input 
+                type="text" 
+                placeholder="Search events" 
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-44 sm:w-56 rounded-lg border border-zinc-800 bg-[#10121d] pl-8 pr-3 py-1 text-xs font-mono text-zinc-200 outline-none focus:border-cyan-500/50"
+                onChange={e => setSearchQuery(e.target.value)}
+                className="w-full pl-8 pr-3 py-1.5 bg-gray-50/50 border border-gray-200 rounded text-gray-700 focus:outline-none focus:ring-1 focus:ring-gray-300 transition"
               />
             </div>
-          </div>
-
-          {/* Action Buttons: Clear View & Purge DB */}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleClearView}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-750 bg-[#121420] hover:bg-zinc-800 px-3 py-1 text-xs font-mono font-bold text-zinc-300 transition active:scale-95"
-              title="Clears current view. Only new incoming events will be displayed."
-            >
-              <Trash2 size={13} className="text-amber-400" />
-              CLEAR VIEW
-            </button>
-
-            <button
-              onClick={handlePurgeDbLogs}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 px-3 py-1 text-xs font-mono font-bold text-rose-400 transition active:scale-95"
-              title="Permanently purges all log records from the backend database."
-            >
-              <Trash size={13} />
-              PURGE DB
-            </button>
-          </div>
-        </div>
-
-        {/* 3. DUAL-SPLIT WORKSPACE LAYOUT */}
-        <div className="grid flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[0.55fr_0.45fr]">
-          
-          {/* LEFT PANEL: REAL-TIME LOG STREAM */}
-          <div ref={containerRef} className="overflow-y-auto border-r border-zinc-800/80 bg-[#07080d] p-4 scrollbar-thin">
             
-            {loading ? (
-              <div className="flex h-56 flex-col items-center justify-center rounded-2xl border border-zinc-800 bg-[#0a0b12] p-6 font-mono text-xs text-zinc-400">
-                <RefreshCw size={24} className="mb-3 animate-spin text-emerald-400" />
-                CONNECTING TO TELEMETRY STREAM...
-              </div>
-            ) : filteredLogs.length === 0 ? (
-              <div className="flex h-56 flex-col items-center justify-center rounded-2xl border border-dashed border-zinc-800/80 bg-[#0a0b12] p-6 text-center font-mono text-xs text-zinc-500">
-                <Zap className="mb-3 animate-bounce text-emerald-500/70" size={32} />
-                <p className="font-bold text-zinc-400">Terminal view cleared.</p>
-                <p className="mt-1 text-[11px] text-zinc-500 max-w-sm leading-relaxed">
-                  {clearedAt 
-                    ? "View cleared. Only new incoming events will stream live..." 
-                    : "No webhook logs match your selected filter."}
-                </p>
-                {clearedAt && (
-                  <button
-                    onClick={() => { setClearedAt(null); setStartFilter(''); setActivePreset('ALL HISTORY'); }}
-                    className="mt-4 px-3.5 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 font-mono text-xs font-bold hover:bg-emerald-500/20 transition"
-                  >
-                    Load History Logs
-                  </button>
-                )}
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {filteredLogs.map((log) => {
-                  const statusCode = log.metadata?.response_code;
-                  const isSelected = activeLog?.id === log.id;
-                  
-                  return (
+            {/* Refresh */}
+            <button 
+              onClick={() => setPolling(!polling)}
+              className="p-1.5 border border-gray-200 rounded text-gray-600 hover:bg-gray-50 transition bg-white"
+              title={polling ? "Pause Live Stream" : "Resume Live Stream"}
+            >
+              <RefreshCw size={14} className={polling ? "animate-spin text-green-600" : ""} />
+            </button>
+            
+            {/* Last 24 hours / Live */}
+            <button 
+              onClick={() => {
+                setCustomRange({ start: '', end: '' });
+                setPolling(true);
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition ${!customRange.start && !customRange.end ? 'bg-gray-900 text-white hover:bg-gray-800' : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50'}`}
+            >
+              <Clock size={13} className={!customRange.start && !customRange.end ? '' : 'text-gray-500'} />
+              Live
+            </button>
+
+            {/* Custom Date Range Popover */}
+            <div className="relative">
+              <button 
+                onClick={() => setShowDatePicker(!showDatePicker)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 border border-gray-200 rounded transition ${customRange.start || customRange.end ? 'bg-gray-900 text-white hover:bg-gray-800 font-medium' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+              >
+                <Calendar size={13} className={customRange.start || customRange.end ? '' : 'text-gray-500'} />
+                Custom
+              </button>
+
+              {showDatePicker && (
+                <div className="absolute top-full left-0 mt-1 bg-white border border-gray-200 shadow-xl rounded-md p-3 z-50 flex flex-col gap-3 w-56 text-[12px]">
+                  <div>
+                    <label className="block text-gray-500 font-medium mb-1.5">Start Date & Time</label>
+                    <input 
+                      type="datetime-local" 
+                      className="w-full border border-gray-200 rounded px-2.5 py-1.5 outline-none focus:border-gray-400 focus:ring-1 focus:ring-gray-400"
+                      value={customRange.start}
+                      onChange={(e) => setCustomRange(prev => ({ ...prev, start: e.target.value }))}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-gray-500 font-medium mb-1.5">End Date & Time</label>
+                    <input 
+                      type="datetime-local" 
+                      className="w-full border border-gray-200 rounded px-2.5 py-1.5 outline-none focus:border-gray-400 focus:ring-1 focus:ring-gray-400"
+                      value={customRange.end}
+                      onChange={(e) => setCustomRange(prev => ({ ...prev, end: e.target.value }))}
+                    />
+                  </div>
+                  <div className="flex justify-between mt-1 pt-2 border-t border-gray-100">
                     <button 
-                      key={log.id} 
-                      onClick={() => setActiveLog(log)} 
-                      className={`w-full rounded-xl border p-3.5 text-left transition-all ${
-                        isSelected 
-                          ? 'border-cyan-500/40 bg-cyan-500/5 shadow-[0_0_20px_rgba(6,182,212,0.08)]' 
-                          : 'border-zinc-850 bg-[#0b0d16] hover:border-zinc-750 hover:bg-[#10121f]'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono text-[10px] font-bold text-zinc-500">{log.id}</span>
-                            <span className="font-mono text-[10px] font-bold text-purple-400 bg-purple-500/10 px-1.5 py-0.5 rounded border border-purple-500/20">
-                              {log.metadata?.event_type || 'webhook.received'}
-                            </span>
-                          </div>
-
-                          <p className="mt-1 font-mono text-xs font-semibold text-zinc-200 truncate">
-                            {log.message}
-                          </p>
-
-                          <div className="mt-2 flex flex-wrap items-center gap-x-2 text-[11px] font-mono text-zinc-400">
-                            <span className="font-bold text-emerald-400">{log.metadata?.http_method || 'POST'}</span>
-                            <span className="text-zinc-600">•</span>
-                            <span className="truncate max-w-[200px] text-zinc-400">{log.metadata?.target_url || '/v1/gateway'}</span>
-                          </div>
-                        </div>
-
-                        <div className="flex flex-col items-end gap-1.5">
-                          <span className={`px-2 py-0.5 rounded text-xs font-mono font-black ${statusBadgeStyle(statusCode)}`}>
-                            {statusCode || 'ACCEPTED'}
-                          </span>
-                          <span className="text-[10px] font-mono text-zinc-500 flex items-center gap-1">
-                            <Clock size={10} className="text-zinc-600" />
-                            {log.metadata?.processing_duration_ms ? `${log.metadata.processing_duration_ms}ms` : '<1ms'}
-                          </span>
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-
-                {/* Pagination Controls */}
-                <div className="mt-4 flex items-center justify-between border-t border-zinc-800/80 pt-4 font-mono text-xs">
-                  <button
-                    disabled={page === 1}
-                    onClick={() => {
-                      setPage(p => Math.max(1, p - 1));
-                      if (containerRef.current) containerRef.current.scrollTop = 0;
-                    }}
-                    className="rounded-lg border border-zinc-750 bg-[#10121d] px-3.5 py-2 font-bold text-zinc-300 hover:bg-zinc-850 hover:text-emerald-400 disabled:opacity-30 disabled:hover:text-zinc-300 transition active:scale-95 shadow-md"
-                  >
-                    &lt; PREV_PAGE
-                  </button>
-                  <span className="text-zinc-500 font-bold">
-                    PAGE {page}
-                  </span>
-                  <button
-                    disabled={logs.length < MAX_ITEMS}
-                    onClick={() => {
-                      setPage(p => p + 1);
-                      if (containerRef.current) containerRef.current.scrollTop = 0;
-                    }}
-                    className="rounded-lg border border-zinc-750 bg-[#10121d] px-3.5 py-2 font-bold text-zinc-300 hover:bg-zinc-850 hover:text-emerald-400 disabled:opacity-30 disabled:hover:text-zinc-300 transition active:scale-95 shadow-md"
-                  >
-                    NEXT_PAGE &gt;
-                  </button>
+                      onClick={() => { setCustomRange({start:'', end:''}); setShowDatePicker(false); setPolling(true); }}
+                      className="text-gray-500 hover:text-gray-900 font-medium px-2 py-1"
+                    >Reset</button>
+                    <button 
+                      onClick={() => { setShowDatePicker(false); setPolling(false); }} 
+                      className="bg-gray-900 text-white px-3 py-1 rounded font-medium hover:bg-gray-800"
+                    >Apply Range</button>
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
-
-          {/* RIGHT PANEL: ENRICHED DEEP PACKET INSPECTOR */}
-          <div className="flex flex-col overflow-hidden bg-[#07080d] p-5 border-t border-zinc-800/80 lg:border-t-0">
-            
-            <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
-              <div className="flex items-center gap-2">
-                <Code2 size={16} className="text-amber-400" />
-                <div>
-                  <h4 className="font-mono text-xs font-bold text-amber-400 uppercase tracking-wider">PACKET_INSPECTOR</h4>
-                  <p className="text-[10px] font-mono text-zinc-500">Headers, payload JSON & target response</p>
-                </div>
-              </div>
-
-              {activeLog && (
-                <button
-                  onClick={copyInspectorJson}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-750 bg-[#10121d] px-2.5 py-1 text-xs font-mono font-bold text-zinc-300 hover:bg-zinc-800 transition active:scale-95"
-                >
-                  {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
-                  {copied ? 'COPIED!' : 'COPY_JSON'}
-                </button>
               )}
             </div>
 
-            {!activeLog ? (
-              <div className="flex flex-1 items-center justify-center text-center p-6">
-                <div className="font-mono text-xs text-zinc-600 max-w-xs">
-                  <Terminal className="mx-auto mb-3 opacity-30 text-amber-400" size={40} />
-                  <p className="font-bold text-zinc-400">NO EVENT SELECTED</p>
-                  <p className="mt-1 text-[11px]">Click on any log event on the left to inspect raw headers, payload JSON, and target response.</p>
-                </div>
-              </div>
-            ) : (
-              <div className="flex flex-1 flex-col overflow-hidden">
-                
-                {/* Tab Switcher */}
-                <div className="mt-3 flex gap-2">
-                  {[
-                    { id: 'payload', label: 'PAYLOAD JSON', icon: Code2 },
-                    { id: 'headers', label: 'SECURITY HEADERS', icon: ShieldCheck },
-                    { id: 'response', label: 'TARGET RESPONSE', icon: Server }
-                  ].map((tab) => {
-                    const Icon = tab.icon;
-                    return (
-                      <button 
-                        key={tab.id} 
-                        onClick={() => setActiveTab(tab.id)} 
-                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-xs font-bold transition ${
-                          activeTab === tab.id 
-                            ? 'bg-emerald-400 text-black shadow-[0_0_12px_rgba(52,211,153,0.3)]' 
-                            : 'bg-[#10121d] text-zinc-400 hover:text-zinc-200 border border-zinc-800'
-                        }`}
-                      >
-                        <Icon size={12} />
-                        {tab.label}
-                      </button>
-                    );
-                  })}
-                </div>
+            {/* Status Dropdown */}
+            <select 
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="px-3 py-1.5 bg-white border border-gray-200 text-gray-700 rounded hover:bg-gray-50 transition cursor-pointer outline-none appearance-none font-medium"
+            >
+              <option value="ALL">Status</option>
+              <option value="2XX">2XX Success</option>
+              <option value="4XX">4XX Error</option>
+              <option value="5XX">5XX Error</option>
+            </select>
 
-                {/* Enriched JSON Output View */}
-                <div className="mt-3 flex-1 overflow-auto rounded-xl border border-zinc-800 bg-[#040508] p-4 scrollbar-thin">
-                  <pre className="font-mono text-xs text-emerald-300 leading-relaxed select-all">
-                    {JSON.stringify(
-                      activeTab === 'headers'
-                        ? inspectorData?.headers || {}
-                        : activeTab === 'payload'
-                          ? inspectorData?.payload || {}
-                          : inspectorData?.response || {},
-                      null,
-                      2
-                    )}
-                  </pre>
-                </div>
-              </div>
-            )}
+            {/* Product Dropdown (Dummy for aesthetics) */}
+            <select className="px-3 py-1.5 bg-white border border-gray-200 text-gray-700 rounded hover:bg-gray-50 transition cursor-pointer outline-none appearance-none font-medium">
+              <option>Product</option>
+            </select>
 
+            {/* Method Dropdown */}
+            <select 
+              value={methodFilter}
+              onChange={(e) => setMethodFilter(e.target.value)}
+              className="px-3 py-1.5 bg-white border border-gray-200 text-gray-700 rounded hover:bg-gray-50 transition cursor-pointer outline-none appearance-none font-medium"
+            >
+              <option value="ALL">Method</option>
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+              <option value="PUT">PUT</option>
+              <option value="DELETE">DELETE</option>
+              <option value="PATCH">PATCH</option>
+            </select>
+            
+            {/* Chart Toggle */}
+            <button 
+              onClick={() => setShowChart(!showChart)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 border border-gray-200 text-gray-700 rounded hover:bg-gray-50 transition ${showChart ? 'bg-gray-100 font-medium' : 'bg-white font-medium'}`}
+            >
+              <Eye size={14} className="text-gray-500" />
+              Chart
+            </button>
+            
+            {/* Download */}
+            <button 
+              onClick={handleDownload}
+              className="p-1.5 bg-white border border-gray-200 text-gray-600 rounded hover:bg-gray-50 transition"
+              title="Download JSON"
+            >
+              <Download size={14} />
+            </button>
+
+            <div className="flex-1" /> {/* Spacer */}
+
+            {/* Terminal Button */}
+            <button className="p-1.5 bg-white border border-gray-200 text-gray-600 rounded hover:bg-gray-50 transition">
+              <Terminal size={14} />
+            </button>
+
+            {/* Source Database (Dummy for aesthetics) */}
+            <select className="px-3 py-1.5 bg-white border border-gray-200 text-gray-500 rounded hover:bg-gray-50 transition cursor-pointer outline-none appearance-none font-medium text-xs flex items-center">
+              <option>source Primary Database</option>
+            </select>
           </div>
 
+          {/* Dynamic Histogram (Supabase exact style) */}
+          {showChart && (
+            <div className="h-32 border-b border-gray-200 flex flex-col px-4 pt-3 pb-1 shrink-0 bg-white">
+              <div className="text-[11px] text-gray-500 font-medium mb-3 flex justify-between">
+                <span>Logs / Time</span>
+              </div>
+              
+              <div className="flex-1 flex flex-col justify-end relative">
+                {logs.length === 0 ? (
+                  <div className="absolute inset-0 flex items-center justify-center text-xs text-gray-400">
+                    Waiting for data...
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex-1 flex items-end justify-between gap-[2px] z-10 border-b border-gray-200 pb-1">
+                      {histogramData.buckets.map((d, i) => (
+                        <div 
+                          key={i} 
+                          className="flex-1 bg-emerald-500 hover:bg-emerald-600 transition-colors rounded-sm relative group cursor-crosshair min-h-[2px]" 
+                          style={{ height: `${Math.max(d.value, 4)}%` }} // min height for visibility
+                        >
+                          <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-1 hidden group-hover:block bg-gray-900 text-white text-[10px] px-2 py-1 rounded whitespace-nowrap z-50">
+                            {d.count} events
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {/* Time labels below chart */}
+                    <div className="flex justify-between text-[10px] text-gray-500 mt-1">
+                      <span>{histogramData.minLabel}</span>
+                      <span>{histogramData.maxLabel}</span>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Virtualized Table */}
+          <div className="flex-1 relative bg-white">
+            {loading && logs.length === 0 ? (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="flex flex-col items-center text-gray-400 gap-2">
+                  <RefreshCw size={24} className="animate-spin text-gray-400" />
+                  <span className="text-sm">Loading logs...</span>
+                </div>
+              </div>
+            ) : filteredLogs.length === 0 ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-400">
+                <Database size={32} className="mb-2 opacity-30 text-gray-300" />
+                <span className="text-sm font-medium text-gray-600">No logs found</span>
+                <span className="text-xs">Adjust your filters to see more events</span>
+              </div>
+            ) : (
+              <Virtuoso
+                data={filteredLogs}
+                itemContent={renderRow}
+                className="h-full scrollbar-thin"
+              />
+            )}
+          </div>
         </div>
+
+        {/* Right Panel Inspector */}
+        {activeLog && (
+          <div className="w-[450px] border-l border-gray-200 bg-white flex flex-col shrink-0 shadow-[-4px_0_15px_rgba(0,0,0,0.03)] z-10">
+            {/* Panel Header (Tabs) */}
+            <div className="flex items-center justify-between border-b border-gray-200 px-4 pt-3 h-12 bg-white">
+              <div className="flex gap-6 h-full">
+                <button 
+                  onClick={() => setActiveTab('details')}
+                  className={`h-full text-[13px] font-medium border-b-2 transition-colors ${
+                    activeTab === 'details' ? 'border-gray-900 text-gray-900' : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  Details
+                </button>
+                <button 
+                  onClick={() => setActiveTab('raw')}
+                  className={`h-full text-[13px] font-medium border-b-2 transition-colors ${
+                    activeTab === 'raw' ? 'border-gray-900 text-gray-900' : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  Raw
+                </button>
+              </div>
+              <button onClick={() => setActiveLog(null)} className="text-gray-400 hover:text-gray-600 mb-2">
+                <X size={14} />
+              </button>
+            </div>
+
+            {/* Panel Body */}
+            <div className="flex-1 overflow-y-auto p-6 text-[13px]">
+              {activeTab === 'details' ? (
+                <div className="space-y-6">
+                  {/* Status & Basic Info */}
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-[100px_1fr] items-center text-gray-500">
+                      <span>Status</span>
+                      <div>
+                        <span className={`px-1.5 py-0.5 rounded text-[11px] font-medium inline-block border ${statusBadgeStyle(activeLog.metadata?.response_code)}`}>
+                          {activeLog.metadata?.response_code || '200'}
+                        </span>
+                      </div>
+                    </div>
+                    
+                    <div className="grid grid-cols-[100px_1fr] text-gray-500">
+                      <span>Method</span>
+                      <span className="font-mono text-gray-800 text-[12px]">{activeLog.metadata?.http_method || 'POST'}</span>
+                    </div>
+                    
+                    <div className="grid grid-cols-[100px_1fr] text-gray-500">
+                      <span>Timestamp</span>
+                      <span className="font-mono text-gray-800 text-[12px]">{new Date(activeLog.timestamp).toISOString()}</span>
+                    </div>
+                    
+                    <div className="grid grid-cols-[100px_1fr] text-gray-500">
+                      <span>IP Address</span>
+                      <span className="font-mono text-gray-800 text-[12px]">{activeLog.metadata?.source_ip || '168.228.27.74'}</span>
+                    </div>
+                    
+                    <div className="grid grid-cols-[100px_1fr] text-gray-500">
+                      <span>Origin Country</span>
+                      <span className="font-mono text-gray-800 text-[12px]">BR</span>
+                    </div>
+                    
+                    <div className="grid grid-cols-[100px_1fr] text-gray-500">
+                      <span>Referer</span>
+                      <span className="font-mono text-gray-800 text-[12px]">{activeLog.metadata?.target_url || 'https://supabase.com/'}</span>
+                    </div>
+                  </div>
+
+                  <div className="border-t border-gray-100 pt-6">
+                    <h4 className="text-[11px] font-medium text-gray-400 tracking-widest uppercase mb-4">Request Metadata</h4>
+                    <pre className="text-[12px] font-mono text-gray-600 bg-gray-50/50 p-4 rounded-md overflow-x-auto border border-gray-100">
+                      {JSON.stringify(inspectorData?.payload, null, 2)}
+                    </pre>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <h4 className="text-[11px] font-medium text-gray-400 tracking-widest uppercase">Raw JSON</h4>
+                  <pre className="text-[12px] font-mono text-gray-600 bg-gray-50/50 p-4 rounded-md overflow-x-auto border border-gray-100">
+                    {JSON.stringify(activeLog, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
       </div>
-    </ProtectedLayout>
+    </div>
   );
 }
