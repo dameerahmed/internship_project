@@ -46,4 +46,3 @@ export default function BrandLogo({ size = 44 }) {
     </svg>
   );
 }
-  // kept single BrandLogo definition (size-based) above

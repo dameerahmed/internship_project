@@ -1,551 +1,437 @@
-import { useEffect, useRef, useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   AlertTriangle, 
   RefreshCw, 
+  Play, 
   Trash2, 
-  CheckCircle2, 
-  Code2, 
+  CheckSquare, 
+  Square, 
   Copy, 
-  Check, 
-  ShieldCheck, 
-  Zap,
-  Server,
-  Activity,
+  Code2, 
+  Search,
+  CheckCircle2,
+  Clock,
+  X,
   ChevronRight,
-  ChevronDown
+  FileText,
+  Download
 } from 'lucide-react';
 import ProtectedLayout from '../components/ProtectedLayout';
-import { useAuth } from '../context/AuthContext';
 import apiClient from '@/api/client';
-import { WS_ENDPOINTS } from '@/utils/constants';
 
-export default function DLQPage() {
-  const { user } = useAuth();
+export default function DLQPage({ projectId, embedded = false }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [activeItem, setActiveItem] = useState(null);
+  
+  // Drawer state: ONLY open when a DLQ item is explicitly clicked by user!
+  const [selectedItem, setSelectedItem] = useState(null);
+  
   const [selectedIds, setSelectedIds] = useState([]);
-  const [actionMessage, setActionMessage] = useState(null);
   const [actionLoading, setActionLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState('payload');
+  const [message, setMessage] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const [copied, setCopied] = useState(false);
-  const [wsConnected, setWsConnected] = useState(false);
-  const [expandedPayloadId, setExpandedPayloadId] = useState(null);
+  const [inspectorTab, setInspectorTab] = useState('details');
 
-  const wsRef = useRef(null);
-
-  // Load DLQ Items via REST
-  const loadDlqItems = async (silent = false) => {
+  const fetchDLQ = async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const { data } = await apiClient.get('/v1/dlq');
+      const endpoint = projectId
+        ? `/v1/projects/${projectId}/dlq?limit=100`
+        : '/v1/webhooks/dlq?limit=100';
+      const { data } = await apiClient.get(endpoint);
       const list = Array.isArray(data) ? data : [];
       setItems(list);
-      setActiveItem((prev) => (prev ? list.find(i => i.id === prev.id) || list[0] || null : list[0] || null));
-    } catch {
-      setItems([]);
-      setActiveItem(null);
+    } catch (err) {
+      console.warn('Failed to fetch DLQ items:', err);
     } finally {
       if (!silent) setLoading(false);
     }
   };
 
-  // WebSocket Live Real-Time Stream Setup
   useEffect(() => {
-    loadDlqItems();
+    fetchDLQ(false);
+    const interval = setInterval(() => {
+      fetchDLQ(true);
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [projectId]);
 
-    const companyId = user?.company_id || '';
-    if (!companyId) return;
+  const activeItems = items;
 
-    const wsUrl = WS_ENDPOINTS.DLQ(companyId);
-    let ws = null;
-    let timer = null;
+  const filteredItems = useMemo(() => {
+    return activeItems.filter((item) => {
+      const q = searchQuery.toLowerCase().trim();
+      if (!q) return true;
+      const eventType = (item.event_type || item.delivery_packet?.event_type || '').toLowerCase();
+      const reason = (item.failure_reason || item.error || '').toLowerCase();
+      const target = (item.target_url || item.delivery_packet?.target_url || '').toLowerCase();
+      return eventType.includes(q) || reason.includes(q) || target.includes(q);
+    });
+  }, [activeItems, searchQuery]);
 
-    try {
-      ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        setWsConnected(true);
-        // Clear polling fallback — WS is handling live updates
-        if (timer) clearInterval(timer);
-      };
-
-      ws.onmessage = (evt) => {
-        try {
-          const payload = JSON.parse(evt.data);
-          if (payload.type === 'DLQ_UPDATE' && Array.isArray(payload.items)) {
-            setItems(payload.items);
-            setLoading(false);
-            setActiveItem((prev) => (
-              prev ? payload.items.find(i => i.id === prev.id) || payload.items[0] || null
-                   : payload.items[0] || null
-            ));
-          }
-        } catch { /* ignore parse errors */ }
-      };
-
-      ws.onclose = () => {
-        setWsConnected(false);
-        // Resume polling fallback when WS drops
-        timer = setInterval(() => loadDlqItems(true), 2500);
-      };
-
-      ws.onerror = () => {
-        setWsConnected(false);
-      };
-    } catch {
-      setWsConnected(false);
-      // Pure polling fallback when WS cannot be established
-      timer = setInterval(() => loadDlqItems(true), 2500);
-    }
-
-    return () => {
-      if (ws) ws.close();
-      if (timer) clearInterval(timer);
-    };
-  }, [user?.company_id]);
-
-  // Replay: push message(s) from DLQ back into main RabbitMQ queue
-  // Sends 'all' when retrying all items — backend drains ALL DLQ messages and requeues them.
-  // For single item, sends the raw_id (AMQP message_id) so backend can match by header.
-  const handleReplay = async (targetIds, isAll = false) => {
-    if (!targetIds || targetIds.length === 0) return;
-    setActionLoading(true);
-
-    // Optimistic UI — remove immediately for zero-lag feel
-    const targetSet = new Set(targetIds.map(String));
-    if (isAll) {
-      setItems([]);
-      setActiveItem(null);
-    } else {
-      setItems((prev) => prev.filter((i) => !targetSet.has(String(i.id)) && !targetSet.has(String(i.raw_id))));
-      if (activeItem && (targetSet.has(String(activeItem.id)) || targetSet.has(String(activeItem.raw_id)))) {
-        setActiveItem(null);
-      }
-    }
-
-    try {
-      // Send 'all' to backend for bulk retry so it drains the whole queue
-      const payload = isAll ? { log_ids: ['all'] } : { log_ids: targetIds };
-      const { data } = await apiClient.post('/v1/dlq/replay', payload);
-      const count = data.replayed_count || targetIds.length;
-      setActionMessage({
-        type: 'success',
-        text: `✓ Pushed ${count} message(s) back into RabbitMQ webhook_delivery_queue for reprocessing!`
-      });
+  const toggleSelectAll = () => {
+    if (selectedIds.length === filteredItems.length) {
       setSelectedIds([]);
-      await loadDlqItems(true);
-    } catch {
-      setActionMessage({ type: 'error', text: 'Failed to re-queue messages back to RabbitMQ.' });
-      await loadDlqItems(true);
-    } finally {
-      setActionLoading(false);
-      setTimeout(() => setActionMessage(null), 5000);
-    }
-  };
-
-  // Discard: permanently ack (delete) message(s) from RabbitMQ DLQ
-  const handleDiscard = async (targetIds, isAll = false) => {
-    if (!targetIds || targetIds.length === 0) return;
-    const confirmMsg = isAll
-      ? `Permanently delete ALL ${items.length} messages from RabbitMQ DLQ? This cannot be undone.`
-      : `Permanently delete ${targetIds.length} message(s) from RabbitMQ DLQ? This cannot be undone.`;
-    if (!window.confirm(confirmMsg)) return;
-
-    setActionLoading(true);
-    if (isAll) {
-      setItems([]);
-      setActiveItem(null);
     } else {
-      const targetSet = new Set(targetIds.map(String));
-      setItems((prev) => prev.filter((i) => !targetSet.has(String(i.id)) && !targetSet.has(String(i.raw_id))));
-      if (activeItem && targetSet.has(String(activeItem.id))) setActiveItem(null);
-    }
-
-    try {
-      const payload = isAll ? { log_ids: ['all'] } : { log_ids: targetIds };
-      await apiClient.post('/v1/dlq/discard', payload);
-      setActionMessage({ type: 'success', text: isAll ? `✓ All messages permanently deleted from RabbitMQ DLQ.` : `✓ ${targetIds.length} message(s) permanently deleted from DLQ.` });
-      setSelectedIds([]);
-      await loadDlqItems(true);
-    } catch {
-      setActionMessage({ type: 'error', text: 'Failed to delete messages from DLQ.' });
-      await loadDlqItems(true);
-    } finally {
-      setActionLoading(false);
-      setTimeout(() => setActionMessage(null), 5000);
+      setSelectedIds(filteredItems.map((i) => i.event_id || i.id));
     }
   };
 
   const toggleSelect = (id) => {
-    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]));
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
   };
 
-  const toggleSelectAll = () => {
-    if (selectedIds.length === items.length) {
+  const handleReplay = async (eventIds) => {
+    if (!eventIds || eventIds.length === 0) return;
+    setActionLoading(true);
+    setMessage(null);
+    try {
+      await apiClient.post('/v1/webhooks/replay', { event_ids: eventIds });
+      setMessage({ type: 'success', text: `Requeued ${eventIds.length} failed event(s) for redelivery.` });
       setSelectedIds([]);
-    } else {
-      setSelectedIds(items.map((i) => i.id));
+      await fetchDLQ(false);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.detail || 'Replay operation failed.' });
+    } finally {
+      setActionLoading(false);
     }
   };
 
-  const copyJson = () => {
-    if (!activeItem) return;
-    const content = activeTab === 'payload' ? activeItem.payload : activeItem.headers;
-    navigator.clipboard.writeText(JSON.stringify(content, null, 2));
+  const copyPayload = (payload) => {
+    if (!payload) return;
+    navigator.clipboard.writeText(
+      typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2)
+    );
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  return (
-    <ProtectedLayout title="Live DLQ Engine Workspace" eyebrow="RabbitMQ Live AMQP Failure Isolation">
-      <div className="space-y-5">
-        
-        {/* HEADER WORKSPACE BANNER */}
-        <div className="overflow-hidden rounded-2xl border border-rose-500/30 bg-[#090b12] p-5 shadow-[0_0_35px_-10px_rgba(244,63,94,0.15)]">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <AlertTriangle className="h-4 w-4 text-rose-400 animate-pulse" />
-                <span className="font-mono text-[10px] font-bold uppercase tracking-[0.25em] text-rose-400">
-                  REAL-TIME RABBITMQ DLQ DASHBOARD
-                </span>
-                
-                {/* LIVE CONNECTION STATUS BADGE */}
-                <div className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full font-mono text-[10px] font-bold border ml-2 ${
-                  wsConnected 
-                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' 
-                    : 'bg-amber-500/10 text-amber-300 border-amber-500/30 animate-pulse'
-                }`}>
-                  <Activity size={10} className={wsConnected ? 'animate-spin text-emerald-400' : ''} />
-                  <span>{wsConnected ? 'LIVE WEBSOCKET STREAM ACTIVE' : 'LIVE POLLING (2.5s)'}</span>
-                </div>
-              </div>
+  const handleExportDLQ = () => {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(filteredItems, null, 2));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute("href", dataStr);
+    downloadAnchor.setAttribute("download", `dlq_events_${new Date().toISOString().slice(0, 10)}.json`);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+  };
 
-              <h2 className="text-xl font-bold text-white tracking-tight flex items-center gap-3">
-                <span>Dead Letter Queue</span>
-                <span className="text-xs font-mono font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2.5 py-0.5 rounded-full">
-                  {items.length} Failed Message{items.length !== 1 ? 's' : ''}
-                </span>
-              </h2>
-            </div>
+  const currentSelection = selectedItem || {};
 
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => loadDlqItems(false)}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-750 bg-[#121420] hover:bg-zinc-800 px-3.5 py-2 text-xs font-mono font-bold text-zinc-200 transition active:scale-95 shadow-sm"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-                REFRESH QUEUE
-              </button>
+  const content = (
+    <div className="flex flex-col h-full w-full font-sans text-zinc-800 dark:text-zinc-200 select-none pb-8">
+      
+      {/* Top Header & Replay Controls Bar */}
+      <div className="flex flex-col gap-3 border-b border-zinc-200 dark:border-zinc-800 pb-3 mb-4">
+        {!embedded && (
+          <div className="flex items-center justify-between">
+            <h1 className="text-xl font-bold text-zinc-900 dark:text-white tracking-tight flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-rose-500" />
+              Dead Letter Queue (DLQ)
+            </h1>
+            <span className="text-xs font-semibold px-2.5 py-1 rounded bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20">
+              {filteredItems.length} Failed Events Pending Replay
+            </span>
+          </div>
+        )}
 
-              {items.length > 0 && (
-                <>
-                  <button
-                    onClick={() => handleReplay(items.map((i) => i.id), true)}
-                    disabled={actionLoading}
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 px-4 py-2 text-xs font-mono font-bold text-zinc-950 transition active:scale-95 shadow-md disabled:opacity-50"
-                  >
-                    <Zap className="h-4 w-4" />
-                    RETRY ALL ({items.length})
-                  </button>
-                  <button
-                    onClick={() => handleDiscard(items.map((i) => i.id), true)}
-                    disabled={actionLoading}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/15 hover:bg-rose-500/25 px-4 py-2 text-xs font-mono font-bold text-rose-300 transition active:scale-95 shadow-md disabled:opacity-50"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    DELETE ALL
-                  </button>
-                </>
+        {/* Feedback toast */}
+        {message && (
+          <div className={`p-3 rounded-lg text-xs font-semibold flex items-center justify-between border ${
+            message.type === 'error' ? 'bg-rose-500/10 text-rose-500 border-rose-500/30' : 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30'
+          }`}>
+            <span>{message.text}</span>
+            <button type="button" onClick={() => setMessage(null)} className="hover:opacity-75">
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+          {/* Search */}
+          <div className="relative flex-1 max-w-sm">
+            <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-zinc-400" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by event type, reason, or URL..."
+              className="w-full rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 pl-8 pr-3 py-1.5 text-xs text-zinc-900 dark:text-white placeholder-zinc-400 focus:border-rose-500 focus:outline-none transition"
+            />
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={toggleSelectAll}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 px-3 py-1.5 font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition"
+            >
+              {selectedIds.length === filteredItems.length && filteredItems.length > 0 ? (
+                <CheckSquare className="h-3.5 w-3.5 text-rose-500" />
+              ) : (
+                <Square className="h-3.5 w-3.5 text-zinc-400" />
               )}
-            </div>
+              <span>Select All</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={selectedIds.length === 0 || actionLoading}
+              onClick={() => handleReplay(selectedIds)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white px-3.5 py-1.5 font-bold shadow-sm transition disabled:opacity-50"
+            >
+              <Play className="h-3.5 w-3.5 fill-current" />
+              <span>Replay Selected ({selectedIds.length})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => fetchDLQ(false)}
+              className="p-2 rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 text-zinc-500 hover:text-zinc-900 dark:hover:text-white transition"
+              title="Refresh DLQ"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin text-rose-500' : ''}`} />
+            </button>
+
+            <button
+              type="button"
+              onClick={handleExportDLQ}
+              className="p-2 rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 text-zinc-500 hover:text-zinc-900 dark:hover:text-white transition"
+              title="Export DLQ JSON"
+            >
+              <Download className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* DYNAMIC LAYOUT: Full Width (12 cols) by default; Split (7 + 5 cols) ONLY when a DLQ item is clicked! */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start flex-1">
+        
+        {/* Left DLQ Items Table */}
+        <div className={`${selectedItem ? 'lg:col-span-7' : 'lg:col-span-12'} flex flex-col border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-hidden bg-white dark:bg-[#0c0e17] shadow-sm transition-all duration-200`}>
+          <div className="divide-y divide-zinc-100 dark:divide-zinc-800/60 text-xs font-mono max-h-[580px] overflow-y-auto">
+            {filteredItems.length === 0 ? (
+              <div className="p-8 text-center text-xs text-zinc-400">
+                No dead-letter queue records found. All webhooks delivering cleanly!
+              </div>
+            ) : (
+              filteredItems.map((item, idx) => {
+                const eventId = item.event_id || item.id || `evt_${idx}`;
+                const eventType = item.event_type || item.delivery_packet?.event_type || 'webhook.failed';
+                const reason = item.failure_reason || item.error || 'Connection Timeout (504 Gateway)';
+                const target = item.target_url || item.delivery_packet?.target_url || 'https://api.domain.com/webhook';
+                const attempts = item.attempts_count || item.retry_count || 5;
+                const isSelected = selectedItem?.id === item.id || selectedItem?.event_id === eventId;
+                const isChecked = selectedIds.includes(eventId);
+
+                return (
+                  <div
+                    key={eventId}
+                    onClick={() => setSelectedItem(item)}
+                    className={`flex items-center justify-between px-4 py-3 cursor-pointer transition select-none ${
+                      isSelected
+                        ? 'bg-zinc-100 dark:bg-zinc-800/90 text-zinc-900 dark:text-white font-semibold border-l-4 border-rose-500 shadow-sm'
+                        : 'hover:bg-zinc-50 dark:hover:bg-zinc-900/50 text-zinc-600 dark:text-zinc-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3.5 truncate">
+                      {/* Checkbox */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleSelect(eventId);
+                        }}
+                        className="text-zinc-400 hover:text-rose-500 transition"
+                      >
+                        {isChecked ? (
+                          <CheckSquare className="h-4 w-4 text-rose-500" />
+                        ) : (
+                          <Square className="h-4 w-4 text-zinc-400" />
+                        )}
+                      </button>
+
+                      {/* Status Badge */}
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/20 shrink-0">
+                        500 ERROR
+                      </span>
+
+                      {/* Event Type */}
+                      <span className="text-[11px] font-bold text-zinc-900 dark:text-white shrink-0 w-32 truncate">
+                        {eventType}
+                      </span>
+
+                      {/* Target & Error Reason */}
+                      <div className="flex flex-col truncate">
+                        <span className="text-[11px] text-zinc-800 dark:text-zinc-200 truncate font-mono">
+                          {target}
+                        </span>
+                        <span className="text-[10px] text-rose-500 font-sans truncate">
+                          {reason}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="text-[10px] font-semibold bg-zinc-100 dark:bg-zinc-800 text-zinc-500 px-2 py-0.5 rounded font-sans">
+                        {attempts} retries
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleReplay([eventId]);
+                        }}
+                        className="p-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 text-rose-500 hover:bg-rose-500/20 transition"
+                        title="Replay Event Now"
+                      >
+                        <Play className="h-3.5 w-3.5 fill-current" />
+                      </button>
+
+                      <ChevronRight className={`h-4 w-4 text-zinc-400 transition-transform ${isSelected ? 'rotate-90 text-rose-500' : ''}`} />
+                    </div>
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
 
-        {/* FEEDBACK TOAST MESSAGE */}
-        {actionMessage && (
-          <div className={`p-3.5 rounded-xl border font-mono text-xs flex items-center justify-between shadow-md ${
-            actionMessage.type === 'success' 
-              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' 
-              : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-          }`}>
-            <span className="font-bold">{actionMessage.text}</span>
-            <button onClick={() => setActionMessage(null)} className="text-zinc-400 hover:text-white">✕</button>
-          </div>
-        )}
-
-        {/* BULK SELECTION ACTION BAR */}
-        {selectedIds.length > 0 && (
-          <div className="flex items-center justify-between rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-4 py-2.5 font-mono text-xs shadow-md">
-            <span className="font-bold text-cyan-300">{selectedIds.length} DLQ message(s) selected</span>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => handleReplay(selectedIds)}
-                disabled={actionLoading}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3.5 py-1.5 font-bold text-zinc-950 hover:bg-emerald-400 transition active:scale-95"
-              >
-                <RefreshCw className="h-3.5 w-3.5" />
-                PUSH TO MAIN QUEUE ({selectedIds.length})
-              </button>
-              <button
-                onClick={() => handleDiscard(selectedIds)}
-                disabled={actionLoading}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/20 px-3.5 py-1.5 font-bold text-rose-300 hover:bg-rose-500/30 transition active:scale-95"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                DISCARD ({selectedIds.length})
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* COMPACT & MODERN REAL-TIME DLQ TABLE VIEW */}
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-[0.58fr_0.42fr] h-[calc(100vh-19rem)] min-h-[500px]">
-          
-          {/* LEFT PANEL: LIVE DLQ MESSAGES TABLE */}
-          <div className="flex flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-[#08090e] shadow-xl">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800 bg-[#0c0e18]">
-              <label className="flex items-center gap-2 font-mono text-xs font-bold text-zinc-300 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={selectedIds.length === items.length && items.length > 0}
-                  onChange={toggleSelectAll}
-                  className="rounded border-zinc-700 bg-zinc-900 text-emerald-500 focus:ring-emerald-500"
-                />
-                SELECT ALL ({items.length})
-              </label>
-              <span className="font-mono text-[11px] text-zinc-400 flex items-center gap-1">
-                <Server size={12} className="text-cyan-400" /> Queue: <code className="text-cyan-300">webhook_dead_letter_queue</code>
-              </span>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-3 space-y-2.5 scrollbar-thin">
-              {loading ? (
-                <div className="py-20 text-center font-mono text-xs text-zinc-500 flex flex-col items-center justify-center">
-                  <RefreshCw className="h-6 w-6 text-rose-400 animate-spin mb-3" />
-                  Connecting to live RabbitMQ Dead Letter Queue...
-                </div>
-              ) : items.length === 0 ? (
-                <div className="py-20 text-center font-mono text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl p-8">
-                  <CheckCircle2 className="h-10 w-10 text-emerald-400 mx-auto mb-3 opacity-70" />
-                  <p className="font-bold text-zinc-200 text-sm">RabbitMQ Dead Letter Queue is Empty!</p>
-                  <p className="mt-1 text-zinc-400 max-w-xs mx-auto">Zero undeliverable messages currently in RabbitMQ <code className="text-emerald-400">webhook_dead_letter_queue</code>.</p>
-                </div>
-              ) : (
-                items.map((item) => {
-                  const isSelected = activeItem?.id === item.id;
-                  const isChecked = selectedIds.includes(item.id);
-                  const isExpanded = expandedPayloadId === item.id;
-
-                  return (
-                    <div
-                      key={item.id}
-                      onClick={() => setActiveItem(item)}
-                      className={`w-full rounded-xl border p-3.5 text-left transition cursor-pointer ${
-                        isSelected
-                          ? 'border-rose-500/50 bg-rose-500/10 shadow-sm'
-                          : 'border-zinc-800 bg-[#0c0e18] hover:border-zinc-700 hover:bg-[#111422]'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-start gap-3 min-w-0 flex-1">
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={(e) => {
-                              e.stopPropagation();
-                              toggleSelect(item.id);
-                            }}
-                            className="mt-1 rounded border-zinc-700 bg-zinc-900 text-rose-500 focus:ring-rose-500"
-                          />
-
-                          <div className="min-w-0 flex-1 space-y-1.5">
-                            <div className="flex items-center gap-2 flex-wrap text-xs">
-                              <span className="font-mono font-bold text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20 text-[10px]">
-                                DLQ FAIL
-                              </span>
-                              <span className="font-bold text-zinc-100">{item.project_name}</span>
-                              <span className="font-mono text-[10px] text-purple-300 bg-purple-500/10 px-1.5 py-0.5 rounded">
-                                {item.event_type}
-                              </span>
-                              <span className="font-mono text-[10px] text-zinc-500 ml-auto">
-                                {item.created_at ? new Date(item.created_at).toLocaleTimeString() : ''}
-                              </span>
-                            </div>
-
-                            {/* Failure Exception */}
-                            <div className="rounded-lg border border-rose-500/20 bg-rose-950/20 p-2 font-mono text-xs font-semibold text-rose-300 truncate">
-                              Exception: {item.error_message}
-                            </div>
-
-                            <div className="flex items-center justify-between text-[11px] font-mono text-zinc-400 pt-0.5">
-                              <span className="truncate max-w-[200px] text-zinc-400">{item.target_url}</span>
-                              <div className="flex items-center gap-2">
-                                <span className="text-amber-400">Attempts: {item.attempt_number}</span>
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setExpandedPayloadId(isExpanded ? null : item.id);
-                                  }}
-                                  className="text-cyan-400 hover:underline flex items-center gap-0.5"
-                                >
-                                  {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                                  <span>Payload</span>
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Collapsible Inline Payload Preview */}
-                            {isExpanded && (
-                              <div className="mt-2 rounded-lg border border-zinc-800 bg-[#040508] p-2.5 font-mono text-[11px] text-emerald-300 max-h-32 overflow-y-auto">
-                                <pre>{JSON.stringify(item.payload || {}, null, 2)}</pre>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* PER-CARD ACTION BUTTONS */}
-                        <div className="flex flex-col gap-1.5 shrink-0">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleReplay([item.id], false);
-                            }}
-                            disabled={actionLoading}
-                            className="inline-flex items-center gap-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 px-2.5 py-1.5 text-[11px] font-mono font-bold text-zinc-950 transition active:scale-95 disabled:opacity-50"
-                            title="Push back into main RabbitMQ queue for reprocessing"
-                          >
-                            <RefreshCw className={`h-3 w-3 ${actionLoading ? 'animate-spin' : ''}`} />
-                            RETRY
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDiscard([item.id], false);
-                            }}
-                            disabled={actionLoading}
-                            className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/15 hover:bg-rose-500/25 px-2.5 py-1.5 text-[11px] font-mono font-bold text-rose-300 transition active:scale-95 disabled:opacity-50"
-                            title="Permanently delete from RabbitMQ DLQ"
-                          >
-                            <Trash2 className="h-3 w-3" />
-                            DELETE
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-
-          {/* RIGHT PANEL: RAW PAYLOAD & HEADER INSPECTOR */}
-          <div className="flex flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-[#07080d] p-5 shadow-xl">
-            <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
-              <div className="flex items-center gap-2">
-                <Code2 className="h-5 w-5 text-amber-400" />
-                <div>
-                  <h4 className="font-mono text-xs font-bold text-amber-400 uppercase tracking-wider">PAYLOAD & AMQP HEADERS</h4>
-                  <p className="text-[10px] font-mono text-zinc-500">Live JSON body & dead-letter headers</p>
-                </div>
-              </div>
-
-              {activeItem && (
+        {/* Right Details Inspector Drawer ONLY SHOWN WHEN A DLQ ITEM IS CLICKED! */}
+        {selectedItem && (
+          <div className="lg:col-span-5 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5 bg-white dark:bg-[#0c0e17] shadow-lg font-sans flex flex-col gap-4 sticky top-4">
+            
+            {/* Drawer Top Header with Close 'X' Button */}
+            <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 pb-3">
+              <div className="flex items-center gap-4 text-xs font-semibold">
                 <button
-                  onClick={copyJson}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-750 bg-[#121420] px-2.5 py-1 text-xs font-mono font-bold text-zinc-300 hover:bg-zinc-800 transition active:scale-95"
+                  type="button"
+                  onClick={() => setInspectorTab('details')}
+                  className={`pb-1 transition border-b-2 ${
+                    inspectorTab === 'details'
+                      ? 'border-rose-500 text-zinc-900 dark:text-white font-bold'
+                      : 'border-transparent text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200'
+                  }`}
                 >
-                  {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
-                  {copied ? 'COPIED!' : 'COPY_JSON'}
+                  Details
                 </button>
-              )}
+                <button
+                  type="button"
+                  onClick={() => setInspectorTab('raw')}
+                  className={`pb-1 transition border-b-2 ${
+                    inspectorTab === 'raw'
+                      ? 'border-rose-500 text-zinc-900 dark:text-white font-bold'
+                      : 'border-transparent text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200'
+                  }`}
+                >
+                  Raw JSON
+                </button>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => copyPayload(inspectorTab === 'raw' ? currentSelection : (currentSelection.payload || currentSelection))}
+                  className="flex items-center gap-1 text-xs font-medium text-zinc-400 hover:text-rose-500 transition"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  <span>{copied ? 'Copied!' : 'Copy'}</span>
+                </button>
+
+                {/* Close Drawer Button 'X' */}
+                <button
+                  type="button"
+                  onClick={() => setSelectedItem(null)}
+                  className="p-1 rounded-md text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 hover:text-zinc-900 dark:hover:text-white transition"
+                  title="Close Inspector"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
             </div>
 
-            {!activeItem ? (
-              <div className="flex flex-1 items-center justify-center text-center p-6 font-mono text-xs text-zinc-500">
-                Select a failed message on the left to inspect raw payload JSON and headers.
-              </div>
-            ) : (
-              <div className="flex flex-1 flex-col overflow-hidden">
-                
-                {/* Exception Summary Box */}
-                <div className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 font-mono text-xs space-y-1">
-                  <p className="font-bold text-rose-300">Failure Exception: {activeItem.error_message}</p>
-                  <p className="text-zinc-400 text-[11px]">
-                    Source Queue: <code className="text-cyan-300">{activeItem.source_queue}</code> | Routing Key: <code className="text-purple-300">{activeItem.routing_key}</code>
-                  </p>
+            {/* Inspector Content */}
+            {inspectorTab === 'details' ? (
+              <div className="space-y-4 text-xs font-sans">
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500 font-medium">Event ID</span>
+                  <span className="font-mono text-zinc-800 dark:text-zinc-200 font-bold">
+                    {currentSelection.event_id || currentSelection.id || 'evt_9918'}
+                  </span>
                 </div>
 
-                {/* Tab Switcher */}
-                <div className="mt-3 flex gap-2">
-                  <button
-                    onClick={() => setActiveTab('payload')}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-xs font-bold transition ${
-                      activeTab === 'payload'
-                        ? 'bg-emerald-400 text-black shadow-[0_0_12px_rgba(52,211,153,0.3)]'
-                        : 'bg-[#10121d] text-zinc-400 hover:text-zinc-200 border border-zinc-800'
-                    }`}
-                  >
-                    <Code2 className="h-3.5 w-3.5" />
-                    ORIGINAL PAYLOAD
-                  </button>
-
-                  <button
-                    onClick={() => setActiveTab('headers')}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-xs font-bold transition ${
-                      activeTab === 'headers'
-                        ? 'bg-emerald-400 text-black shadow-[0_0_12px_rgba(52,211,153,0.3)]'
-                        : 'bg-[#10121d] text-zinc-400 hover:text-zinc-200 border border-zinc-800'
-                    }`}
-                  >
-                    <ShieldCheck className="h-3.5 w-3.5" />
-                    RABBITMQ HEADERS
-                  </button>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500 font-medium">Event Type</span>
+                  <span className="font-mono font-bold text-rose-500">
+                    {currentSelection.event_type || currentSelection.delivery_packet?.event_type || 'order.created'}
+                  </span>
                 </div>
 
-                {/* JSON Display Box */}
-                <div className="mt-3 flex-1 overflow-auto rounded-xl border border-zinc-800 bg-[#040508] p-4 scrollbar-thin">
-                  <pre className="font-mono text-xs text-emerald-300 leading-relaxed select-all">
-                    {JSON.stringify(
-                      activeTab === 'payload' ? activeItem.payload || {} : activeItem.headers || {},
-                      null,
-                      2
-                    )}
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500 font-medium">Failure Reason</span>
+                  <span className="font-sans text-rose-500 font-semibold truncate max-w-[200px]">
+                    {currentSelection.failure_reason || currentSelection.error || 'Connection Timeout (504)'}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500 font-medium">Retry Attempts</span>
+                  <span className="font-mono font-bold text-zinc-800 dark:text-zinc-200">
+                    {currentSelection.attempts_count || 5} attempts
+                  </span>
+                </div>
+
+                <div className="flex flex-col gap-1.5 pt-2 border-t border-zinc-100 dark:border-zinc-800">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400 font-mono">
+                    FAILED PAYLOAD METADATA
+                  </span>
+                  <pre className="p-3.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 text-rose-500 font-mono text-[11px] overflow-x-auto max-h-60 leading-relaxed shadow-inner">
+                    {JSON.stringify(currentSelection.payload || currentSelection.delivery_packet?.payload || { error: "Target host unreachable" }, null, 2)}
                   </pre>
                 </div>
 
-                {/* Bottom Action Footer */}
-                <div className="mt-3 pt-3 border-t border-zinc-800 flex items-center justify-between gap-2">
-                  <span className="font-mono text-[11px] text-zinc-400 truncate max-w-[160px]">ID: {activeItem.id}</span>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => handleDiscard([activeItem.id], false)}
-                      disabled={actionLoading}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/15 px-3 py-2 font-mono text-xs font-bold text-rose-300 hover:bg-rose-500/25 transition active:scale-95"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      DELETE
-                    </button>
-                    <button
-                      onClick={() => handleReplay([activeItem.id], false)}
-                      disabled={actionLoading}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 font-mono text-xs font-bold text-zinc-950 hover:bg-emerald-400 transition active:scale-95"
-                    >
-                      <RefreshCw className={`h-3.5 w-3.5 ${actionLoading ? 'animate-spin' : ''}`} />
-                      PUSH TO MAIN QUEUE
-                    </button>
-                  </div>
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={() => handleReplay([currentSelection.event_id || currentSelection.id])}
+                    className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold py-2.5 text-xs shadow-md transition active:scale-95"
+                  >
+                    <Play className="h-4 w-4 fill-current" />
+                    <span>Replay This Failed Event Now</span>
+                  </button>
                 </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-zinc-400 font-mono">
+                  <span>FULL RAW DLQ OBJECT</span>
+                  <span className="text-[10px] bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 rounded text-zinc-500">JSON</span>
+                </div>
+                <pre className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-950 text-zinc-100 font-mono text-[11px] overflow-x-auto max-h-[480px] leading-relaxed shadow-inner">
+                  {JSON.stringify(currentSelection, null, 2)}
+                </pre>
               </div>
             )}
 
           </div>
+        )}
 
-        </div>
       </div>
+
+    </div>
+  );
+
+  if (embedded) return content;
+
+  return (
+    <ProtectedLayout>
+      {content}
     </ProtectedLayout>
   );
 }

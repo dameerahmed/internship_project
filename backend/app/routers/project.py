@@ -10,20 +10,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 
-from backend.database import get_db
-from backend.app.services.redis_client import get_redis
-from backend.app.utils.security import WebhookSecurity
-from backend.app.schemas.project import ProjectCreate, ProjectResponse, ProjectSummary, ProjectDetail, ProjectUpdate
-from backend.app.schemas.event_config import EventConfigUpdate
-from backend.app.services.dependencies import get_current_company 
-from backend.app.services.project_service import normalize_event_config_payload
+from  database import get_db
+from  app.services.redis_client import get_redis
+from  app.utils.security import WebhookSecurity
+from  app.schemas.project import ProjectCreate, ProjectResponse, ProjectSummary, ProjectDetail, ProjectUpdate
+from  app.schemas.event_config import EventConfigUpdate
+from  app.services.dependencies import get_current_company 
+from  app.services.project_service import normalize_event_config_payload
 
 # Models
-from backend.app.models.project import Project
-from backend.app.models.event_config import EventConfig
-from backend.app.models.webhook_log import WebhookLog
-from backend.app.models.webhook_event import WebhookEvent
-from backend.app.services.queue_client import rabbitmq_manager
+from  app.models.project import Project
+from  app.models.event_config import EventConfig
+from  app.models.webhook_log import WebhookLog
+from  app.models.webhook_event import WebhookEvent
+from  app.services.queue_client import rabbitmq_manager
 
 router = APIRouter(prefix="/v1/projects", tags=["Projects"])
 logger = logging.getLogger("project_router")
@@ -126,7 +126,7 @@ async def create_project(
 
         # 5. Async-safe synchronization with Redis broker cache state
         try:
-            from backend.app.services.project_service import refresh_project_cache
+            from  app.services.project_service import refresh_project_cache
             await refresh_project_cache(project_id, db, redis_conn)
         except Exception as redis_err:
             logger.warning("Redis engine sync skipped on initialization: %s", redis_err)
@@ -238,8 +238,8 @@ async def refresh_project_keys(
     await db.refresh(db_project)
 
     try:
-        from backend.app.services.project_service import refresh_project_cache
-        from backend.app.services.redis_client import get_redis_client
+        from  app.services.project_service import refresh_project_cache
+        from  app.services.redis_client import get_redis_client
         redis_conn = await get_redis_client()
         try:
             await refresh_project_cache(project_id, db, redis_conn)
@@ -340,7 +340,7 @@ async def update_event_active_state(
 
         # Refresh redis allowed events list and project-level cache
         try:
-            from backend.app.services.project_service import refresh_project_cache
+            from  app.services.project_service import refresh_project_cache
             await refresh_project_cache(project_id, db, redis_conn)
         except Exception as redis_err:
             logger.warning("Redis cache synchronization skipped: %s", redis_err)
@@ -445,7 +445,7 @@ async def update_project(
         await db.refresh(db_project)
 
         try:
-            from backend.app.services.project_service import refresh_project_cache
+            from  app.services.project_service import refresh_project_cache
             await refresh_project_cache(project_id, db, redis_conn)
         except Exception as redis_err:
             logger.warning("Redis cache synchronization skipped: %s", redis_err)
@@ -531,7 +531,7 @@ async def new_api_and_secret_generation(
         await db.refresh(db_project)
 
         try:
-            from backend.app.services.project_service import refresh_project_cache
+            from  app.services.project_service import refresh_project_cache
             await refresh_project_cache(project_id, db, redis_conn)
         except Exception as redis_err:
             logger.warning("Redis cache synchronization skipped: %s", redis_err)

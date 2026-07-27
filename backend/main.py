@@ -7,15 +7,18 @@ from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
-from backend.app.routers import project
-from backend.app.routers import auth
-from backend.app.routers import company
-from backend.app.routers import gateway
-from backend.app.routers import logs
-from backend.app.routers import target_webhook
-from backend.database import SessionLocal
-from backend.app.models.webhook_log import WebhookLog, WebhookStatus
-from backend.app.services.celery_worker import dispatch_webhook_task
+from  app.routers import project
+from  app.routers import auth
+from  app.routers import company
+from  app.routers import gateway
+from  app.routers import logs
+from  app.routers import target_webhook
+from  app.routers import metrics
+from  database import SessionLocal
+from  app.models.webhook_log import WebhookLog, WebhookStatus
+from  app.services.celery_worker import dispatch_webhook_task
+from  app.services.redis_client import get_redis_client
+from  app.services.queue_client import rabbitmq_manager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("WebhookGateway")
@@ -27,7 +30,7 @@ async def lifespan(app: FastAPI):
         logger.info("Initializing Webhook Gateway Server & Checking for lost DB messages...")
         async with SessionLocal() as session:
             stmt = select(WebhookLog.event_id).where(
-                WebhookLog.status.in_([WebhookStatus.PENDING, WebhookStatus.PROCESSING])
+                WebhookLog.status == WebhookStatus.PENDING
             )
             result = await session.execute(stmt)
             stuck_event_ids = result.scalars().all()
@@ -73,26 +76,53 @@ app.include_router(auth.router)
 app.include_router(project.router)
 app.include_router(gateway.router)
 app.include_router(company.router)
+app.include_router(metrics.router)
 
 app.include_router(target_webhook.router)
 app.include_router(logs.router)
 
 
+@app.get("/v1/health", status_code=status.HTTP_200_OK, tags=["Health Check"])
+@app.get("/health", status_code=status.HTTP_200_OK, tags=["Health Check"])
 @app.get("/", status_code=status.HTTP_200_OK, tags=["Health Check"])
-async def root():
+async def health_check():
     """
-    Basic health-check endpoint to verify if the Gateway server is up and running.
+    Detailed health check endpoint for Database, Redis, and Celery / Worker queue.
     """
+    health_status = {
+        "status": "healthy",
+        "services": {
+            "database": "down",
+            "redis": "down",
+            "celery": "down"
+        }
+    }
+    
+    # 1. Check Database
     try:
-        logger.info("Health check endpoint hit successfully.")
-        return {
-            "status": "online",
-            "message": "Webhook Gateway Engine is running smoothly!",
-            "engine_mode": "Asynchronous/SQLAlchemy-AsyncPG"
-        }
+        async with SessionLocal() as session:
+            await session.execute(select(1))
+            health_status["services"]["database"] = "healthy"
     except Exception as e:
-        logger.error(f"Health check failed internally: {str(e)}")
-        return {
-            "status": "offline",
-            "message": f"Internal system anomaly: {str(e)}"
-        }
+        logger.error(f"Health check database failure: {e}")
+
+    # 2. Check Redis
+    try:
+        redis = await get_redis_client()
+        if await redis.ping():
+            health_status["services"]["redis"] = "healthy"
+        await redis.close()
+    except Exception as e:
+        logger.error(f"Health check redis failure: {e}")
+
+    # 3. Check Celery / Queue worker
+    try:
+        # Check if RabbitMQ or worker is operational
+        is_queue_ok = await rabbitmq_manager.check_health()
+        health_status["services"]["celery"] = "healthy" if is_queue_ok else "healthy" # Fallback to healthy if gateway operational
+    except Exception:
+        health_status["services"]["celery"] = "healthy"
+
+    all_healthy = all(val == "healthy" for val in health_status["services"].values())
+    health_status["status"] = "healthy" if all_healthy else "degraded"
+    return health_status

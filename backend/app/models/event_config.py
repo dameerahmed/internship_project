@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, UniqueCons
 from datetime import datetime
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
-from backend.database import Base
+from  database import Base
 
 class EventConfig(Base):
     __tablename__ = "event_configs"

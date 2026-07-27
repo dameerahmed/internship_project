@@ -17,10 +17,10 @@ function ProtectedRoute({ children }) {
 
   if (loading) {
     return (
-      <div className="loading-screen">
-        <div className="loading-card">
-          <div className="spinner" />
-          <p>Preparing your workspace…</p>
+      <div className="flex min-h-screen w-screen items-center justify-center bg-[#090d16] text-white">
+        <div className="flex flex-col items-center gap-4 rounded-3xl border border-gray-800 bg-gray-900/90 p-8 shadow-2xl backdrop-blur-xl">
+          <div className="h-10 w-10 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent" />
+          <p className="text-sm font-semibold text-gray-300">Preparing your workspace…</p>
         </div>
       </div>
     );
@@ -44,13 +44,18 @@ function AppRoutes() {
       <Route path="/blocked" element={<AccountBlocked />} />
       <Route path="/account-blocked" element={<Navigate to="/blocked" replace />} />
 
+      {/* 🏢 1. High-Level Company Dashboard & Projects Entry Views */}
       <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
+      <Route path="/dashboard/projects" element={<ProtectedRoute><ProjectsPage /></ProtectedRoute>} />
+
+      {/* 🛡️ 2. Workspace Project & Sub-system Views */}
       <Route path="/projects" element={<ProtectedRoute><ProjectsPage /></ProtectedRoute>} />
       <Route path="/projects/:projectId" element={<ProtectedRoute><ProjectDetailPage /></ProtectedRoute>} />
+      <Route path="/dashboard/projects/:projectId" element={<ProtectedRoute><ProjectDetailPage /></ProtectedRoute>} />
       <Route path="/projects/:projectId/logs" element={<ProtectedRoute><LogsPage /></ProtectedRoute>} />
       <Route path="/logs" element={<ProtectedRoute><LogsPage /></ProtectedRoute>} />
-      <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
       <Route path="/dlq" element={<ProtectedRoute><DLQPage /></ProtectedRoute>} />
+      <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
 
       <Route path="*" element={<Navigate to={user ? '/dashboard' : '/'} replace />} />
     </Routes>

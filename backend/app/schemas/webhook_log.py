@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional, Dict, Any
 from pydantic import BaseModel
-from backend.app.models.webhook_log import WebhookStatus
+from  app.models.webhook_log import WebhookStatus
 
 class WebhookLogBase(BaseModel):
     event_id: Optional[str]

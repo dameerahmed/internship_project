@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, UniqueConstraint
 from datetime import datetime
 from sqlalchemy.orm import relationship
-from backend.database import Base
+from  database import Base
 
 
 # The database schema in this workspace does not consistently include the legacy

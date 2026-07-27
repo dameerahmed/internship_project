@@ -6,8 +6,8 @@ with open(file_path, 'r', encoding='utf-8') as f:
     content = f.read()
 
 # Make sure celery_app is imported
-if 'from backend.app.services.celery_worker import celery_app' not in content:
-    content = 'from backend.app.services.celery_worker import celery_app\n' + content
+if 'from  app.services.celery_worker import celery_app' not in content:
+    content = 'from  app.services.celery_worker import celery_app\n' + content
 
 requeue_pattern = re.compile(r'    async def requeue_dlq_messages.*?return \{"replayed_count": len\(requeued_ids\), "replayed_ids": requeued_ids\}', re.DOTALL)
 
@@ -63,7 +63,7 @@ new_requeue = '''    async def requeue_dlq_messages(self, target_ids: list = Non
 
                     # 3. Publish back into main queue AS A PROPER CELERY TASK
                     celery_app.send_task(
-                        "backend.app.services.celery_worker.dispatch_webhook_task",
+                        " app.services.celery_worker.dispatch_webhook_task",
                         kwargs={"delivery_packet": delivery_packet}
                     )
                     requeued_ids.append(raw_id or f"msg_{len(requeued_ids)+1}")

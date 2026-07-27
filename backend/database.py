@@ -5,7 +5,7 @@ from sqlalchemy.orm import declarative_base
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from backend.config import settings
+from  config import settings
 logger = logging.getLogger("webhook_gateway.database")
 
 # Environment variable configuration

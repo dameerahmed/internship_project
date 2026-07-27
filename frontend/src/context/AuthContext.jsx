@@ -1,38 +1,31 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+/**
+ * AuthContext — Thin bridge over Zustand's useAuthStore.
+ *
+ * CRITICAL FIX (reload loop):
+ * The previous version called `useAuthStore()` (no selector) which subscribed to
+ * the ENTIRE store object. Every `set()` call inside hydrateFromStorage()
+ * created a new store object reference → re-rendered AuthProvider → called
+ * hydrateFromStorage() again → infinite loop causing constant page reloads.
+ *
+ * Fix: Use granular selectors (one primitive per useAuthStore call) so only
+ * the specific field change triggers a re-render. Actions are read from
+ * getState() — they never change reference so they need zero subscriptions.
+ */
+
+import { createContext, useContext, useEffect, useMemo, useRef } from 'react';
 import apiClient, { authClient } from '@/api/client';
 import { useAuthStore } from '@/store/useAuthStore';
 
-const persistSession = (userData) => {
-  if (!userData) {
-    localStorage.removeItem('user');
-    return;
-  }
-
-  const safeUser = {
-    access_token: userData.access_token ?? null,
-    email: userData.email ?? null,
-    company_name: userData.company_name ?? null,
-    company_id: userData.company_id ?? null,
-  };
-
-  localStorage.setItem('user', JSON.stringify(safeUser));
-};
-
 const AuthContext = createContext(null);
 
-const isUsableToken = (token) => typeof token === 'string' && token.trim() !== '' && token !== '••••••••' && token.length > 20;
+const isUsableToken = (token) =>
+  typeof token === 'string' && token.trim() !== '' && token !== '••••••••' && token.length > 20;
 
 const decodeJwtExpiry = (token) => {
-  if (!token) {
-    return null;
-  }
-
+  if (!token) return null;
   try {
     const payloadPart = token.split('.')[1];
-    if (!payloadPart) {
-      return null;
-    }
-
+    if (!payloadPart) return null;
     const normalized = payloadPart.replace(/-/g, '+').replace(/_/g, '/');
     const decoded = window.atob(normalized);
     const payload = JSON.parse(decoded);
@@ -48,134 +41,104 @@ const shouldRefreshSession = (token) => {
 };
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  // ── Granular selectors — each only re-renders when its specific field changes ──
+  const accessToken   = useAuthStore(s => s.accessToken);
+  const companyId     = useAuthStore(s => s.companyId);
+  const companyName   = useAuthStore(s => s.companyName);
+  const email         = useAuthStore(s => s.email);
+  const isAuth        = useAuthStore(s => s.isAuthenticated);
+  const isLoading     = useAuthStore(s => s.isLoading);
 
-  const syncUserFromStorage = async () => {
-    const storedUser = localStorage.getItem('user');
-    if (!storedUser) {
-      useAuthStore.getState().logout();
-      setUser(null);
-      setLoading(false);
-      return;
-    }
+  // ── Actions: read from getState() — stable references, no re-render triggers ──
+  const initDoneRef = useRef(false);
 
-    try {
-      const parsedUser = JSON.parse(storedUser);
-      const authStore = useAuthStore.getState();
-      const persistedToken = isUsableToken(authStore.accessToken)
-        ? authStore.accessToken
-        : isUsableToken(parsedUser?.access_token)
-          ? parsedUser.access_token
-          : null;
-
-      if (!persistedToken) {
-        throw new Error('missing token');
-      }
-
-      const inMemoryUser = {
-        access_token: persistedToken,
-        email: parsedUser?.email ?? authStore.email ?? null,
-        company_name: parsedUser?.company_name ?? authStore.companyName ?? null,
-        company_id: parsedUser?.company_id ?? authStore.companyId ?? null,
-      };
-      persistSession(inMemoryUser);
-      setUser(inMemoryUser);
-      authStore.setAuth({
-        accessToken: persistedToken,
-        companyId: inMemoryUser.company_id ?? authStore.companyId ?? '',
-        companyName: inMemoryUser.company_name ?? authStore.companyName ?? '',
-        email: inMemoryUser.email ?? authStore.email ?? '',
-      });
-
-      if (persistedToken && shouldRefreshSession(persistedToken)) {
-        try {
-          const response = await authClient.refresh();
-          const refreshedToken = response.data?.access_token;
-          if (refreshedToken) {
-            const refreshedUser = { ...parsedUser, access_token: refreshedToken };
-            persistSession(refreshedUser);
-            useAuthStore.getState().setAuth({
-              accessToken: refreshedToken,
-              companyId: refreshedUser.company_id ?? '',
-              companyName: refreshedUser.company_name ?? '',
-              email: refreshedUser.email ?? '',
-            });
-            setUser(refreshedUser);
-            window.dispatchEvent(new Event('auth:changed'));
-          }
-        } catch {
-          persistSession(inMemoryUser);
-          useAuthStore.getState().setAuth({
-            accessToken: persistedToken,
-            companyId: inMemoryUser.company_id ?? authStore.companyId ?? '',
-            companyName: inMemoryUser.company_name ?? authStore.companyName ?? '',
-            email: inMemoryUser.email ?? authStore.email ?? '',
-          });
-          setUser(inMemoryUser);
-        }
-      }
-    } catch {
-      persistSession(null);
-      useAuthStore.getState().logout();
-      setUser(null);
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  // ── Hydrate ONCE on mount ───────────────────────────────────────────────────
   useEffect(() => {
-    syncUserFromStorage();
-    window.addEventListener('auth:changed', syncUserFromStorage);
-    return () => window.removeEventListener('auth:changed', syncUserFromStorage);
-  }, []);
+    if (initDoneRef.current) return;
+    initDoneRef.current = true;
 
-  const login = async (email, password) => {
-    const params = new URLSearchParams();
-    params.append('username', email);
-    params.append('password', password);
+    const init = () => {
+      // Read directly from getState() — does NOT trigger subscriptions
+      const { hydrateFromStorage, logout: storeLogout } = useAuthStore.getState();
 
-    const response = await authClient.login(email, password);
+      hydrateFromStorage();
 
-    const data = response.data;
-    const normalizedUser = {
-      access_token: data.access_token,
-      email: data.email,
-      company_name: data.company_name,
-      company_id: data.company_id,
+      const token = useAuthStore.getState().accessToken;
+      if (!isUsableToken(token)) {
+        storeLogout();
+      }
     };
 
-    persistSession(normalizedUser);
+    init();
+
+    const onAuthChanged = () => {
+      useAuthStore.getState().hydrateFromStorage();
+    };
+    window.addEventListener('auth:changed', onAuthChanged);
+
+    return () => {
+      window.removeEventListener('auth:changed', onAuthChanged);
+    };
+  }, []); // Empty dep array — runs exactly once on mount
+
+  // ── Actions ──────────────────────────────────────────────────────────────────
+  const login = async (emailVal, password) => {
+    const response = await authClient.login(emailVal, password);
+    const data = response.data;
+
     useAuthStore.getState().setAuth({
       accessToken: data.access_token,
-      companyId: data.company_id,
-      companyName: data.company_name,
-      email: data.email,
+      companyId: String(data.company_id ?? ''),
+      companyName: data.company_name ?? '',
+      email: data.email ?? '',
     });
-    setUser(normalizedUser);
+
+    localStorage.setItem(
+      'user',
+      JSON.stringify({
+        access_token: data.access_token,
+        email: data.email,
+        company_name: data.company_name,
+        company_id: data.company_id,
+      })
+    );
+
     window.dispatchEvent(new Event('auth:changed'));
-    return normalizedUser;
+    return data;
   };
 
-  const register = async (name, email, password) => {
-    const response = await authClient.register(name, email, password);
+  const register = async (name, emailVal, password) => {
+    const response = await authClient.register(name, emailVal, password);
     return response.data;
   };
 
   const logout = async () => {
     try {
       await authClient.logout();
-    } catch {
-      // Ignore logout failures and clear local state.
-    }
-
-    persistSession(null);
+    } catch { /* ignore */ }
+    localStorage.removeItem('user');
     useAuthStore.getState().logout();
-    setUser(null);
     window.dispatchEvent(new Event('auth:changed'));
   };
 
-  const value = useMemo(() => ({ user, loading, login, register, logout }), [user, loading]);
+  // ── Derived `user` view — only recomputes when individual fields change ──────
+  const user = useMemo(() => {
+    if (!isAuth || !isUsableToken(accessToken)) return null;
+    return {
+      access_token: accessToken,
+      email,
+      company_name: companyName,
+      company_id: companyId,
+    };
+  }, [isAuth, accessToken, email, companyName, companyId]);
+
+  // ── Context value — stable: login/logout/register are defined once in scope ─
+  const value = useMemo(
+    () => ({ user, loading: isLoading, login, logout, register }),
+    // login/logout/register are module-scope stable; only user and isLoading change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [user, isLoading]
+  );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

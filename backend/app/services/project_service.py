@@ -72,8 +72,8 @@ async def refresh_project_cache(project_id: int, db_session, redis_client=None) 
     builds the expanded auth:project_{project_id} JSON payload,
     stores it in Redis, and returns the payload.
     """
-    from backend.app.models.project import Project
-    from backend.app.models.event_config import EventConfig
+    from  app.models.project import Project
+    from  app.models.event_config import EventConfig
 
     # 1. Fetch project
     proj_result = await db_session.execute(
@@ -89,7 +89,7 @@ async def refresh_project_cache(project_id: int, db_session, redis_client=None) 
                 logger.warning("Failed to delete stale cache for project %s: %s", project_id, e)
         else:
             try:
-                from backend.app.services.redis_client import get_redis_client
+                from  app.services.redis_client import get_redis_client
                 rc = await get_redis_client()
                 try:
                     await rc.delete(f"auth:project_{project_id}")
@@ -134,7 +134,7 @@ async def refresh_project_cache(project_id: int, db_session, redis_client=None) 
     should_close = False
     if redis_client is None:
         try:
-            from backend.app.services.redis_client import get_redis_client
+            from  app.services.redis_client import get_redis_client
             redis_client = await get_redis_client()
             should_close = True
         except Exception as e:

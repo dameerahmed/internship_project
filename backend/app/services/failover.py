@@ -114,7 +114,7 @@ class ServiceHealthMonitor:
 
     @staticmethod
     async def _get_default_redis_client() -> Any:
-        from backend.app.services.redis_client import get_redis_client
+        from  app.services.redis_client import get_redis_client
 
         client = await get_redis_client()
         try:
@@ -126,7 +126,7 @@ class ServiceHealthMonitor:
 
     @staticmethod
     def _get_default_rabbitmq_manager() -> Any:
-        from backend.app.services.queue_client import rabbitmq_manager
+        from  app.services.queue_client import rabbitmq_manager
 
         return rabbitmq_manager
 
@@ -169,7 +169,7 @@ async def populate_cache_if_available(cache_key: str, payload: dict, redis_clien
         return
     try:
         if redis_client is None:
-            from backend.app.services.redis_client import get_redis_client
+            from  app.services.redis_client import get_redis_client
 
             redis_client = await get_redis_client()
         await redis_client.set(cache_key, json.dumps(payload), ex=900)

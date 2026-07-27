@@ -1,16 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete, select
-from backend.app.models.project import Project
-from backend.app.models.event_config import EventConfig
-from backend.app.models.webhook_event import WebhookEvent
-from backend.app.models.webhook_log import WebhookLog
+from  app.models.project import Project
+from  app.models.event_config import EventConfig
+from  app.models.webhook_event import WebhookEvent
+from  app.models.webhook_log import WebhookLog
 
-from backend.database import get_db
-from backend.app.models.company import Company
-from backend.app.schemas.company import CompanyDeleteResponse
-from backend.app.services.redis_client import get_redis_client
-from backend.app.services.dependencies import get_current_company  
+from  database import get_db
+from  app.models.company import Company
+from  app.schemas.company import CompanyDeleteResponse
+from  app.services.redis_client import get_redis_client
+from  app.services.dependencies import get_current_company  
 
 router = APIRouter(prefix="/company", tags=["Company Profile"])
 

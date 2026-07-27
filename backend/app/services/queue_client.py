@@ -1,4 +1,4 @@
-from backend.app.services.celery_worker import celery_app
+from  app.services.celery_worker import celery_app
 import json
 import logging
 import time
@@ -7,7 +7,7 @@ import aio_pika
 import httpx
 from urllib.parse import urlparse
 from aio_pika.exceptions import AMQPConnectionError, AMQPChannelError
-from backend.config import settings
+from  config import settings
 
 # Setup standard logger to print queue issues to console
 logger = logging.getLogger("app.queue")
@@ -215,97 +215,115 @@ class RabbitMQManager:
             if not raw_messages:
                 return []
 
-            # ── PHASE 2: PARSE collected messages ────────────────────────────────────
             messages_data = []
-            for i, msg in enumerate(raw_messages):
-                try:
-                    raw_body = msg.body.decode("utf-8") if isinstance(msg.body, (bytes, bytearray)) else str(msg.body)
-                    parsed_body = {}
+            try:
+                # ── PHASE 2: PARSE collected messages ────────────────────────────────────
+                for i, msg in enumerate(raw_messages):
                     try:
-                        parsed_body = json.loads(raw_body)
-                    except Exception:
-                        parsed_body = {"raw_content": raw_body}
+                        raw_body = msg.body.decode("utf-8") if isinstance(msg.body, (bytes, bytearray)) else str(msg.body)
+                        parsed_body = {}
+                        try:
+                            parsed_body = json.loads(raw_body)
+                        except Exception:
+                            parsed_body = {"raw_content": raw_body}
 
-                    # Celery payload unpacking helper if Kombu wrapped
-                    packet = parsed_body
-                    if isinstance(parsed_body, list) and len(parsed_body) > 0:
-                        first_elem = parsed_body[0]
-                        if isinstance(first_elem, list) and len(first_elem) > 0 and isinstance(first_elem[0], dict):
-                            packet = first_elem[0]
-                        elif isinstance(first_elem, dict):
-                            packet = first_elem
+                        # Celery payload unpacking helper if Kombu wrapped
+                        packet = parsed_body
+                        if isinstance(parsed_body, list) and len(parsed_body) > 0:
+                            first_elem = parsed_body[0]
+                            if isinstance(first_elem, list) and len(first_elem) > 0 and isinstance(first_elem[0], dict):
+                                packet = first_elem[0]
+                            elif isinstance(first_elem, dict):
+                                packet = first_elem
 
-                    # Extract x-death headers provided by RabbitMQ DLX
-                    headers = dict(msg.headers or {})
-                    x_death = headers.get("x-death") or []
-                    death_info = x_death[0] if isinstance(x_death, list) and len(x_death) > 0 else {}
+                        # Extract x-death headers provided by RabbitMQ DLX
+                        headers = dict(msg.headers or {})
+                        x_death = headers.get("x-death") or []
+                        death_info = x_death[0] if isinstance(x_death, list) and len(x_death) > 0 else {}
 
-                    attempt_count = death_info.get("count", 1)
-                    death_reason = death_info.get("reason", "rejected")
-                    source_queue = death_info.get("queue", self.main_queue_name)
+                        attempt_count = death_info.get("count", 1)
+                        death_reason = death_info.get("reason", "rejected")
+                        source_queue = death_info.get("queue", self.main_queue_name)
 
-                    # Handle nested delivery_packet structure from updated Celery worker
-                    delivery_packet = packet.get("delivery_packet") or packet
+                        # Handle nested delivery_packet structure from updated Celery worker
+                        delivery_packet = packet
+                        if isinstance(packet, dict):
+                            delivery_packet = packet.get("delivery_packet") or packet
 
-                    event_id = (
-                        packet.get("event_id")
-                        or delivery_packet.get("event_id")
-                        or headers.get("event_id")
-                        or msg.message_id
-                        or f"dlq_{i+1}_{abs(hash(raw_body))}"
-                    )
+                        event_id = None
+                        project_id = None
+                        event_type = "webhook.failed"
+                        target_url = "/v1/gateway"
+                        error_msg = None
+                        payload_data = packet
 
-                    project_id = delivery_packet.get("project_id") or headers.get("project_id")
-                    event_type = delivery_packet.get("event_type") or headers.get("event_type") or "webhook.failed"
-                    target_url = delivery_packet.get("target_url") or headers.get("target_url") or "/v1/gateway"
-                    error_msg = packet.get("reason") or headers.get("error_message") or headers.get("exception") or f"Dead Lettered: {death_reason}"
+                        if isinstance(packet, dict):
+                            event_id = packet.get("event_id")
+                            error_msg = packet.get("reason")
+                        
+                        if isinstance(delivery_packet, dict):
+                            event_id = event_id or delivery_packet.get("event_id")
+                            project_id = delivery_packet.get("project_id")
+                            event_type = delivery_packet.get("event_type") or event_type
+                            target_url = delivery_packet.get("target_url") or target_url
+                            payload_data = delivery_packet.get("data_payload") or delivery_packet.get("payload") or packet
 
-                    # ISO timestamp
-                    timestamp_val = headers.get("timestamp") or time.time()
-                    if isinstance(timestamp_val, (int, float)):
-                        created_at = datetime.fromtimestamp(timestamp_val, tz=timezone.utc).isoformat()
-                    elif isinstance(timestamp_val, datetime):
-                        created_at = timestamp_val.isoformat()
-                    else:
-                        created_at = str(timestamp_val)
+                        event_id = (
+                            event_id
+                            or headers.get("event_id")
+                            or msg.message_id
+                            or f"dlq_{i+1}_{abs(hash(raw_body))}"
+                        )
 
-                    # Ensure headers are JSON serializable (RabbitMQ sometimes injects datetime objects)
-                    safe_headers = {}
-                    for k, v in headers.items():
-                        if isinstance(v, datetime):
-                            safe_headers[k] = v.isoformat()
+                        project_id = project_id or headers.get("project_id")
+                        error_msg = error_msg or headers.get("error_message") or headers.get("exception") or f"Dead Lettered: {death_reason}"
+
+                        # ISO timestamp
+                        timestamp_val = headers.get("timestamp") or time.time()
+                        if isinstance(timestamp_val, (int, float)):
+                            created_at = datetime.fromtimestamp(timestamp_val, tz=timezone.utc).isoformat()
+                        elif isinstance(timestamp_val, datetime):
+                            created_at = timestamp_val.isoformat()
                         else:
-                            safe_headers[k] = v
+                            created_at = str(timestamp_val)
 
-                    msg_id = str(msg.message_id or event_id or f"dlq-{i+1}")
+                        # Ensure headers are JSON serializable (RabbitMQ sometimes injects datetime objects)
+                        safe_headers = {}
+                        for k, v in headers.items():
+                            if isinstance(v, datetime):
+                                safe_headers[k] = v.isoformat()
+                            else:
+                                safe_headers[k] = v
 
-                    messages_data.append({
-                        "id": msg_id,
-                        "raw_id": msg_id,
-                        "event_id": event_id,
-                        "project_id": project_id,
-                        "project_name": f"Project #{project_id}" if project_id else "Global DLQ Node",
-                        "event_type": event_type,
-                        "target_url": target_url,
-                        "error_message": error_msg,
-                        "attempt_number": attempt_count,
-                        "created_at": created_at,
-                        "source_queue": source_queue,
-                        "routing_key": msg.routing_key or self.dlq_routing_key,
-                        "payload": delivery_packet.get("data_payload") or delivery_packet.get("payload") or packet,
-                        "headers": safe_headers,
-                    })
+                        msg_id = str(msg.message_id or event_id or f"dlq-{i+1}")
 
-                except Exception as parse_err:
-                    logger.warning("Failed to parse DLQ message #%d: %s", i, parse_err)
+                        messages_data.append({
+                            "id": msg_id,
+                            "raw_id": msg_id,
+                            "event_id": event_id,
+                            "project_id": project_id,
+                            "project_name": f"Project #{project_id}" if project_id else "Global DLQ Node",
+                            "event_type": event_type,
+                            "target_url": target_url,
+                            "error_message": error_msg,
+                            "attempt_number": attempt_count,
+                            "created_at": created_at,
+                            "source_queue": source_queue,
+                            "routing_key": msg.routing_key or self.dlq_routing_key,
+                            "payload": payload_data,
+                            "headers": safe_headers,
+                        })
 
-            # ── PHASE 3: NACK ALL messages back to DLQ (non-destructive) ─────────────
-            # Done AFTER parsing so we don't cycle on the same message in the get() loop.
-            for msg in raw_messages:
-                try:
-                    await msg.nack(requeue=True)
-                except Exception as nack_err:
-                    logger.warning("Failed to nack DLQ message back: %s", nack_err)
+                    except Exception as parse_err:
+                        logger.warning("Failed to parse DLQ message #%d: %s", i, parse_err)
+            finally:
+                # ── PHASE 3: NACK ALL messages back to DLQ (non-destructive) ─────────────
+                # Always guaranteed to execute even if parsing fails or an exception occurs.
+                for msg in raw_messages:
+                    try:
+                        await msg.nack(requeue=True)
+                    except Exception as nack_err:
+                        logger.warning("Failed to nack DLQ message back: %s", nack_err)
 
             return messages_data
 
@@ -365,7 +383,7 @@ class RabbitMQManager:
 
                     # 3. Publish back into main queue AS A PROPER CELERY TASK
                     celery_app.send_task(
-                        "backend.app.services.celery_worker.dispatch_webhook_task",
+                        " app.services.celery_worker.dispatch_webhook_task",
                         kwargs={"delivery_packet": delivery_packet},
                         queue="webhook_delivery_queue"
                     )

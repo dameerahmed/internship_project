@@ -5,7 +5,7 @@ from sqlalchemy import Column, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
-from backend.database import Base
+from  database import Base
 
 
 class WebhookStatus(enum.Enum):
