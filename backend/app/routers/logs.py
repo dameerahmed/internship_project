@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 from urllib.parse import unquote
 from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect, Query, HTTPException
 from fastapi.encoders import jsonable_encoder
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import delete, func, case
@@ -134,16 +135,7 @@ def _serialize_log_entry(log: WebhookLog) -> dict:
     }
 
 
-async def _ws_authenticate(websocket: WebSocket) -> Optional[int]:
-    """
-    Extract and validate a JWT from the `?token=` WebSocket query parameter.
-    Returns the authenticated company_id (int) or None on failure.
-
-    WebSocket cannot use HTTP Authorization headers directly in browser clients,
-    so the access token is passed as a query parameter. This is the industry
-    standard pattern (used by Pusher, Ably, Supabase Realtime, etc.).
-    """
-    token = websocket.query_params.get("token")
+def _decode_company_id_from_token(token: Optional[str]) -> Optional[int]:
     if not token:
         return None
 
@@ -157,6 +149,27 @@ async def _ws_authenticate(websocket: WebSocket) -> Optional[int]:
         return int(company_id_str)
     except Exception:
         return None
+
+
+async def _authenticate_request(request: Request, token_override: Optional[str] = None) -> Optional[int]:
+    token = token_override or request.query_params.get("token")
+    if not token:
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+    return _decode_company_id_from_token(token)
+
+
+async def _ws_authenticate(websocket: WebSocket) -> Optional[int]:
+    """
+    Extract and validate a JWT from the `?token=` WebSocket query parameter.
+    Returns the authenticated company_id (int) or None on failure.
+
+    WebSocket cannot use HTTP Authorization headers directly in browser clients,
+    so the access token is passed as a query parameter. This is the industry
+    standard pattern (used by Pusher, Ably, Supabase Realtime, etc.).
+    """
+    return _decode_company_id_from_token(websocket.query_params.get("token"))
 
 
 # ─────────────────────── REST: Webhook Logs ──────────────────────────────────
@@ -306,6 +319,70 @@ async def delete_project_logs(
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────── SSE: Live Logs ───────────────────────────────────
+
+@router.get("/api/logs/stream", response_class=EventSourceResponse)
+async def stream_logs_sse(
+    request: Request,
+    project_id: int = Query(..., description="Project ID to stream logs for"),
+    token: Optional[str] = Query(None, description="Access token for authentication"),
+):
+    """Stream webhook logs over SSE with heartbeat support for the Live Logs UI."""
+    auth_company_id = await _authenticate_request(request, token)
+    if auth_company_id is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    async def event_generator():
+        async for db_session in get_db():
+            ownership = await db_session.execute(
+                select(Project.id).where(Project.id == project_id, Project.company_id == auth_company_id)
+            )
+            if not ownership.scalars().first():
+                raise HTTPException(status_code=403, detail="Forbidden")
+
+            ec_result = await db_session.execute(select(EventConfig.id).where(EventConfig.project_id == project_id))
+            ec_ids = [row[0] for row in ec_result.fetchall()]
+            if ec_ids:
+                logs_result = await db_session.execute(
+                    select(WebhookLog)
+                    .options(selectinload(WebhookLog.event))
+                    .where(WebhookLog.event_config_id.in_(ec_ids))
+                    .order_by(WebhookLog.created_at.desc())
+                    .limit(25)
+                )
+                recent_logs = logs_result.scalars().all()
+                payload = {
+                    "type": "snapshot",
+                    "logs": [_serialize_log_entry(log) for log in reversed(recent_logs)],
+                }
+                yield ServerSentEvent(data=json.dumps(payload), event="snapshot")
+            break
+
+        channels = [logs_channel(project_id)]
+        async with RedisPubSubSubscriber(channels) as sub:
+            message_iter = sub.listen()
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    raw_message = await asyncio.wait_for(anext(message_iter), timeout=15.0)
+                except TimeoutError:
+                    yield ServerSentEvent(data=json.dumps({"type": "heartbeat", "timestamp": datetime.utcnow().isoformat()}), event="heartbeat")
+                    continue
+                except StopAsyncIteration:
+                    break
+
+                if not raw_message:
+                    continue
+                if isinstance(raw_message, (bytes, bytearray)):
+                    payload = raw_message.decode("utf-8")
+                else:
+                    payload = raw_message
+                yield ServerSentEvent(data=payload, event="log")
+
+    return EventSourceResponse(event_generator())
 
 
 # ─────────────────────── WebSocket: Live Logs ────────────────────────────────
@@ -515,12 +592,116 @@ async def websocket_dlq_stream(websocket: WebSocket):
 
 # ─────────────────────── WebSocket: Dashboard ────────────────────────────────
 
+async def _build_dashboard_snapshot(auth_company_id: int, target_project_id: Optional[int] = None) -> dict:
+    redis_status = "ONLINE"
+    redis_latency_ms = 0.0
+    try:
+        t0 = time.perf_counter()
+        r_client = await get_redis_client()
+        pong = await r_client.ping()
+        await r_client.aclose()
+        t1 = time.perf_counter()
+        if pong:
+            redis_latency_ms = round((t1 - t0) * 1000, 2)
+    except Exception:
+        redis_status = "DEGRADED"
+
+    rabbitmq_status = "ONLINE"
+    try:
+        rmq_ok = await service_health_monitor.check_rabbitmq()
+        rabbitmq_status = "ONLINE" if rmq_ok else "DEGRADED"
+    except Exception:
+        pass
+
+    async for db_session in get_db():
+        if target_project_id:
+            proj_res = await db_session.execute(select(Project).where(Project.id == target_project_id, Project.company_id == auth_company_id))
+            projects = proj_res.scalars().all()
+        else:
+            proj_res = await db_session.execute(select(Project).where(Project.company_id == auth_company_id))
+            projects = proj_res.scalars().all()
+
+        active_projects = sum(1 for p in projects if p.is_active)
+        project_ids = [p.id for p in projects]
+
+        total_routes = 0
+        pending_count = 0
+        if project_ids:
+            ec_res = await db_session.execute(
+                select(func.count(EventConfig.id)).where(
+                    EventConfig.project_id.in_(project_ids),
+                    EventConfig.is_active == True
+                )
+            )
+            total_routes = ec_res.scalar() or 0
+
+            ec_ids_res = await db_session.execute(
+                select(EventConfig.id).where(EventConfig.project_id.in_(project_ids))
+            )
+            ec_ids = [row[0] for row in ec_ids_res.fetchall()]
+            if ec_ids:
+                pending_res = await db_session.execute(
+                    select(func.count(WebhookLog.id)).where(
+                        WebhookLog.event_config_id.in_(ec_ids),
+                        WebhookLog.status == WebhookStatus.PENDING
+                    )
+                )
+                pending_count = pending_res.scalar() or 0
+
+        company_dlq_count = 0
+        try:
+            raw_dlq_items = await rabbitmq_manager.peek_dlq_messages(limit=500)
+            for item in raw_dlq_items:
+                p_id = item.get("project_id")
+                if p_id and int(p_id) in project_ids:
+                    company_dlq_count += 1
+        except Exception:
+            pass
+
+        metrics = await metrics_service.get_or_hydrate_metrics(auth_company_id, db_session, project_id=target_project_id)
+        break
+
+    success_rate_pct = metrics["success_rate"]
+    failure_rate_pct = None if success_rate_pct is None else round(100 - success_rate_pct, 2)
+
+    return {
+        "type": "DASHBOARD_UPDATE",
+        "project_id": target_project_id,
+        "total_projects": len(projects),
+        "active_projects": active_projects,
+        "total_event_routes": total_routes,
+        "total_webhooks": metrics["total_webhooks"],
+        "total_webhooks_24h": metrics["total_webhooks"],
+        "throughput_rpm": metrics["throughput_rpm"],
+        "throughput_rps": metrics["throughput_rps"],
+        "success_count": metrics["success_count"],
+        "failed_count": metrics["failed_count"],
+        "success_rate": success_rate_pct,
+        "success_rate_pct": success_rate_pct,
+        "failure_rate": failure_rate_pct,
+        "failure_rate_pct": failure_rate_pct,
+        "avg_latency_ms": metrics["avg_latency_ms"],
+        "dlq_count": company_dlq_count,
+        "total_dlq_count": company_dlq_count,
+        "main_queue_count": pending_count,
+        "redis_status": redis_status,
+        "redis_latency_ms": redis_latency_ms,
+        "rabbitmq_status": rabbitmq_status,
+        "throughput_series": [
+            {
+                "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "label": "now",
+                "total": metrics["total_webhooks"],
+                "success": metrics["success_count"],
+                "failed": metrics["failed_count"],
+            }
+        ],
+    }
+
+
 @router.websocket("/ws/dashboard")
 async def websocket_dashboard_stream(websocket: WebSocket):
-    """
-    Authenticated WebSocket stream for dashboard metrics.
-    Supports optional ?project_id= query parameter to stream project-specific metrics.
-    """
+    """Authenticated WebSocket stream for dashboard metrics."""
     await websocket.accept()
 
     auth_company_id = await _ws_authenticate(websocket)
@@ -536,120 +717,52 @@ async def websocket_dashboard_stream(websocket: WebSocket):
         except (ValueError, TypeError):
             pass
 
-    # ── Initial snapshot: health + metrics + project counts ─────────────────
     try:
-        redis_status = "ONLINE"
-        redis_latency_ms = 0.0
-        try:
-            t0 = time.perf_counter()
-            r_client = await get_redis_client()
-            pong = await r_client.ping()
-            await r_client.aclose()
-            t1 = time.perf_counter()
-            if pong:
-                redis_latency_ms = round((t1 - t0) * 1000, 2)
-        except Exception:
-            redis_status = "DEGRADED"
-
-        rabbitmq_status = "ONLINE"
-        try:
-            rmq_ok = await service_health_monitor.check_rabbitmq()
-            rabbitmq_status = "ONLINE" if rmq_ok else "DEGRADED"
-        except Exception:
-            pass
-
-        async for db_session in get_db():
-            if target_project_id:
-                proj_res = await db_session.execute(select(Project).where(Project.id == target_project_id, Project.company_id == auth_company_id))
-                projects = proj_res.scalars().all()
-            else:
-                proj_res = await db_session.execute(select(Project).where(Project.company_id == auth_company_id))
-                projects = proj_res.scalars().all()
-                
-            active_projects = sum(1 for p in projects if p.is_active)
-            project_ids = [p.id for p in projects]
-
-            total_routes = 0
-            pending_count = 0
-            if project_ids:
-                ec_res = await db_session.execute(
-                    select(func.count(EventConfig.id)).where(
-                        EventConfig.project_id.in_(project_ids),
-                        EventConfig.is_active == True
-                    )
-                )
-                total_routes = ec_res.scalar() or 0
-
-                ec_ids_res = await db_session.execute(
-                    select(EventConfig.id).where(EventConfig.project_id.in_(project_ids))
-                )
-                ec_ids = [row[0] for row in ec_ids_res.fetchall()]
-                if ec_ids:
-                    pending_res = await db_session.execute(
-                        select(func.count(WebhookLog.id)).where(
-                            WebhookLog.event_config_id.in_(ec_ids),
-                            WebhookLog.status == WebhookStatus.PENDING
-                        )
-                    )
-                    pending_count = pending_res.scalar() or 0
-
-            company_dlq_count = 0
-            try:
-                raw_dlq_items = await rabbitmq_manager.peek_dlq_messages(limit=500)
-                for item in raw_dlq_items:
-                    p_id = item.get("project_id")
-                    if p_id and int(p_id) in project_ids:
-                        company_dlq_count += 1
-            except Exception:
-                pass
-
-            metrics = await metrics_service.get_or_hydrate_metrics(auth_company_id, db_session, project_id=target_project_id)
-            break
-
-        snapshot = {
-            "type": "DASHBOARD_UPDATE",
-            "project_id": target_project_id,
-            "total_projects": len(projects),
-            "active_projects": active_projects,
-            "total_event_routes": total_routes,
-            "total_webhooks": metrics["total_webhooks"],
-            "throughput_rpm": metrics["throughput_rpm"],
-            "throughput_rps": metrics["throughput_rps"],
-            "success_count": metrics["success_count"],
-            "failed_count": metrics["failed_count"],
-            "success_rate": metrics["success_rate"],
-            "avg_latency_ms": metrics["avg_latency_ms"],
-            "dlq_count": company_dlq_count,
-            "main_queue_count": pending_count,
-            "redis_status": redis_status,
-            "redis_latency_ms": redis_latency_ms,
-            "rabbitmq_status": rabbitmq_status,
-        }
+        snapshot = await _build_dashboard_snapshot(auth_company_id, target_project_id)
         await websocket.send_json(jsonable_encoder(snapshot))
     except Exception as snap_exc:
         logger.warning("Dashboard WS initial snapshot failed: %s", snap_exc)
 
-    # ── Subscribe to Redis Pub/Sub for metrics updates ───────────────────────
-    try:
-        sub_channel = project_metrics_channel(target_project_id) if target_project_id else metrics_channel(auth_company_id)
-        async with RedisPubSubSubscriber([sub_channel]) as sub:
-            async for raw_message in sub.listen():
-                if websocket.client_state != WebSocketState.CONNECTED:
-                    break
-                try:
-                    metrics_payload = json.loads(raw_message)
-                    await websocket.send_json(jsonable_encoder(metrics_payload))
-                except WebSocketDisconnect:
-                    return
-                except Exception as inner:
-                    err_str = str(inner)
-                    if "ConnectionClosed" in err_str or "Cannot call" in err_str:
-                        break
-                    logger.warning("Dashboard WS inner error: %s", inner)
-    except WebSocketDisconnect:
-        pass
-    except Exception as exc:
-        logger.warning("Dashboard WebSocket exception: %s", exc)
+    while websocket.client_state == WebSocketState.CONNECTED:
+        try:
+            await asyncio.sleep(2)
+            snapshot = await _build_dashboard_snapshot(auth_company_id, target_project_id)
+            await websocket.send_json(jsonable_encoder(snapshot))
+        except WebSocketDisconnect:
+            return
+        except Exception as exc:
+            logger.warning("Dashboard WebSocket stream exception: %s", exc)
+            break
+
+
+@router.websocket("/api/ws/metrics")
+async def websocket_metrics_stream(websocket: WebSocket):
+    """Dedicated metrics WebSocket endpoint for company/project analytics cards."""
+    await websocket.accept()
+
+    auth_company_id = await _ws_authenticate(websocket)
+    if auth_company_id is None:
+        await websocket.close(code=4401, reason="Authentication required: pass ?token=<access_token>")
+        return
+
+    pid_param = websocket.query_params.get("project_id")
+    target_project_id = None
+    if pid_param:
+        try:
+            target_project_id = int(pid_param)
+        except (ValueError, TypeError):
+            pass
+
+    while websocket.client_state == WebSocketState.CONNECTED:
+        try:
+            snapshot = await _build_dashboard_snapshot(auth_company_id, target_project_id)
+            await websocket.send_json(jsonable_encoder(snapshot))
+            await asyncio.sleep(2)
+        except WebSocketDisconnect:
+            return
+        except Exception as exc:
+            logger.warning("Metrics WebSocket stream exception: %s", exc)
+            break
 
 
 # ─────────────────────── REST: Dashboard Stats ───────────────────────────────
