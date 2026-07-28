@@ -29,3 +29,4 @@ class Project(Base):
     # Relationships
     company = relationship("Company", back_populates="projects")
     event_configs = relationship("EventConfig", back_populates="project", cascade="all, delete-orphan", lazy="selectin")
+    webhook_events = relationship("WebhookEvent", back_populates="project", cascade="all, delete-orphan", lazy="selectin")

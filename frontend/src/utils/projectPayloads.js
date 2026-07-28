@@ -12,7 +12,7 @@ export const buildProjectEventConfigs = (eventConfigs = []) => {
         ? { ...config.metadata_json }
         : {};
       const initialUrls = normalizeUrls(config?.target_urls || rawMetadata?.urls || []);
-      const safeUrls = initialUrls.length ? initialUrls : ['https://example.com/webhook'];
+      const safeUrls = initialUrls.length ? initialUrls : [];
       const metadata_json = {
         ...rawMetadata,
         source: rawMetadata.source || 'ui',

@@ -18,8 +18,11 @@ import {
 } from 'lucide-react';
 import ProtectedLayout from '../components/ProtectedLayout';
 import apiClient from '@/api/client';
+import { WS_ENDPOINTS, withToken } from '@/utils/constants';
+import { useAuth } from '../context/AuthContext';
 
 export default function DLQPage({ projectId, embedded = false }) {
+  const { user } = useAuth();
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   
@@ -37,8 +40,8 @@ export default function DLQPage({ projectId, embedded = false }) {
     if (!silent) setLoading(true);
     try {
       const endpoint = projectId
-        ? `/v1/projects/${projectId}/dlq?limit=100`
-        : '/v1/webhooks/dlq?limit=100';
+        ? `/v1/dlq?project_id=${projectId}&limit=100`
+        : '/v1/dlq?limit=100';
       const { data } = await apiClient.get(endpoint);
       const list = Array.isArray(data) ? data : [];
       setItems(list);
@@ -51,11 +54,62 @@ export default function DLQPage({ projectId, embedded = false }) {
 
   useEffect(() => {
     fetchDLQ(false);
+
+    let socket = null;
+    let reconnectTimer = null;
+    let retryCount = 0;
+
+    const connectWs = () => {
+      const token = user?.access_token || (localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user'))?.access_token : null);
+      if (!token) return;
+
+      const wsUrl = withToken(WS_ENDPOINTS.DLQ(), token);
+      try {
+        socket = new WebSocket(wsUrl);
+        socket.onopen = () => { retryCount = 0; };
+        socket.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data);
+            if (payload?.type === 'DLQ_UPDATE' || payload?.type === 'DLQ_CHANGE') {
+              let nextItems = Array.isArray(payload.items) ? payload.items : [];
+              if (projectId) {
+                nextItems = nextItems.filter((item) => {
+                  const id = item.project_id || item.projectId;
+                  return id && Number(id) === Number(projectId);
+                });
+              }
+              setItems(nextItems);
+              setSelectedIds((prev) => prev.filter((id) => nextItems.some((item) => (item.id || item.event_id) === id)));
+            }
+          } catch (err) {
+            console.warn('DLQ WS parse error:', err);
+          }
+        };
+        socket.onclose = () => {
+          const delay = Math.min(1000 * Math.pow(2, retryCount), 15000);
+          retryCount += 1;
+          reconnectTimer = setTimeout(connectWs, delay);
+        };
+        socket.onerror = () => {
+          try { socket.close(); } catch {}
+        };
+      } catch (err) {
+        console.warn('DLQ WS error:', err);
+      }
+    };
+
+    connectWs();
+
     const interval = setInterval(() => {
       fetchDLQ(true);
-    }, 4000);
-    return () => clearInterval(interval);
-  }, [projectId]);
+    }, 15000);
+
+    return () => {
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (socket) socket.close();
+      clearInterval(interval);
+    };
+  }, [projectId, user]);
 
   const activeItems = items;
 
@@ -89,12 +143,34 @@ export default function DLQPage({ projectId, embedded = false }) {
     setActionLoading(true);
     setMessage(null);
     try {
-      await apiClient.post('/v1/webhooks/replay', { event_ids: eventIds });
+      const endpoint = '/v1/dlq/replay';
+      await apiClient.post(endpoint, { log_ids: eventIds, ids: eventIds });
       setMessage({ type: 'success', text: `Requeued ${eventIds.length} failed event(s) for redelivery.` });
+      setItems((prev) => prev.filter((item) => !eventIds.includes(item.id || item.event_id)));
       setSelectedIds([]);
       await fetchDLQ(false);
     } catch (err) {
       setMessage({ type: 'error', text: err.response?.data?.detail || 'Replay operation failed.' });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDiscard = async (eventIds) => {
+    if (!eventIds || eventIds.length === 0) return;
+    if (!window.confirm(`Discard ${eventIds.length} selected DLQ item(s)?`)) return;
+    setActionLoading(true);
+    setMessage(null);
+    try {
+      const endpoint = '/v1/dlq/discard';
+      await apiClient.post(endpoint, { log_ids: eventIds, ids: eventIds });
+      setMessage({ type: 'success', text: `Discarded ${eventIds.length} DLQ item(s).` });
+      setItems((prev) => prev.filter((item) => !eventIds.includes(item.id || item.event_id)));
+      setSelectedIds([]);
+      setSelectedItem(null);
+      await fetchDLQ(false);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.detail || 'Discard operation failed.' });
     } finally {
       setActionLoading(false);
     }
@@ -190,6 +266,16 @@ export default function DLQPage({ projectId, embedded = false }) {
 
             <button
               type="button"
+              disabled={selectedIds.length === 0 || actionLoading}
+              onClick={() => handleDiscard(selectedIds)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 px-3 py-1.5 font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition disabled:opacity-50"
+            >
+              <Trash2 className="h-3.5 w-3.5 text-rose-500" />
+              <span>Discard Selected</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => fetchDLQ(false)}
               className="p-2 rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 text-zinc-500 hover:text-zinc-900 dark:hover:text-white transition"
               title="Refresh DLQ"
@@ -221,7 +307,7 @@ export default function DLQPage({ projectId, embedded = false }) {
               </div>
             ) : (
               filteredItems.map((item, idx) => {
-                const eventId = item.event_id || item.id || `evt_${idx}`;
+                const eventId = item.id || item.event_id || `evt_${idx}`;
                 const eventType = item.event_type || item.delivery_packet?.event_type || 'webhook.failed';
                 const reason = item.failure_reason || item.error || 'Connection Timeout (504 Gateway)';
                 const target = item.target_url || item.delivery_packet?.target_url || 'https://api.domain.com/webhook';
@@ -292,6 +378,18 @@ export default function DLQPage({ projectId, embedded = false }) {
                         title="Replay Event Now"
                       >
                         <Play className="h-3.5 w-3.5 fill-current" />
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDiscard([eventId]);
+                        }}
+                        className="p-1.5 rounded-lg border border-zinc-200 bg-white/80 text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-950 transition"
+                        title="Discard Event"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
                       </button>
 
                       <ChevronRight className={`h-4 w-4 text-zinc-400 transition-transform ${isSelected ? 'rotate-90 text-rose-500' : ''}`} />

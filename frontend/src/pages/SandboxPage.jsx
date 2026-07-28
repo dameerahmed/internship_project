@@ -14,8 +14,8 @@ export default function SandboxPage() {
         amount: 149.99,
         currency: 'USD',
         customer: {
-          id: 'cust_4412',
-          email: 'customer@example.com'
+          id: '',
+          email: ''
         }
       },
       null,

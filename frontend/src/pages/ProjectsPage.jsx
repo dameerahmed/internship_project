@@ -18,7 +18,7 @@ export default function ProjectsPage() {
   const [newProjectForm, setNewProjectForm] = useState({
     name: '',
     description: '',
-    targetUrl: 'https://example.com/webhook',
+    targetUrl: '',
     retentionMode: 'preset_days',
     retentionDays: 30,
     deleteDate: '',
@@ -77,7 +77,7 @@ export default function ProjectsPage() {
       setNewProjectForm({
         name: '',
         description: '',
-        targetUrl: 'https://example.com/webhook',
+        targetUrl: '',
         retentionMode: 'preset_days',
         retentionDays: 30,
         deleteDate: '',

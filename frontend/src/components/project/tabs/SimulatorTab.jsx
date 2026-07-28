@@ -18,6 +18,7 @@ import {
   FileJson
 } from 'lucide-react';
 import apiClient from '@/api/client';
+import { normalizeEventConfigs } from '@/utils/eventConfigUtils';
 
 export default function SimulatorTab({ project }) {
   const [apiKey, setApiKey] = useState('');
@@ -27,69 +28,55 @@ export default function SimulatorTab({ project }) {
   const [copiedSecret, setCopiedSecret] = useState(false);
 
   const [selectedEventName, setSelectedEventName] = useState('');
-  const [eventType, setEventType] = useState('order.created');
-  const [payloadStr, setPayloadStr] = useState('{\n  "event_type": "order.created",\n  "order_id": "ord_994821",\n  "amount": 149.99,\n  "currency": "USD"\n}');
+  const [eventType, setEventType] = useState('');
+  const [payloadStr, setPayloadStr] = useState(JSON.stringify({}, null, 2));
   
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [fetchingKeys, setFetchingKeys] = useState(false);
 
-  const eventConfigs = project?.event_configs || [];
+  const eventConfigs = normalizeEventConfigs(project?.event_configs || []);
 
-  // Smart Payload Generator from Event Schema Keys
+  // Build a payload template from the configured schema without introducing fake example data.
   const generateSamplePayloadForEvent = (eventConfig) => {
-    if (!eventConfig) {
-      return JSON.stringify({ event_type: 'order.created', order_id: 'ord_994821', amount: 149.99, currency: 'USD' }, null, 2);
-    }
-    const eventName = eventConfig.event_type || 'webhook.event';
-    const keys = eventConfig.payload_keys || eventConfig.metadata_json?.payload_keys || [];
-    const types = eventConfig.payload_types || eventConfig.metadata_json?.payload_types || [];
-    
-    const sampleObj = { event_type: eventName, timestamp: new Date().toISOString() };
+    const keys = eventConfig?.payload_keys || eventConfig?.metadata_json?.payload_keys || [];
+    const types = eventConfig?.payload_types || eventConfig?.metadata_json?.payload_types || [];
+
+    const sampleObj = {};
+
     if (keys.length === 0) {
-      if (eventName.includes('order')) {
-        sampleObj.order_id = 'ord_' + Math.floor(Math.random() * 899999 + 100000);
-        sampleObj.amount = 299.00;
-        sampleObj.currency = 'USD';
-        sampleObj.status = 'completed';
-      } else if (eventName.includes('user') || eventName.includes('signup')) {
-        sampleObj.user_id = 'usr_' + Math.floor(Math.random() * 899999 + 100000);
-        sampleObj.email = 'developer@company.com';
-        sampleObj.tier = 'enterprise';
-      } else {
-        sampleObj.event_id = 'evt_' + Math.floor(Math.random() * 899999 + 100000);
-        sampleObj.status = 'processed';
-      }
-    } else {
-      keys.forEach((key, idx) => {
-        const kType = (types[idx] || 'string').toLowerCase();
-        if (kType === 'number') {
-          sampleObj[key] = key.includes('amount') || key.includes('price') ? 149.99 : Math.floor(Math.random() * 900 + 100);
-        } else if (kType === 'boolean') {
-          sampleObj[key] = true;
-        } else if (kType === 'object') {
-          sampleObj[key] = { id: 'obj_' + Math.floor(Math.random() * 9000 + 1000), status: 'active' };
-        } else if (kType === 'array') {
-          sampleObj[key] = ['item_1', 'item_2'];
-        } else {
-          if (key.includes('email')) sampleObj[key] = 'user.sample@company.com';
-          else if (key.includes('id')) sampleObj[key] = key + '_' + Math.floor(Math.random() * 899999 + 100000);
-          else sampleObj[key] = `${key}_value_${Math.floor(Math.random() * 1000)}`;
-        }
-      });
+      return JSON.stringify({ event: eventConfig?.event_type || '', data: {} }, null, 2);
     }
+
+    keys.forEach((key, idx) => {
+      const kType = (types[idx] || 'string').toLowerCase();
+      if (kType === 'number') {
+        sampleObj[key] = 0;
+      } else if (kType === 'boolean') {
+        sampleObj[key] = false;
+      } else if (kType === 'object') {
+        sampleObj[key] = {};
+      } else if (kType === 'array') {
+        sampleObj[key] = [];
+      } else {
+        sampleObj[key] = '';
+      }
+    });
+
     return JSON.stringify(sampleObj, null, 2);
   };
 
-  // Auto populate keys on load
+  // Auto populate keys on load and when project changes
   useEffect(() => {
     const loadKeys = async () => {
       if (!project?.id) return;
+      setApiKey('');
+      setSecretKey('');
       setFetchingKeys(true);
       try {
-        const { data } = await apiClient.get(`/v1/projects/refresh_keys/${project.id}`);
-        if (data?.api_key) setApiKey(data.api_key);
-        if (data?.secret_key) setSecretKey(data.secret_key);
+        const { data } = await apiClient.get(`/v1/projects/${project.id}/refresh_keys`);
+        setApiKey((prev) => prev || data?.api_key || '');
+        setSecretKey((prev) => prev || data?.secret_key || '');
       } catch (err) {
         console.warn('Could not auto-fetch project test credentials:', err);
       } finally {
@@ -102,13 +89,25 @@ export default function SimulatorTab({ project }) {
 
   // Set default selected event if configs available
   useEffect(() => {
-    if (eventConfigs.length > 0 && !selectedEventName) {
+    if (eventConfigs.length > 0) {
+      const hasCurrentSelection = eventConfigs.some((config) => config.event_type === selectedEventName);
+      if (!hasCurrentSelection) {
+        const first = eventConfigs[0];
+        setSelectedEventName(first.event_type);
+        setEventType(first.event_type);
+        setPayloadStr(generateSamplePayloadForEvent(first));
+      }
+    }
+  }, [eventConfigs, selectedEventName]);
+
+  useEffect(() => {
+    if (!selectedEventName && eventConfigs.length > 0) {
       const first = eventConfigs[0];
       setSelectedEventName(first.event_type);
       setEventType(first.event_type);
       setPayloadStr(generateSamplePayloadForEvent(first));
     }
-  }, [eventConfigs]);
+  }, [eventConfigs, selectedEventName]);
 
   // 🎯 Event Selection Handler: Auto populates default payload keys for selected event!
   const handleEventSelect = (eName) => {
@@ -121,36 +120,32 @@ export default function SimulatorTab({ project }) {
       const autoPayload = generateSamplePayloadForEvent(foundConfig);
       setPayloadStr(autoPayload);
     } else {
-      if (eName === 'order.created' || eName === 'order.done') {
-        setPayloadStr(JSON.stringify({ event_type: eName, order_id: 'ord_994821', amount: 149.99, currency: 'USD' }, null, 2));
-      } else if (eName === 'user.signup') {
-        setPayloadStr(JSON.stringify({ event_type: eName, user_id: 'usr_882910', email: 'user@example.com', tier: 'enterprise' }, null, 2));
-      } else if (eName === 'payment.succeeded') {
-        setPayloadStr(JSON.stringify({ event_type: eName, payment_intent: 'pi_3MtwB2', status: 'succeeded', amount_received: 5000 }, null, 2));
-      } else {
-        setPayloadStr(JSON.stringify({ event_type: eName, timestamp: new Date().toISOString(), status: 'active' }, null, 2));
-      }
+      setPayloadStr(JSON.stringify({ event_type: eName || '', data: {} }, null, 2));
     }
   };
 
-  const currentConfig = eventConfigs.find(c => c.event_type === selectedEventName) || eventConfigs[0];
+  const currentConfig = eventConfigs.find((c) => c.event_type === selectedEventName) || eventConfigs[0];
   const currentUrls = currentConfig
     ? (Array.isArray(currentConfig.target_urls) && currentConfig.target_urls.length
         ? currentConfig.target_urls
         : (Array.isArray(currentConfig.metadata_json?.urls) && currentConfig.metadata_json.urls.length
             ? currentConfig.metadata_json.urls
-            : [currentConfig.target_url || 'https://example.com/webhook']))
-    : ['https://example.com/webhook'];
+            : [currentConfig.target_url || '']))
+    : [''];
 
-  const copyToClipboard = (text, type) => {
+  const copyToClipboard = async (text, type) => {
     if (!text) return;
-    navigator.clipboard.writeText(text);
-    if (type === 'key') {
-      setCopiedKey(true);
-      setTimeout(() => setCopiedKey(false), 2000);
-    } else {
-      setCopiedSecret(true);
-      setTimeout(() => setCopiedSecret(false), 2000);
+    try {
+      await navigator.clipboard.writeText(text);
+      if (type === 'key') {
+        setCopiedKey(true);
+        setTimeout(() => setCopiedKey(false), 2000);
+      } else {
+        setCopiedSecret(true);
+        setTimeout(() => setCopiedSecret(false), 2000);
+      }
+    } catch (err) {
+      console.warn('Clipboard copy failed', err);
     }
   };
 
@@ -283,26 +278,49 @@ export default function SimulatorTab({ project }) {
               </span>
             </div>
 
-            <select
-              value={selectedEventName}
-              onChange={(e) => handleEventSelect(e.target.value)}
-              className="w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-2 font-mono text-xs text-zinc-900 font-bold outline-none focus:border-emerald-500 dark:border-zinc-800 dark:bg-zinc-950 dark:text-white cursor-pointer"
-            >
+            <div className="max-h-44 overflow-y-auto rounded-xl border border-zinc-200 bg-white p-2 dark:border-zinc-800 dark:bg-zinc-950">
               {eventConfigs.length > 0 ? (
-                eventConfigs.map((ec) => (
-                  <option key={ec.id || ec.event_type} value={ec.event_type}>
-                    ⚡ {ec.event_type} ({ec.payload_keys?.length || 1} default schema keys • {ec.target_urls?.length || 1} URLs)
-                  </option>
-                ))
+                eventConfigs.map((ec) => {
+                  const isActive = selectedEventName === ec.event_type;
+                  return (
+                    <button
+                      key={ec.id || ec.event_type}
+                      type="button"
+                      onClick={() => handleEventSelect(ec.event_type)}
+                      className={`w-full rounded-lg px-3 py-2 text-left text-xs font-mono transition ${
+                        isActive
+                          ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                          : 'text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'
+                      }`}
+                    >
+                      <div className="font-semibold">⚡ {ec.event_type}</div>
+                      <div className="mt-0.5 text-[10px] text-zinc-500 dark:text-zinc-400">
+                        {ec.payload_keys?.length || 1} default schema keys • {ec.target_urls?.length || 1} URLs
+                      </div>
+                    </button>
+                  );
+                })
               ) : (
                 <>
-                  <option value="order.created">⚡ order.created (Default Payload Keys)</option>
-                  <option value="order.done">⚡ order.done (Default Payload Keys)</option>
-                  <option value="user.signup">⚡ user.signup (Default Payload Keys)</option>
-                  <option value="payment.succeeded">⚡ payment.succeeded (Default Payload Keys)</option>
+                  <button type="button" onClick={() => handleEventSelect('order.created')} className="w-full rounded-lg px-3 py-2 text-left text-xs font-mono text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800">
+                    <div className="font-semibold">⚡ order.created</div>
+                    <div className="mt-0.5 text-[10px] text-zinc-500 dark:text-zinc-400">Default payload keys</div>
+                  </button>
+                  <button type="button" onClick={() => handleEventSelect('order.done')} className="w-full rounded-lg px-3 py-2 text-left text-xs font-mono text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800">
+                    <div className="font-semibold">⚡ order.done</div>
+                    <div className="mt-0.5 text-[10px] text-zinc-500 dark:text-zinc-400">Default payload keys</div>
+                  </button>
+                  <button type="button" onClick={() => handleEventSelect('user.signup')} className="w-full rounded-lg px-3 py-2 text-left text-xs font-mono text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800">
+                    <div className="font-semibold">⚡ user.signup</div>
+                    <div className="mt-0.5 text-[10px] text-zinc-500 dark:text-zinc-400">Default payload keys</div>
+                  </button>
+                  <button type="button" onClick={() => handleEventSelect('payment.succeeded')} className="w-full rounded-lg px-3 py-2 text-left text-xs font-mono text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800">
+                    <div className="font-semibold">⚡ payment.succeeded</div>
+                    <div className="mt-0.5 text-[10px] text-zinc-500 dark:text-zinc-400">Default payload keys</div>
+                  </button>
                 </>
               )}
-            </select>
+            </div>
 
             {/* Display Target URLs for selected event */}
             <div className="pt-1 space-y-1 font-mono text-[11px]">

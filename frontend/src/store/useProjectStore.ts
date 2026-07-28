@@ -70,7 +70,7 @@ export interface CompanyMetrics {
   }>;
 }
 
-export type ProjectTabType = "overview" | "events" | "simulator" | "logs" | "dlq" | "settings";
+export type ProjectTabType = "overview" | "events" | "simulator" | "logs" | "dlq" | "settings" | "security";
 
 interface ProjectStoreState {
   // Global Company State
