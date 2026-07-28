@@ -32,11 +32,11 @@ export default function SettingsPage() {
 
   // Company Profile Form State
   const [profileForm, setProfileForm] = useState({
-    companyName: user?.company_name || 'Acme Engineering',
-    supportEmail: user?.email || 'admin@acme.com',
+    companyName: user?.company_name || '',
+    supportEmail: user?.email || '',
     timezone: 'UTC',
-    ingressRegion: 'us-east-1 (N. Virginia)',
-    description: 'Enterprise Webhook Gateway Node'
+    ingressRegion: '',
+    description: ''
   });
 
   // Change Password Form State
@@ -59,7 +59,13 @@ export default function SettingsPage() {
     setSavingProfile(true);
     setFeedback({ type: '', message: '' });
     try {
-      // Simulate/perform backend update for company settings
+      await apiClient.put('/v1/companies/me', {
+        company_name: profileForm.companyName,
+        support_email: profileForm.supportEmail,
+        description: profileForm.description,
+        timezone: profileForm.timezone,
+        ingress_region: profileForm.ingressRegion,
+      });
       setFeedback({ type: 'success', message: '✓ Company details updated successfully!' });
     } catch (err) {
       setFeedback({ type: 'error', message: err.message || 'Failed to update company details.' });
@@ -86,8 +92,6 @@ export default function SettingsPage() {
       await apiClient.post('/v1/auth/change_password', {
         current_password: passwordForm.currentPassword,
         new_password: passwordForm.newPassword
-      }).catch(() => {
-        // Mock clean success if endpoint mock
       });
 
       setFeedback({ type: 'success', message: '✓ Organization password updated successfully!' });
@@ -103,6 +107,7 @@ export default function SettingsPage() {
   const handleSoftDelete = async () => {
     setFeedback({ type: '', message: '' });
     try {
+      await apiClient.post('/v1/companies/archive');
       setShowSoftDeleteModal(false);
       setFeedback({ type: 'success', message: '✓ Organization archived and ingress routes set to read-only mode.' });
     } catch (err) {
@@ -118,6 +123,7 @@ export default function SettingsPage() {
     }
     setDeletingOrg(true);
     try {
+      await apiClient.delete('/v1/companies/me');
       setShowHardDeleteModal(false);
       setFeedback({ type: 'error', message: '✓ Hard deletion request processed. Organization data permanently purged.' });
     } catch (err) {

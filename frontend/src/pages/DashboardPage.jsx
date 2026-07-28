@@ -42,7 +42,15 @@ export default function DashboardPage() {
       // 2. Fetch recent webhook logs
       const { data: logsData } = await apiClient.get('/v1/webhooks/logs?limit=8');
       const list = Array.isArray(logsData) ? logsData : (logsData?.logs || []);
-      setRecentLogs(list);
+      setRecentLogs(list.map((log) => ({
+        ...log,
+        created_at: log.created_at || log.timestamp || '',
+        response_code: log.response_code ?? log.status_code ?? 200,
+        status_code: log.response_code ?? log.status_code ?? 200,
+        event_type: log.event_type || log.metadata?.event_type || log.delivery_packet?.event_type || 'webhook.event',
+        target_url: log.target_url || log.path || log.metadata?.target_url || log.delivery_packet?.target_url || '',
+        http_method: log.http_method || log.metadata?.http_method || log.delivery_packet?.http_method || 'POST',
+      })));
 
       // 3. Compute top event frequencies
       const counts = {};
@@ -80,15 +88,25 @@ export default function DashboardPage() {
       try {
         socket = new WebSocket(wsUrl);
 
+        socket.onopen = () => {
+          retryCount = 0;
+        };
+
         socket.onmessage = (event) => {
           try {
             const payload = JSON.parse(event.data);
             if (payload.type === 'DASHBOARD_UPDATE' || payload.total_webhooks !== undefined || payload.total_webhooks_24h !== undefined) {
               setCompanyMetrics((prev) => ({
-                ...prev,
+                ...(prev || {}),
                 ...payload,
                 total_webhooks_24h: payload.total_webhooks_24h ?? payload.total_webhooks ?? prev?.total_webhooks_24h ?? 0,
                 success_rate_pct: payload.success_rate_pct ?? payload.success_rate ?? prev?.success_rate_pct ?? null,
+                failure_rate_pct: payload.failure_rate_pct ?? payload.failure_rate ?? prev?.failure_rate_pct ?? 0,
+                avg_latency_ms: payload.avg_latency_ms ?? prev?.avg_latency_ms ?? 0,
+                active_projects_count: payload.active_projects_count ?? prev?.active_projects_count ?? 0,
+                total_projects_count: payload.total_projects_count ?? prev?.total_projects_count ?? 0,
+                total_dlq_count: payload.total_dlq_count ?? payload.dlq_count ?? prev?.total_dlq_count ?? 0,
+                throughput_series: payload.throughput_series ?? prev?.throughput_series ?? [],
               }));
             }
           } catch (err) {

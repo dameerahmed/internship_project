@@ -52,6 +52,28 @@ export default function LogsPage({ projectId, embedded = false }) {
   const [inspectorTab, setInspectorTab] = useState('details'); // 'details' | 'raw'
   const [copiedPayload, setCopiedPayload] = useState(false);
 
+  const normalizeLog = (log) => {
+    const metadata = log?.metadata || {};
+    const responseCode = log?.response_code ?? log?.status_code ?? metadata?.response_code ?? metadata?.status_code ?? 200;
+    const createdAt = log?.created_at || log?.timestamp || metadata?.created_at || '';
+    const eventType = log?.event_type || metadata?.event_type || log?.delivery_packet?.event_type || '';
+    const targetUrl = log?.target_url || log?.path || metadata?.target_url || log?.delivery_packet?.target_url || '';
+    const httpMethod = log?.http_method || metadata?.http_method || log?.delivery_packet?.http_method || 'POST';
+
+    return {
+      ...log,
+      created_at: createdAt,
+      response_code: responseCode,
+      status_code: responseCode,
+      event_type: eventType,
+      target_url: targetUrl,
+      path: targetUrl,
+      http_method: httpMethod,
+      payload: log?.payload || metadata?.request_payload || log?.delivery_packet?.payload || {},
+      metadata,
+    };
+  };
+
   const fetchLogs = async (silent = false) => {
     if (!silent) setLoading(true);
     try {
@@ -60,7 +82,7 @@ export default function LogsPage({ projectId, embedded = false }) {
         : '/v1/webhooks/logs?limit=100';
       const { data } = await apiClient.get(endpoint);
       const rawList = Array.isArray(data) ? data : (data?.logs || []);
-      setLogs(rawList);
+      setLogs(rawList.map(normalizeLog));
     } catch (err) {
       console.warn('Failed to fetch live logs:', err);
     } finally {
@@ -89,10 +111,11 @@ export default function LogsPage({ projectId, embedded = false }) {
           try {
             const payload = JSON.parse(event.data);
             if (payload && payload.id) {
+              const normalizedPayload = normalizeLog(payload);
               setLogs((prevLogs) => {
-                const exists = prevLogs.some((l) => l.id === payload.id);
+                const exists = prevLogs.some((l) => l.id === normalizedPayload.id);
                 if (exists) return prevLogs;
-                return [payload, ...prevLogs].slice(0, 500);
+                return [normalizedPayload, ...prevLogs].slice(0, 500);
               });
             }
           } catch (err) {
@@ -177,6 +200,20 @@ export default function LogsPage({ projectId, embedded = false }) {
     });
   }, [logs, searchQuery, statusFilter, productFilter, methodFilter, timeFilter, customStartDate, customEndDate]);
 
+  const chartData = useMemo(() => {
+    const buckets = Array.from({ length: 24 }, (_, i) => ({ id: i, count: 0 }));
+    const now = Date.now();
+
+    filteredLogs.forEach((log) => {
+      const ts = log.created_at ? new Date(log.created_at).getTime() : now;
+      const ageHours = Math.max(0, Math.min(23, (now - ts) / (1000 * 60 * 60)));
+      const bucketIndex = Math.floor(ageHours);
+      buckets[bucketIndex].count += 1;
+    });
+
+    return buckets;
+  }, [filteredLogs]);
+
   const copyPayload = (content) => {
     if (!content) return;
     const str = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
@@ -199,9 +236,9 @@ export default function LogsPage({ projectId, embedded = false }) {
   const currentSelection = selectedLog || {};
   const currentStatus = currentSelection.response_code || currentSelection.status_code || 200;
   const currentMethod = currentSelection.http_method || currentSelection.delivery_packet?.http_method || 'POST';
-  const currentTarget = currentSelection.target_url || currentSelection.path || currentSelection.delivery_packet?.target_url || '/v1/webhooks';
-  const currentEvent = currentSelection.event_type || currentSelection.delivery_packet?.event_type || 'webhook.dispatch';
-  const currentPayload = currentSelection.payload || currentSelection.delivery_packet?.payload || { status: 'processed', metadata: { engine: 'eds_gateway' } };
+  const currentTarget = currentSelection.target_url || currentSelection.path || currentSelection.delivery_packet?.target_url || '';
+  const currentEvent = currentSelection.event_type || currentSelection.delivery_packet?.event_type || '';
+  const currentPayload = currentSelection.payload || currentSelection.delivery_packet?.payload || {};
 
   const content = (
     <div className="flex flex-col h-full w-full font-sans text-zinc-800 dark:text-zinc-200 select-none pb-8">
@@ -394,13 +431,15 @@ export default function LogsPage({ projectId, embedded = false }) {
         <div className="flex flex-col gap-1 border-b border-zinc-200 dark:border-zinc-800 pb-4 mb-4">
           <div className="text-[10px] font-mono text-zinc-400">Logs / Time</div>
           <div className="h-10 w-full flex items-end justify-between gap-1 pt-2">
-            {Array.from({ length: 48 }).map((_, i) => {
-              const hPct = Math.max(10, Math.floor(Math.sin(i * 0.4) * 70 + Math.random() * 30));
+            {chartData.map((bucket) => {
+              const maxCount = Math.max(1, ...chartData.map((item) => item.count));
+              const hPct = bucket.count === 0 ? 8 : Math.max(12, Math.round((bucket.count / maxCount) * 100));
               return (
                 <div 
-                  key={i} 
+                  key={bucket.id} 
                   className="flex-1 bg-emerald-500/70 hover:bg-emerald-500 rounded-t transition cursor-pointer" 
                   style={{ height: `${hPct}%` }}
+                  title={`${bucket.count} log entries`}
                 />
               );
             })}
@@ -600,7 +639,7 @@ export default function LogsPage({ projectId, embedded = false }) {
                 <div className="flex items-center justify-between">
                   <span className="text-zinc-500 font-medium">IP Address</span>
                   <span className="font-mono text-xs text-zinc-800 dark:text-zinc-200">
-                    {currentSelection.ip_address || '168.228.27.74'}
+                    {currentSelection.ip_address || 'Unavailable'}
                   </span>
                 </div>
 
@@ -608,7 +647,7 @@ export default function LogsPage({ projectId, embedded = false }) {
                 <div className="flex items-center justify-between">
                   <span className="text-zinc-500 font-medium">Origin Country</span>
                   <span className="font-bold text-zinc-800 dark:text-zinc-200">
-                    BR
+                    {currentSelection.country || 'Unknown'}
                   </span>
                 </div>
 
@@ -616,12 +655,12 @@ export default function LogsPage({ projectId, embedded = false }) {
                 <div className="flex items-center justify-between">
                   <span className="text-zinc-500 font-medium">Referer</span>
                   <a
-                    href={currentSelection.referer || 'https://weds-engine.dev/'}
+                    href={currentSelection.referer || '#'}
                     target="_blank"
                     rel="noreferrer"
                     className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline truncate max-w-[200px]"
                   >
-                    {currentSelection.referer || 'https://weds-engine.dev/'}
+                    {currentSelection.referer || 'Not provided'}
                   </a>
                 </div>
 

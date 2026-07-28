@@ -10,7 +10,8 @@ import {
   ArrowLeft,
   RefreshCw,
   X,
-  CheckCircle2
+  CheckCircle2,
+  KeyRound
 } from 'lucide-react';
 import ProtectedLayout from '../components/ProtectedLayout';
 import OverviewTab from '../components/project/tabs/OverviewTab';
@@ -38,12 +39,16 @@ export default function ProjectDetailPage() {
   } = useProjectStore();
 
   const [feedback, setFeedback] = useState({ type: '', message: '' });
+  const resolvedActiveTab = activeTab === 'security' ? 'settings' : activeTab;
 
   // Settings form state
   const [form, setForm] = useState({
     name: '',
     description: '',
+    retention_mode: 'rolling_days',
     retention_days: 30,
+    delete_date: '',
+    delete_time: '02:00',
     is_active: true,
   });
 
@@ -56,7 +61,10 @@ export default function ProjectDetailPage() {
       setForm({
         name: data.name || '',
         description: data.description || '',
+        retention_mode: data.retention_mode || 'rolling_days',
         retention_days: data.retention_days ?? 30,
+        delete_date: data.delete_date || '',
+        delete_time: data.delete_time || '02:00',
         is_active: data.is_active ?? true,
       });
     } catch (err) {
@@ -77,8 +85,23 @@ export default function ProjectDetailPage() {
     e.preventDefault();
     if (!activeProject?.id) return;
     try {
-      const { data } = await apiClient.patch(API_ENDPOINTS.PROJECTS.UPDATE(activeProject.id), form);
+      const { data } = await apiClient.patch(API_ENDPOINTS.PROJECTS.UPDATE(activeProject.id), {
+        name: form.name,
+        description: form.description,
+        is_active: form.is_active,
+        retention_mode: form.retention_mode,
+        retention_days: form.retention_days,
+        delete_date: form.delete_date,
+        delete_time: form.delete_time,
+      });
       setActiveProject(data);
+      setForm((prev) => ({
+        ...prev,
+        retention_mode: data.retention_mode || prev.retention_mode || 'rolling_days',
+        retention_days: data.retention_days ?? prev.retention_days ?? 30,
+        delete_date: data.delete_date || '',
+        delete_time: data.delete_time || prev.delete_time || '02:00',
+      }));
       setFeedback({ type: 'success', message: '✓ Project workspace settings updated successfully.' });
     } catch (err) {
       setFeedback({ type: 'error', message: err.message || 'Failed to update project settings.' });
@@ -185,6 +208,15 @@ export default function ProjectDetailPage() {
           <div className="flex items-center gap-2">
             <button
               type="button"
+              onClick={() => setActiveTab('settings')}
+              className="inline-flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 px-4 py-2 text-xs font-extrabold text-emerald-700 dark:text-emerald-300 transition shadow-sm active:scale-95 shrink-0"
+            >
+              <KeyRound className="h-4 w-4" />
+              <span>Settings & Keys</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setActiveTab('simulator')}
               className="inline-flex items-center gap-2 rounded-xl bg-amber-500 hover:bg-amber-400 px-4 py-2 text-xs font-extrabold text-zinc-950 transition shadow-md active:scale-95 shrink-0"
             >
@@ -211,27 +243,27 @@ export default function ProjectDetailPage() {
 
         {/* Workspace Active Tab Body */}
         <div className="p-6 lg:p-8 flex-1">
-          {activeTab === 'overview' && (
+          {resolvedActiveTab === 'overview' && (
             <OverviewTab project={activeProject} onNavigateTab={setActiveTab} />
           )}
 
-          {activeTab === 'events' && (
+          {resolvedActiveTab === 'events' && (
             <EventConfigTab project={activeProject} onRefresh={loadProject} />
           )}
 
-          {activeTab === 'simulator' && (
+          {resolvedActiveTab === 'simulator' && (
             <SimulatorTab project={activeProject} />
           )}
 
-          {activeTab === 'logs' && (
+          {resolvedActiveTab === 'logs' && (
             <LiveLogsTab project={activeProject} />
           )}
 
-          {activeTab === 'dlq' && (
+          {resolvedActiveTab === 'dlq' && (
             <DLQTab project={activeProject} />
           )}
 
-          {activeTab === 'settings' && (
+          {(resolvedActiveTab === 'settings' || resolvedActiveTab === 'security') && (
             <SettingsTab
               project={activeProject}
               form={form}

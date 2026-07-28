@@ -1,18 +1,25 @@
 import React from 'react';
 
 export default function LogTimelineChart({ logs = [] }) {
-  // Build hourly or minute density buckets from current log set
-  const buckets = Array.from({ length: 30 }, (_, i) => {
-    const bucketLogs = logs.filter((l, idx) => idx % 30 === i);
-    const count = bucketLogs.length;
-    const hasError = bucketLogs.some((l) => (l.metadata?.response_code >= 400 || l.level === 'ERROR'));
-    const hasWarn = bucketLogs.some((l) => (l.metadata?.response_code >= 300 && l.metadata?.response_code < 400));
-    
+  const buckets = Array.from({ length: 24 }, (_, i) => ({ id: i, count: 0, color: 'bg-emerald-500' }));
+  const now = Date.now();
+
+  logs.forEach((log) => {
+    const ts = log.created_at ? new Date(log.created_at).getTime() : now;
+    const ageHours = Math.max(0, Math.min(23, (now - ts) / (1000 * 60 * 60)));
+    const bucketIndex = Math.floor(ageHours);
+    buckets[bucketIndex].count += 1;
+  });
+
+  const maxCount = Math.max(1, ...buckets.map((bucket) => bucket.count));
+  const normalizedBuckets = buckets.map((bucket) => {
+    const hasError = logs.some((log) => (log.response_code >= 400 || log.status === 'FAILED'));
+    const hasWarn = logs.some((log) => (log.response_code >= 300 && log.response_code < 400));
+    const height = bucket.count === 0 ? 6 : Math.max(12, Math.round((bucket.count / maxCount) * 100));
     return {
-      id: i,
-      height: count > 0 ? Math.min(100, Math.max(20, count * 25)) : Math.floor(Math.random() * 30) + 10,
+      ...bucket,
+      height,
       color: hasError ? 'bg-rose-500' : hasWarn ? 'bg-amber-400' : 'bg-emerald-500',
-      count,
     };
   });
 
@@ -25,7 +32,7 @@ export default function LogTimelineChart({ logs = [] }) {
 
       {/* Histogram bars */}
       <div className="flex h-12 w-full items-end gap-1 pt-2">
-        {buckets.map((b) => (
+        {normalizedBuckets.map((b) => (
           <div key={b.id} className="group relative flex flex-1 flex-col items-center h-full justify-end">
             <div
               className={`w-full rounded-t-[2px] transition-all duration-200 group-hover:brightness-125 ${b.color}`}

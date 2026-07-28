@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import apiClient from '@/api/client';
 import { API_ENDPOINTS } from '@/utils/constants';
+import { normalizeEventConfigs } from '@/utils/eventConfigUtils';
 
 export default function EventConfigTab({ project, onRefresh }) {
   const [saving, setSaving] = useState(false);
@@ -52,7 +53,7 @@ export default function EventConfigTab({ project, onRefresh }) {
     is_active: true,
   });
 
-  const eventConfigs = project?.event_configs || [];
+  const eventConfigs = normalizeEventConfigs(project?.event_configs || []);
 
   // Fetch project API credentials
   const fetchCredentials = async () => {
@@ -122,7 +123,7 @@ export default function EventConfigTab({ project, onRefresh }) {
       ? config.target_urls
       : (Array.isArray(config.metadata_json?.urls) && config.metadata_json.urls.length
         ? config.metadata_json.urls
-        : [config.target_url || 'https://example.com/webhook']);
+        : [config.target_url || '']);
 
     const keys = config.payload_keys || config.metadata_json?.payload_keys || ['order_id'];
     const types = config.payload_types || config.metadata_json?.payload_types || ['string'];
@@ -199,7 +200,7 @@ export default function EventConfigTab({ project, onRefresh }) {
 
     try {
       const cleanUrls = eventForm.target_urls.map(u => u.trim()).filter(Boolean);
-      const safeUrls = cleanUrls.length ? cleanUrls : ['https://example.com/webhook'];
+      const safeUrls = cleanUrls.length ? cleanUrls : [];
       
       const cleanKeys = eventForm.payload_rules.map(r => r.key.trim()).filter(Boolean);
       const cleanTypes = eventForm.payload_rules.map(r => r.type);
@@ -483,9 +484,9 @@ export default function EventConfigTab({ project, onRefresh }) {
 
       {/* 🛠️ DEDICATED EVENT CONFIGURATION & SCHEMA PAGE / MODAL */}
       {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900 space-y-6 shadow-2xl custom-scrollbar">
-            <div className="flex items-center justify-between border-b border-zinc-100 dark:border-zinc-800 pb-3">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-3 sm:p-4">
+          <div className="w-full max-w-4xl max-h-[92vh] overflow-y-auto rounded-3xl border border-zinc-200 bg-white p-5 shadow-2xl dark:border-zinc-800 dark:bg-zinc-900 custom-scrollbar">
+            <div className="sticky top-0 z-10 -mx-5 mb-4 flex items-center justify-between border-b border-zinc-100 bg-white/95 px-5 py-4 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95">
               <div>
                 <h3 className="text-base font-extrabold text-zinc-900 dark:text-white flex items-center gap-2">
                   <Sliders className="h-5 w-5 text-emerald-500" />
@@ -632,35 +633,23 @@ export default function EventConfigTab({ project, onRefresh }) {
                 </span>
               </div>
 
-              {/* Action Buttons: Simulate Webhook + Cancel & Save/Update */}
-              <div className="pt-4 border-t border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
+              {/* Action Buttons: Cancel & Save/Update */}
+              <div className="pt-4 border-t border-zinc-100 dark:border-zinc-800 flex items-center justify-end gap-3">
                 <button
                   type="button"
-                  disabled={testingId === eventForm.event_type}
-                  onClick={() => handleTestDispatch(eventForm.event_type || 'order.done', eventForm.target_urls[0])}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 px-4 py-2.5 text-xs font-bold text-amber-600 dark:text-amber-400 transition active:scale-95 shadow-sm"
+                  onClick={() => setShowModal(false)}
+                  className="rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-2.5 font-semibold text-zinc-600 hover:text-zinc-900 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400 dark:hover:text-white transition"
                 >
-                  <Send className={`h-4 w-4 ${testingId === eventForm.event_type ? 'animate-pulse' : ''}`} />
-                  <span>Simulate Webhook</span>
+                  Cancel
                 </button>
 
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setShowModal(false)}
-                    className="rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-2.5 font-semibold text-zinc-600 hover:text-zinc-900 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400 dark:hover:text-white transition"
-                  >
-                    Cancel
-                  </button>
-
-                  <button
-                    type="submit"
-                    disabled={saving}
-                    className="rounded-xl bg-emerald-600 hover:bg-emerald-500 px-5 py-2.5 font-bold text-white shadow-lg transition active:scale-95 disabled:opacity-50"
-                  >
-                    {saving ? 'Saving...' : (editingConfigId ? 'Update Event Configuration' : 'Save Event Rule')}
-                  </button>
-                </div>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="rounded-xl bg-emerald-600 hover:bg-emerald-500 px-5 py-2.5 font-bold text-white shadow-lg transition active:scale-95 disabled:opacity-50"
+                >
+                  {saving ? 'Saving...' : (editingConfigId ? 'Update Event Configuration' : 'Save Event Rule')}
+                </button>
               </div>
             </form>
           </div>

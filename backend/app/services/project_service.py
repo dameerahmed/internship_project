@@ -40,9 +40,6 @@ def normalize_event_config_payload(event: Any) -> Dict[str, Any]:
         if isinstance(raw_target_url, str) and raw_target_url.strip():
             candidate_urls = [raw_target_url.strip()]
 
-    if not candidate_urls:
-        candidate_urls = ["https://example.com/webhook"]
-
     metadata["urls"] = candidate_urls
 
     payload_keys = _coerce_string_list(_get_value(event, "payload_keys") or _get_value(event, "payload_key"))
@@ -57,7 +54,7 @@ def normalize_event_config_payload(event: Any) -> Dict[str, Any]:
 
     return {
         "event_type": normalized_event_type,
-        "target_url": candidate_urls[0],
+        "target_url": candidate_urls[0] if candidate_urls else "",
         "metadata_json": metadata,
         "payload_keys": payload_keys,
         "payload_types": payload_types,

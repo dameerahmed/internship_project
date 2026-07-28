@@ -21,11 +21,21 @@ import {
 } from 'lucide-react';
 import apiClient from '@/api/client';
 import { API_ENDPOINTS } from '@/utils/constants';
+import { normalizeEventConfigs } from '@/utils/eventConfigUtils';
 
 export default function SettingsTab({ project, form, setForm, onSave, onToggleActive, onDelete, onPurge }) {
   const [showScheduleBox, setShowScheduleBox] = useState(false);
   const [apiKey, setApiKey] = useState('');
   const [secretKey, setSecretKey] = useState('');
+  const parseDeleteTime = (value = '') => {
+    const [hours = '02', minutes = '00', seconds = '00'] = String(value || '02:00').split(':');
+    return {
+      hour: String(hours).padStart(2, '0'),
+      minute: String(minutes).padStart(2, '0'),
+      second: String(seconds).padStart(2, '0'),
+    };
+  };
+  const [timeParts, setTimeParts] = useState(() => parseDeleteTime(form.delete_time || form.deleteTime || '02:00'));
   
   // 1 Minute Auto-Hide Credentials State
   const [showCredentials, setShowCredentials] = useState(false);
@@ -35,6 +45,10 @@ export default function SettingsTab({ project, form, setForm, onSave, onToggleAc
   const [copiedKey, setCopiedKey] = useState(false);
   const [copiedSecret, setCopiedSecret] = useState(false);
   const [feedback, setFeedback] = useState({ type: '', message: '' });
+
+  useEffect(() => {
+    setTimeParts(parseDeleteTime(form.delete_time || form.deleteTime || '02:00'));
+  }, [form.delete_time, form.deleteTime]);
 
   // 60-Second Auto-Hide Countdown Timer
   useEffect(() => {
@@ -72,6 +86,22 @@ export default function SettingsTab({ project, form, setForm, onSave, onToggleAc
     }
   };
 
+  const copyBothCredentials = async () => {
+    if (!apiKey && !secretKey) return;
+    const text = `API Key: ${apiKey}\nSecret Key: ${secretKey}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedKey(true);
+      setCopiedSecret(true);
+      setTimeout(() => {
+        setCopiedKey(false);
+        setCopiedSecret(false);
+      }, 2000);
+    } catch (err) {
+      console.warn('Clipboard copy failed', err);
+    }
+  };
+
   // Regenerate credentials
   const handleRegenerateKeys = async () => {
     if (!project?.id) return;
@@ -94,19 +124,27 @@ export default function SettingsTab({ project, form, setForm, onSave, onToggleAc
     }
   };
 
-  const copyToClipboard = (text, type) => {
+  const copyToClipboard = async (text, type) => {
     if (!text) return;
-    navigator.clipboard.writeText(text);
-    if (type === 'key') {
-      setCopiedKey(true);
-      setTimeout(() => setCopiedKey(false), 2000);
-    } else {
-      setCopiedSecret(true);
-      setTimeout(() => setCopiedSecret(false), 2000);
+    try {
+      await navigator.clipboard.writeText(text);
+      if (type === 'key') {
+        setCopiedKey(true);
+        setTimeout(() => setCopiedKey(false), 2000);
+      } else {
+        setCopiedSecret(true);
+        setTimeout(() => setCopiedSecret(false), 2000);
+      }
+    } catch (err) {
+      console.warn('Clipboard copy failed', err);
     }
   };
 
-  const formattedTimeString = `${String(form.deleteHour || 4).padStart(2, '0')}:${String(form.deleteMinute || 3).padStart(2, '0')}:${String(form.deleteSecond || 2).padStart(2, '0')}`;
+  const formattedTimeString = `${String(timeParts.hour || '02').padStart(2, '0')}:${String(timeParts.minute || '00').padStart(2, '0')}:${String(timeParts.second || '00').padStart(2, '0')}`;
+  const retentionModeValue = form.retention_mode || form.retentionMode || 'rolling_days';
+  const retentionDaysValue = form.retentionDays ?? form.retention_days ?? 30;
+  const deleteDateValue = form.delete_date || form.deleteDate || '';
+  const eventConfigs = normalizeEventConfigs(project?.event_configs || []);
 
   return (
     <div className="flex flex-col gap-8 font-sans select-none pb-8">
@@ -163,11 +201,20 @@ export default function SettingsTab({ project, form, setForm, onSave, onToggleAc
               )}
             </div>
             <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
-              Click 'Refresh / Reveal Credentials' to view keys. Credentials auto-hide after 1 minute for security.
+              Click 'Refresh / Reveal Credentials' to view keys. Credentials auto-hide after 1 minute for security and can be copied immediately.
             </p>
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={copyBothCredentials}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-200 bg-zinc-50 px-3.5 py-2 text-xs font-semibold text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-800 transition active:scale-95 shrink-0"
+            >
+              <Copy className="h-3.5 w-3.5" />
+              <span>Copy Both</span>
+            </button>
+
             <button
               type="button"
               disabled={loadingKeys}
@@ -192,6 +239,26 @@ export default function SettingsTab({ project, form, setForm, onSave, onToggleAc
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs font-mono">
+          {/* API Key */}
+          <div className="space-y-1.5">
+            <label className="block font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider font-sans text-[11px]">
+              Active Event Rules
+            </label>
+            <div className="rounded-xl border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 px-3.5 py-2 text-xs text-zinc-600 dark:text-zinc-300">
+              {eventConfigs.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {eventConfigs.map((config) => (
+                    <span key={config.id || config.event_type} className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 font-mono text-[10px] text-emerald-600 dark:text-emerald-400">
+                      {config.event_type}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <span>No event rules configured for this project yet.</span>
+              )}
+            </div>
+          </div>
+
           {/* API Key */}
           <div className="space-y-1.5">
             <label className="block font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider font-sans text-[11px]">
@@ -294,7 +361,7 @@ export default function SettingsTab({ project, form, setForm, onSave, onToggleAc
                 Data Retention & Pruning Schedule
               </h4>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
-                Current execution: <span className="font-mono text-emerald-500 font-bold">{formattedTimeString}</span> ({form.retentionDays || form.retention_days || 30} Days Retention)
+                Current execution: <span className="font-mono text-emerald-500 font-bold">{formattedTimeString}</span> ({retentionDaysValue} Days Retention)
               </p>
             </div>
 
@@ -311,19 +378,98 @@ export default function SettingsTab({ project, form, setForm, onSave, onToggleAc
 
           {showScheduleBox && (
             <div className="rounded-xl border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 p-6 space-y-6 text-xs">
+              <div className="grid gap-6 md:grid-cols-2">
+                <div className="space-y-2">
+                  <label className="block font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider">Retention Policy Mode</label>
+                  <select
+                    className="w-full rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 px-4 py-2.5 text-sm font-mono text-emerald-600 dark:text-emerald-400 outline-none focus:border-indigo-500"
+                    value={retentionModeValue}
+                    onChange={(e) => setForm((prev) => ({ ...prev, retention_mode: e.target.value, retentionMode: e.target.value }))}
+                  >
+                    <option value="rolling_days">Rolling Retention (Days)</option>
+                    <option value="specific_date">Specific Expiration Date</option>
+                    <option value="interval_schedule">Custom Interval Schedule</option>
+                  </select>
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                    {retentionModeValue === 'specific_date'
+                      ? 'Logs will be deleted once the selected date and time are reached.'
+                      : retentionModeValue === 'interval_schedule'
+                        ? 'Logs will be cleaned on the configured schedule window.'
+                        : 'Logs older than the selected number of days will be removed automatically.'}
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider">Retention Period (Days)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={365}
+                    className="w-full rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 px-4 py-2.5 text-sm font-mono text-emerald-600 dark:text-emerald-400 outline-none focus:border-indigo-500"
+                    value={retentionDaysValue}
+                    onChange={(e) => {
+                      const value = Number(e.target.value) || 1;
+                      setForm((prev) => ({ ...prev, retentionDays: value, retention_days: value }));
+                    }}
+                  />
+                </div>
+              </div>
+
+              {retentionModeValue === 'specific_date' && (
+                <div className="space-y-2">
+                  <label className="block font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider">Specific Expiration Date</label>
+                  <input
+                    type="date"
+                    className="w-full max-w-sm rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 px-4 py-2.5 text-sm font-mono text-emerald-600 dark:text-emerald-400 outline-none focus:border-indigo-500"
+                    value={deleteDateValue}
+                    onChange={(e) => setForm((prev) => ({ ...prev, delete_date: e.target.value, deleteDate: e.target.value }))}
+                  />
+                </div>
+              )}
+
               <div className="space-y-2">
-                <label className="block font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider">Retention Days Period</label>
-                <select
-                  className="w-full max-w-md rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 px-4 py-2.5 text-sm font-mono text-emerald-600 dark:text-emerald-400 outline-none focus:border-indigo-500"
-                  value={form.retentionDays || form.retention_days || 30}
-                  onChange={(e) => setForm((prev) => ({ ...prev, retentionDays: parseInt(e.target.value) || 7, retention_days: parseInt(e.target.value) || 7 }))}
-                >
-                  <option value={1}>1 Day Retention</option>
-                  <option value={7}>7 Days Retention (Recommended)</option>
-                  <option value={14}>14 Days Retention</option>
-                  <option value={30}>30 Days Retention</option>
-                  <option value={90}>90 Days Retention</option>
-                </select>
+                <label className="block font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider">Automated Purge Time (HH : MM : SS)</label>
+                <div className="flex items-center gap-2 font-mono">
+                  <input
+                    type="number"
+                    min={0}
+                    max={23}
+                    value={timeParts.hour}
+                    onChange={(e) => {
+                      const next = { ...timeParts, hour: String(e.target.value).padStart(2, '0') };
+                      setTimeParts(next);
+                      setForm((prev) => ({ ...prev, delete_time: `${next.hour}:${next.minute}:${next.second}`, deleteTime: `${next.hour}:${next.minute}:${next.second}` }));
+                    }}
+                    className="w-16 rounded-xl border border-zinc-200 bg-white p-2 text-center text-zinc-900 outline-none focus:border-emerald-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-white"
+                  />
+                  <span>:</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={59}
+                    value={timeParts.minute}
+                    onChange={(e) => {
+                      const next = { ...timeParts, minute: String(e.target.value).padStart(2, '0') };
+                      setTimeParts(next);
+                      setForm((prev) => ({ ...prev, delete_time: `${next.hour}:${next.minute}:${next.second}`, deleteTime: `${next.hour}:${next.minute}:${next.second}` }));
+                    }}
+                    className="w-16 rounded-xl border border-zinc-200 bg-white p-2 text-center text-zinc-900 outline-none focus:border-emerald-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-white"
+                  />
+                  <span>:</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={59}
+                    value={timeParts.second}
+                    onChange={(e) => {
+                      const next = { ...timeParts, second: String(e.target.value).padStart(2, '0') };
+                      setTimeParts(next);
+                      setForm((prev) => ({ ...prev, delete_time: `${next.hour}:${next.minute}:${next.second}`, deleteTime: `${next.hour}:${next.minute}:${next.second}` }));
+                    }}
+                    className="w-16 rounded-xl border border-zinc-200 bg-white p-2 text-center text-zinc-900 outline-none focus:border-emerald-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-white"
+                  />
+                  <span className="text-[11px] text-zinc-500 dark:text-zinc-400 font-sans ml-2">(UTC)</span>
+                </div>
               </div>
 
               <div className="pt-4 border-t border-zinc-200 dark:border-zinc-800">

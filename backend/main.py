@@ -12,7 +12,6 @@ from  app.routers import auth
 from  app.routers import company
 from  app.routers import gateway
 from  app.routers import logs
-from  app.routers import target_webhook
 from  app.routers import metrics
 from  database import SessionLocal
 from  app.models.webhook_log import WebhookLog, WebhookStatus
@@ -78,7 +77,6 @@ app.include_router(gateway.router)
 app.include_router(company.router)
 app.include_router(metrics.router)
 
-app.include_router(target_webhook.router)
 app.include_router(logs.router)
 
 
@@ -125,4 +123,4 @@ async def health_check():
 
     all_healthy = all(val == "healthy" for val in health_status["services"].values())
     health_status["status"] = "healthy" if all_healthy else "degraded"
-    return health_status
+    return health_status

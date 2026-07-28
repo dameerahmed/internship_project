@@ -1,9 +1,11 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { RefreshCw, ArrowUpRight, Activity, Clock, Layers } from 'lucide-react';
 import apiClient from '@/api/client';
-import { API_ENDPOINTS } from '@/utils/constants';
+import { useAuth } from '@/context/AuthContext';
+import { API_ENDPOINTS, WS_ENDPOINTS, withToken } from '@/utils/constants';
 
 export default function OverviewTab({ project, onNavigateTab }) {
+  const { user } = useAuth();
   const [metrics, setMetrics] = useState(null);
   const [recentLogs, setRecentLogs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -18,7 +20,7 @@ export default function OverviewTab({ project, onNavigateTab }) {
       // Fetch real project metrics and recent project logs in parallel
       const [metricsRes, logsRes] = await Promise.allSettled([
         apiClient.get(API_ENDPOINTS.METRICS.PROJECT(project.id)),
-        apiClient.get(`${API_ENDPOINTS.LOGS.LIST}?project_id=${project.id}&limit=6`)
+        apiClient.get(`/v1/projects/${project.id}/logs?limit=6`)
       ]);
 
       if (metricsRes.status === 'fulfilled') {
@@ -39,12 +41,87 @@ export default function OverviewTab({ project, onNavigateTab }) {
 
   useEffect(() => {
     loadData(false);
-    const interval = setInterval(() => {
-      loadData(true);
-    }, 4000);
 
-    return () => clearInterval(interval);
-  }, [project?.id]);
+    let metricsSocket = null;
+    let logsSocket = null;
+    let reconnectTimer = null;
+    let retryCount = 0;
+
+    const connectMetricsSocket = () => {
+      const token = user?.access_token || (localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user'))?.access_token : null);
+      if (!token || !project?.id) return;
+
+      const wsUrl = withToken(`${WS_ENDPOINTS.DASHBOARD()}?project_id=${project.id}`, token);
+      try {
+        metricsSocket = new WebSocket(wsUrl);
+        metricsSocket.onopen = () => { retryCount = 0; };
+        metricsSocket.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data);
+            if (payload.type === 'DASHBOARD_UPDATE' || payload.total_webhooks_24h !== undefined || payload.total_webhooks !== undefined) {
+              setMetrics((prev) => ({
+                ...(prev || {}),
+                ...payload,
+                total_webhooks_24h: payload.total_webhooks_24h ?? payload.total_webhooks ?? prev?.total_webhooks_24h ?? 0,
+                success_rate_pct: payload.success_rate_pct ?? payload.success_rate ?? prev?.success_rate_pct ?? null,
+                failure_rate_pct: payload.failure_rate_pct ?? payload.failure_rate ?? prev?.failure_rate_pct ?? 0,
+                avg_latency_ms: payload.avg_latency_ms ?? prev?.avg_latency_ms ?? 0,
+                dlq_count: payload.dlq_count ?? payload.total_dlq_count ?? prev?.dlq_count ?? 0,
+                throughput_series: payload.throughput_series ?? prev?.throughput_series ?? [],
+              }));
+            }
+          } catch (err) {
+            console.warn('Project metrics WS parse error:', err);
+          }
+        };
+        metricsSocket.onclose = () => {
+          const delay = Math.min(1000 * Math.pow(2, retryCount), 15000);
+          retryCount += 1;
+          reconnectTimer = setTimeout(connectMetricsSocket, delay);
+        };
+        metricsSocket.onerror = () => {
+          try { metricsSocket.close(); } catch {}
+        };
+      } catch (err) {
+        console.warn('Project metrics WS error:', err);
+      }
+    };
+
+    const connectLogsSocket = () => {
+      const token = user?.access_token || (localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user'))?.access_token : null);
+      if (!token || !project?.id) return;
+
+      const wsUrl = withToken(WS_ENDPOINTS.LOGS(project.id), token);
+      try {
+        logsSocket = new WebSocket(wsUrl);
+        logsSocket.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data);
+            if (payload && payload.id) {
+              setRecentLogs((prev) => {
+                const exists = prev.some((log) => log.id === payload.id);
+                if (exists) return prev;
+                return [payload, ...prev].slice(0, 6);
+              });
+            }
+          } catch (err) {
+            console.warn('Project logs WS parse error:', err);
+          }
+        };
+      } catch (err) {
+        console.warn('Project logs WS error:', err);
+      }
+    };
+
+    connectMetricsSocket();
+    connectLogsSocket();
+
+    return () => {
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (metricsSocket) metricsSocket.close();
+      if (logsSocket) logsSocket.close();
+    };
+  }, [project?.id, user]);
 
   const m = metrics || {
     total_webhooks_24h: 0,

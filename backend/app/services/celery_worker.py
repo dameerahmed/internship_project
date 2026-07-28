@@ -150,7 +150,7 @@ async def _persist_webhook_log(**kwargs):
 
                     # Publish updated metrics snapshot to company and project dashboard subscribers
                     try:
-                        snapshot = await metrics_service.get_or_hydrate_metrics(company_id, db_session)
+                        snapshot = await metrics_service.get_or_hydrate_metrics(company_id, db_session, project_id=project_id)
                         await pubsub_service.publish_metrics_snapshot(company_id, snapshot, project_id=project_id)
                     except Exception as snap_exc:
                         logger.warning("Metrics snapshot publish failed: %s", snap_exc)

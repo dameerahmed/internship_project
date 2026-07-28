@@ -238,15 +238,15 @@ export default function Sidebar() {
             {/* Security */}
             <button
               type="button"
-              onClick={() => setActiveTab('security')}
+              onClick={() => setActiveTab('settings')}
               className={`w-full flex items-center gap-3 rounded-lg px-3.5 py-2.5 font-medium transition-all ${
-                activeTab === 'security'
+                activeTab === 'settings' || activeTab === 'security'
                   ? 'bg-indigo-500/20 text-indigo-300 font-semibold border-l-2 border-indigo-400 shadow-sm'
                   : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border-l-2 border-transparent'
               }`}
             >
               <ShieldCheck size={17} className="text-slate-400 shrink-0" />
-              <span>Security & Verification</span>
+              <span>Settings & Keys</span>
             </button>
           </div>
 

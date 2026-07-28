@@ -115,9 +115,21 @@ def _serialize_log_entry(log: WebhookLog) -> dict:
     return {
         "id": f"log-{log.id}",
         "timestamp": timestamp_dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "Z" if timestamp_dt else "",
+        "created_at": timestamp_dt.isoformat() if timestamp_dt else None,
         "level": level,
         "message": (event_payload.get("message") if isinstance(event_payload, dict) else None) or (event_payload.get("event") if isinstance(event_payload, dict) else None) or f"Webhook event '{event_type}'",
         "source": "gateway",
+        "status": status_name,
+        "status_code": log.response_code,
+        "response_code": log.response_code,
+        "event_type": event_type,
+        "http_method": log.http_method or "POST",
+        "target_url": target_url,
+        "path": target_url,
+        "attempt": log.attempt_number,
+        "processing_duration_ms": log.processing_duration_ms,
+        "source_ip": log.source_ip or "127.0.0.1",
+        "error_message": log.error_message,
         "metadata": metadata,
     }
 
@@ -755,6 +767,16 @@ async def get_dashboard_stats(
 
 # ─────────────────────── REST: DLQ ───────────────────────────────────────────
 
+@router.get("/v1/projects/{project_id}/dlq")
+async def get_project_dlq_items(
+    project_id: int,
+    limit: int = Query(50, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    current_company = Depends(get_current_company)
+):
+    return await get_dlq_items(project_id=project_id, limit=limit, db=db, current_company=current_company)
+
+
 @router.get("/v1/dlq")
 async def get_dlq_items(
     project_id: Optional[int] = Query(None),
@@ -832,6 +854,8 @@ async def replay_dlq_logs(
     if isinstance(log_ids, str) and log_ids != "all":
         log_ids = [log_ids]
 
+    target_project_id = None
+
     # Ownership check: peek the DLQ and verify each requested ID belongs to this company
     if log_ids and log_ids != "all":
         proj_res = await db.execute(select(Project.id).where(Project.company_id == company_id))
@@ -839,21 +863,25 @@ async def replay_dlq_logs(
 
         raw_items = await rabbitmq_manager.peek_dlq_messages(limit=500)
         safe_ids = []
+        project_ids = set()
         for item in raw_items:
             if item.get("id") not in log_ids:
                 continue
             p_id = item.get("project_id")
             if p_id and int(p_id) in owned_project_ids:
                 safe_ids.append(item.get("id"))
+                project_ids.add(int(p_id))
         log_ids = safe_ids
+        if len(project_ids) == 1:
+            target_project_id = next(iter(project_ids))
 
     result = await rabbitmq_manager.requeue_dlq_messages(target_ids=log_ids)
 
     # Notify DLQ WS subscribers and refresh metrics
     await publish_dlq_event(company_id, "replay", None)
     try:
-        snapshot = await metrics_service.get_or_hydrate_metrics(company_id, db)
-        await publish_metrics_snapshot(company_id, snapshot)
+        snapshot = await metrics_service.get_or_hydrate_metrics(company_id, db, project_id=target_project_id)
+        await publish_metrics_snapshot(company_id, snapshot, project_id=target_project_id)
     except Exception:
         pass
 
@@ -884,26 +912,32 @@ async def discard_dlq_logs(
     if isinstance(log_ids, str) and log_ids != "all":
         log_ids = [log_ids]
 
+    target_project_id = None
+
     if log_ids and log_ids != "all":
         proj_res = await db.execute(select(Project.id).where(Project.company_id == company_id))
         owned_project_ids = {row[0] for row in proj_res.fetchall()}
 
         raw_items = await rabbitmq_manager.peek_dlq_messages(limit=500)
         safe_ids = []
+        project_ids = set()
         for item in raw_items:
             if item.get("id") not in log_ids:
                 continue
             p_id = item.get("project_id")
             if p_id and int(p_id) in owned_project_ids:
                 safe_ids.append(item.get("id"))
+                project_ids.add(int(p_id))
         log_ids = safe_ids
+        if len(project_ids) == 1:
+            target_project_id = next(iter(project_ids))
 
     result = await rabbitmq_manager.discard_dlq_messages(target_ids=log_ids)
 
     await publish_dlq_event(company_id, "discard", None)
     try:
-        snapshot = await metrics_service.get_or_hydrate_metrics(company_id, db)
-        await publish_metrics_snapshot(company_id, snapshot)
+        snapshot = await metrics_service.get_or_hydrate_metrics(company_id, db, project_id=target_project_id)
+        await publish_metrics_snapshot(company_id, snapshot, project_id=target_project_id)
     except Exception:
         pass
 
