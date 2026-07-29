@@ -1,5 +1,5 @@
 import asyncio
-from backend.app.services.queue_client import rabbitmq_manager
+from  app.services.queue_client import rabbitmq_manager
 
 async def test():
     await rabbitmq_manager.connect()

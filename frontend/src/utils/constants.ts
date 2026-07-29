@@ -1,12 +1,8 @@
-const protocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "https:" : "http:";
-const fallbackApiBase = typeof window !== "undefined" && window.location.hostname === "localhost"
-  ? "http://127.0.0.1:8000"
-  : "";
-const fallbackWsBase = typeof window !== "undefined"
-  ? window.location.hostname === "localhost"
-    ? "ws://127.0.0.1:8000"
-    : `${protocol}//${window.location.host}`
-  : "ws://127.0.0.1:8000";
+const isClient = typeof window !== "undefined";
+const wsProtocol = isClient && window.location.protocol === "https:" ? "wss:" : "ws:";
+
+const fallbackApiBase = "";
+const fallbackWsBase = isClient ? `${wsProtocol}//${window.location.host}` : "ws://127.0.0.1:8000";
 
 // API Configuration
 export const API_BASE_URL = import.meta.env.VITE_API_URL ?? fallbackApiBase;
@@ -24,6 +20,7 @@ export const API_ENDPOINTS = {
     LIST: "/v1/projects/",
     CREATE: "/v1/projects/Create",
     GET: (id: string | number) => `/v1/projects/${id}`,
+    DETAIL: (id: string | number) => `/v1/projects/${id}`,
     UPDATE: (id: string | number) => `/v1/projects/${id}`,
     DELETE: (id: string | number) => `/v1/projects/${id}`,
     EVENT_UPDATE: (projectId: string | number, eventId: string | number) => `/v1/projects/${projectId}/events/${eventId}`,
@@ -31,13 +28,33 @@ export const API_ENDPOINTS = {
   WEBHOOKS: {
     LOGS: (projectId: string | number) => `/v1/projects/${projectId}/webhook-logs`,
   },
+  METRICS: {
+    COMPANY: "/v1/metrics/company",
+    PROJECT: (id: string | number) => `/v1/metrics/project/${id}`,
+  },
 };
 
 // WebSocket Endpoints
+// ⚠️  Security: company_id is NO LONGER part of the URL.
+// The server reads it exclusively from the JWT (?token= param).
+// The token parameter is appended by the caller using withToken() helper below.
 export const WS_ENDPOINTS = {
+  /** Live webhook log stream for a project. Always append ?token= */
   LOGS: (projectId: string | number) => `${WS_BASE_URL}/ws/logs/${projectId}`,
-  DLQ: (companyId: string | number) => `${WS_BASE_URL}/ws/dlq/${companyId}`,
-  DASHBOARD: (companyId: string | number) => `${WS_BASE_URL}/ws/dashboard/${companyId}`,
+  /** Company DLQ stream. company_id is taken from JWT server-side. Always append ?token= */
+  DLQ: () => `${WS_BASE_URL}/ws/dlq`,
+  /** Dashboard metrics stream. company_id is taken from JWT server-side. Always append ?token= */
+  DASHBOARD: () => `${WS_BASE_URL}/ws/dashboard`,
+};
+
+/**
+ * Append the access token as a query parameter so the WebSocket server
+ * can authenticate without HTTP headers (browsers don't support WS auth headers).
+ */
+export const withToken = (url: string, token: string | null | undefined): string => {
+  if (!token) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(token)}`;
 };
 
 // Theme Colors (Dark-Modern)

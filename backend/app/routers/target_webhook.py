@@ -4,7 +4,7 @@ import asyncio
 import json
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import hashes, serialization
-from backend.config import settings
+from  config import settings
 import logging
 from typing import Optional
 

@@ -12,19 +12,20 @@ from celery import Celery, Task
 from kombu import Exchange, Queue
 from sqlalchemy import select, delete
 
-from backend.config import settings
+from config import settings
 
 # Database Layer & Models Mapping
-from backend.database import get_db, engine 
-from backend.app.models.event_config import EventConfig
-from backend.app.models.webhook_log import WebhookLog, WebhookStatus
-from backend.app.models.project import Project
-from backend.app.models.webhook_event import WebhookEvent
-from backend.app.services.metrics_service import metrics_service
-from backend.app.utils.security import WebhookSecurity, sanitize_for_logging
-from backend.app.services.failover import service_health_monitor, sanitize_response_payload
-from backend.app.services.redis_client import get_redis_client
-from backend.app.services.project_service import refresh_project_cache
+from database import get_db, engine 
+from app.models.event_config import EventConfig
+from app.models.webhook_log import WebhookLog, WebhookStatus
+from app.models.project import Project
+from app.models.webhook_event import WebhookEvent
+from app.services.metrics_service import metrics_service
+from app.utils.security import WebhookSecurity, sanitize_for_logging
+from app.services.failover import service_health_monitor, sanitize_response_payload
+from app.services.redis_client import get_redis_client
+from app.services.project_service import refresh_project_cache
+from app.services import pubsub_service
 
 logger = logging.getLogger("celery_worker")
 
@@ -80,9 +81,11 @@ def _resolve_target_url(target_url: Optional[str], event_config, project_id: int
 
 
 async def _persist_webhook_log(**kwargs):
+    from app.routers.logs import _serialize_log_entry  # local import to avoid circular
     try:
         async for db_session in get_db():
             event_id = kwargs.get("event_id")
+            project_id = kwargs.get("project_id")
             stmt = select(WebhookLog).where(WebhookLog.event_id == event_id)
             result = await db_session.execute(stmt)
             existing_log = result.scalars().first()
@@ -94,6 +97,7 @@ async def _persist_webhook_log(**kwargs):
                 existing_log.error_message = kwargs.get("error_message")
                 existing_log.processing_duration_ms = kwargs.get("processing_duration_ms")
                 existing_log.http_method = kwargs.get("http_method")
+                log_entry = existing_log
             else:
                 log_entry = WebhookLog(
                     event_id=event_id,
@@ -107,18 +111,50 @@ async def _persist_webhook_log(**kwargs):
                     http_method=kwargs.get("http_method"),
                 )
                 db_session.add(log_entry)
-            
+
+            # Coalesced: update target_url on the WebhookEvent in the same session
+            target_url_update = kwargs.get("target_url")
+            if target_url_update and event_id:
+                db_event = await db_session.get(WebhookEvent, event_id)
+                if db_event and db_event.target_url != target_url_update:
+                    db_event.target_url = target_url_update
+
             await db_session.commit()
-            
-            # Redis Real-Time Metrics Update
+
+            # ── Redis Pub/Sub: publish the log entry so /ws/logs instantly pushes it ──
             status_val = kwargs.get("status")
+            company_id = kwargs.get("company_id")
+
+            if project_id:
+                try:
+                    # Reload with relationship for serialization
+                    from sqlalchemy.orm import selectinload
+                    reload_result = await db_session.execute(
+                        select(WebhookLog)
+                        .options(selectinload(WebhookLog.event))
+                        .where(WebhookLog.id == log_entry.id)
+                    )
+                    reloaded = reload_result.scalars().first()
+                    if reloaded:
+                        serialized = _serialize_log_entry(reloaded)
+                        await pubsub_service.publish_log_event(project_id, serialized)
+                except Exception as pub_exc:
+                    logger.warning("Pub/Sub log publish failed: %s", pub_exc)
+
+            # ── Redis Pub/Sub: update metrics and publish snapshot ──
             if status_val in [WebhookStatus.SUCCESS, WebhookStatus.FAILED]:
-                company_id = kwargs.get("company_id")
                 if company_id:
                     is_success = (status_val == WebhookStatus.SUCCESS)
                     latency = kwargs.get("processing_duration_ms") or 0.0
-                    await metrics_service.record_delivery_result(company_id, is_success, latency)
-            
+                    await metrics_service.record_delivery_result(company_id, is_success, latency, project_id=project_id)
+
+                    # Publish updated metrics snapshot to company and project dashboard subscribers
+                    try:
+                        snapshot = await metrics_service.get_or_hydrate_metrics(company_id, db_session, project_id=project_id)
+                        await pubsub_service.publish_metrics_snapshot(company_id, snapshot, project_id=project_id)
+                    except Exception as snap_exc:
+                        logger.warning("Metrics snapshot publish failed: %s", snap_exc)
+
             break
     except Exception as exc:
         logger.exception("Failed to persist webhook log", exc_info=exc)
@@ -271,6 +307,8 @@ async def orchestrate_webhook_lifecycle(task_instance: Task, delivery_packet: di
                     retry=True
                 )
             logger.info("Event %s routed to DLQ successfully", event_id)
+            if company_id:
+                await pubsub_service.publish_dlq_event(company_id, "ADDED", dlq_packet)
         except Exception as dlq_err:
             logger.exception("Celery native transport failed to route to DLQ")
 
@@ -303,7 +341,7 @@ async def _process_webhook_delivery(
     redis_client = None
     try:
         import redis.asyncio as aioredis
-        from backend.config import settings
+        from config import settings
         # Instantiate a fresh connection to avoid "Event loop is closed" errors
         # caused by mixing asyncio.run() with a global connection pool
         redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True, protocol=2)

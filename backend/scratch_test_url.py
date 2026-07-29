@@ -6,14 +6,14 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy import delete
 from celery import Task
 
-from backend.database import get_db, engine
-from backend.app.models.company import Company
-from backend.app.models.project import Project
-from backend.app.models.event_config import EventConfig
-from backend.app.models.webhook_event import WebhookEvent
-from backend.app.services.project_service import refresh_project_cache
-from backend.app.services.celery_worker import _process_webhook_delivery, orchestrate_webhook_lifecycle
-from backend.app.services.redis_client import get_redis_client
+from  database import get_db, engine
+from  app.models.company import Company
+from  app.models.project import Project
+from  app.models.event_config import EventConfig
+from  app.models.webhook_event import WebhookEvent
+from  app.services.project_service import refresh_project_cache
+from  app.services.celery_worker import _process_webhook_delivery, orchestrate_webhook_lifecycle
+from  app.services.redis_client import get_redis_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("test_script")

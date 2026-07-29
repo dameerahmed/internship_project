@@ -8,22 +8,23 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 from sqlalchemy import select
-from backend.app.services.redis_client import get_redis, get_redis_client
-from backend.app.utils.security import WebhookSecurity, build_log_payload, sanitize_for_logging, validate_payload_keys
-from backend.app.services.celery_worker import dispatch_webhook_task
-from backend.app.services.failover import (
+from app.services.redis_client import get_redis, get_redis_client
+from app.utils.security import WebhookSecurity, build_log_payload, sanitize_for_logging, validate_payload_keys
+from app.services.celery_worker import dispatch_webhook_task
+from app.services.failover import (
     offline_message_buffer,
     populate_cache_if_available,
     sanitize_response_payload,
     service_health_monitor,
 )
-from backend.app.services.project_service import refresh_project_cache
-from backend.app.models.event_config import EventConfig
-from backend.app.models.project import Project
-from backend.app.models.webhook_event import WebhookEvent
-from backend.app.models.webhook_log import WebhookLog, WebhookStatus
-from backend.app.services.metrics_service import metrics_service
-from backend.database import get_db
+from app.services.project_service import refresh_project_cache
+from app.models.event_config import EventConfig
+from app.models.project import Project
+from app.models.webhook_event import WebhookEvent
+from app.models.webhook_log import WebhookLog, WebhookStatus
+from app.services.metrics_service import metrics_service
+from app.services.rate_limiter import rate_limit_gateway
+from database import get_db
 
 router = APIRouter(tags=["Gateway"])
 logger = logging.getLogger("gateway_router")
@@ -115,7 +116,12 @@ async def _queue_gateway_log(log_payload: dict, redis_conn=None) -> None:
 
 
 @router.post("/v1/gateway")
-async def incoming_webhook_receiver(request: Request, background_tasks: BackgroundTasks, redis_conn = Depends(get_redis)):
+async def incoming_webhook_receiver(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    redis_conn = Depends(get_redis),
+    _rl: None = Depends(rate_limit_gateway),
+):
     started_at = time.time()
     event_id = f"evt_{uuid.uuid4().hex}"
 
@@ -234,7 +240,7 @@ async def incoming_webhook_receiver(request: Request, background_tasks: Backgrou
                 )
 
         await _queue_gateway_log(log_payload, redis_conn=redis_conn)
-        background_tasks.add_task(metrics_service.increment_gateway_throughput, company_id)
+        background_tasks.add_task(metrics_service.increment_gateway_throughput, company_id, project_id)
 
         if not target_urls:
             target_urls = [None]
@@ -243,6 +249,8 @@ async def incoming_webhook_receiver(request: Request, background_tasks: Backgrou
         for idx, target_url in enumerate(target_urls):
             delivery_packet = {
                 "event_id": event_id,
+                "project_id": project_id,
+                "company_id": company_id,
                 "url_index": idx,
             }
 

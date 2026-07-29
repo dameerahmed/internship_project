@@ -5,10 +5,10 @@ file_path = r'd:\internship\backend\app\routers\logs.py'
 with open(file_path, 'r', encoding='utf-8') as f:
     content = f.read()
 
-if 'from backend.app.services.metrics_service import metrics_service' not in content:
+if 'from  app.services.metrics_service import metrics_service' not in content:
     content = content.replace(
-        'from backend.app.services.celery_worker import dispatch_webhook_task',
-        'from backend.app.services.celery_worker import dispatch_webhook_task\nfrom backend.app.services.metrics_service import metrics_service\nfrom starlette.websockets import WebSocketState'
+        'from  app.services.celery_worker import dispatch_webhook_task',
+        'from  app.services.celery_worker import dispatch_webhook_task\nfrom  app.services.metrics_service import metrics_service\nfrom starlette.websockets import WebSocketState'
     )
 
 stream_func_pattern = re.compile(r'@router\.websocket\("/ws/dashboard/\{company_id\}"\)\nasync def stream_dashboard_stats.*?@router\.get\("/v1/dashboard/stats"\)', re.DOTALL)

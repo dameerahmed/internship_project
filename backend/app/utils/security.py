@@ -9,7 +9,7 @@ from typing import Any, Optional, Dict, Tuple, List
 import jwt
 from cryptography.fernet import Fernet
 from fastapi import HTTPException, status
-from backend.config import settings
+from  config import settings
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import hashes, serialization
 

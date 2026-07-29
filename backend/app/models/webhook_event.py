@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Text, DateTime, func, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
-from backend.database import Base
+from  database import Base
 from datetime import datetime
 
 
@@ -14,7 +14,7 @@ class WebhookEvent(Base):
 
     event_id = Column(String(50), primary_key=True, index=True)
     
-    project_id = Column(Integer, nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     event_config_id = Column(Integer, ForeignKey("event_configs.id", ondelete="SET NULL"), nullable=True, index=True)
     event_type = Column(String(100), nullable=False, index=True)
     target_url = Column(Text, nullable=True)
@@ -24,6 +24,7 @@ class WebhookEvent(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
+    project = relationship("Project", back_populates="webhook_events", lazy="selectin")
     event_config = relationship("EventConfig", back_populates="webhook_events", lazy="selectin")
     logs = relationship(
         "WebhookLog",

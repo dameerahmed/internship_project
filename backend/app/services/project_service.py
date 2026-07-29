@@ -40,9 +40,6 @@ def normalize_event_config_payload(event: Any) -> Dict[str, Any]:
         if isinstance(raw_target_url, str) and raw_target_url.strip():
             candidate_urls = [raw_target_url.strip()]
 
-    if not candidate_urls:
-        candidate_urls = ["https://example.com/webhook"]
-
     metadata["urls"] = candidate_urls
 
     payload_keys = _coerce_string_list(_get_value(event, "payload_keys") or _get_value(event, "payload_key"))
@@ -57,7 +54,7 @@ def normalize_event_config_payload(event: Any) -> Dict[str, Any]:
 
     return {
         "event_type": normalized_event_type,
-        "target_url": candidate_urls[0],
+        "target_url": candidate_urls[0] if candidate_urls else "",
         "metadata_json": metadata,
         "payload_keys": payload_keys,
         "payload_types": payload_types,
@@ -72,8 +69,8 @@ async def refresh_project_cache(project_id: int, db_session, redis_client=None) 
     builds the expanded auth:project_{project_id} JSON payload,
     stores it in Redis, and returns the payload.
     """
-    from backend.app.models.project import Project
-    from backend.app.models.event_config import EventConfig
+    from  app.models.project import Project
+    from  app.models.event_config import EventConfig
 
     # 1. Fetch project
     proj_result = await db_session.execute(
@@ -89,7 +86,7 @@ async def refresh_project_cache(project_id: int, db_session, redis_client=None) 
                 logger.warning("Failed to delete stale cache for project %s: %s", project_id, e)
         else:
             try:
-                from backend.app.services.redis_client import get_redis_client
+                from  app.services.redis_client import get_redis_client
                 rc = await get_redis_client()
                 try:
                     await rc.delete(f"auth:project_{project_id}")
@@ -134,7 +131,7 @@ async def refresh_project_cache(project_id: int, db_session, redis_client=None) 
     should_close = False
     if redis_client is None:
         try:
-            from backend.app.services.redis_client import get_redis_client
+            from  app.services.redis_client import get_redis_client
             redis_client = await get_redis_client()
             should_close = True
         except Exception as e:

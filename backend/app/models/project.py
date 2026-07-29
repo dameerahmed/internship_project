@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, UniqueConstraint
 from datetime import datetime
 from sqlalchemy.orm import relationship
-from backend.database import Base
+from  database import Base
 
 
 # The database schema in this workspace does not consistently include the legacy
@@ -29,3 +29,4 @@ class Project(Base):
     # Relationships
     company = relationship("Company", back_populates="projects")
     event_configs = relationship("EventConfig", back_populates="project", cascade="all, delete-orphan", lazy="selectin")
+    webhook_events = relationship("WebhookEvent", back_populates="project", cascade="all, delete-orphan", lazy="selectin")

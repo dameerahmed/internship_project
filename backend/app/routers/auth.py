@@ -5,19 +5,25 @@ from sqlalchemy.future import select
 import uuid
 
 # Context mapping keys based on your layout
-from backend.database import get_db
-from backend.config import settings
-from backend.app.models.company import Company
-from backend.app.schemas.company import CompanyRegister, CompanyUpdate, TokenResponse
-from backend.app.services.auth_ops import PasswordManager
-from backend.app.utils.security import JWTManager
-from backend.app.services.redis_client import get_redis_client
-from backend.app.services.dependencies import get_current_company
+from  database import get_db
+from  config import settings
+from  app.models.company import Company
+from  app.schemas.company import CompanyRegister, CompanyUpdate, TokenResponse
+from  app.services.auth_ops import PasswordManager
+from  app.utils.security import JWTManager
+from  app.services.redis_client import get_redis_client
+from  app.services.dependencies import get_current_company
+from  app.services.rate_limiter import rate_limit_auth_login, rate_limit_auth_register
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
-async def register_company(payload: CompanyRegister, db: AsyncSession = Depends(get_db)):
+async def register_company(
+    payload: CompanyRegister,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _rl: None = Depends(rate_limit_auth_register),
+):
     """
     Registers a new company using standard asynchronous pipeline.
     """
@@ -58,7 +64,9 @@ async def register_company(payload: CompanyRegister, db: AsyncSession = Depends(
 
 @router.post("/login", response_model=TokenResponse)
 async def login_company(
-    response: Response,  # 🚀 Cookie inject karne ke liye response object add kiya
+    request: Request,
+    response: Response,
+    _rl: None = Depends(rate_limit_auth_login),
     payload: OAuth2PasswordRequestForm = Depends(), 
     db: AsyncSession = Depends(get_db)
 ):

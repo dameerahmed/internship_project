@@ -1,6 +1,6 @@
 # Dameer Frontend
 
-This frontend is a React + Vite app created to work with your FastAPI backend.
+This frontend is a React + Vite app created to work with your FastAPI  
 
 ## Recommended stack
 - React + Vite for a fast SPA

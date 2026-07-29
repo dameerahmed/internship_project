@@ -2,7 +2,7 @@ import math
 from datetime import datetime
 from typing import List, Optional
 from pydantic import BaseModel, Field, validator, root_validator
-from backend.app.schemas.event_config import EventConfigBase, EventConfigResponse
+from  app.schemas.event_config import EventConfigBase, EventConfigResponse
 
 
 def _normalize_project_payload(values):
