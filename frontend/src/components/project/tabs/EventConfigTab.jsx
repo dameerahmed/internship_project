@@ -383,7 +383,7 @@ export default function EventConfigTab({ project, onRefresh }) {
       <div className="flex flex-col w-full rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#0d1017] shadow-xl overflow-hidden font-sans select-none">
         
         {/* Top Header Bar */}
-        <div className="p-6 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-[#0a0c12] flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="p-5 sm:p-6 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-[#0a0c12] flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-xl font-extrabold text-zinc-900 dark:text-white flex items-center gap-2">
               <Sliders className="h-5 w-5 text-indigo-500" />
@@ -405,7 +405,7 @@ export default function EventConfigTab({ project, onRefresh }) {
         </div>
 
         {/* 🚀 Stacked Line-by-Line Event Routing Cards */}
-        <div className="p-6 lg:p-8 bg-white dark:bg-[#0d1017] space-y-4">
+        <div className="p-5 sm:p-6 bg-white dark:bg-[#0d1017] space-y-4">
           {eventConfigs.length === 0 ? (
             <div className="flex h-56 flex-col items-center justify-center text-center text-xs text-zinc-400 rounded-2xl border border-dashed border-zinc-200 dark:border-zinc-800/80 p-8">
               <Sliders className="h-8 w-8 text-indigo-400 mb-2" />

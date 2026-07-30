@@ -52,9 +52,12 @@ export default function ProjectDetailPage() {
     is_active: true,
   });
 
-  const loadProject = async () => {
+  const loadProject = async (silent = false) => {
     if (!projectId) return;
-    setProjectLoading(true);
+    const isDifferentProject = !activeProject || activeProject.id !== Number(projectId);
+    if (!silent && isDifferentProject) {
+      setProjectLoading(true);
+    }
     try {
       const { data } = await apiClient.get(API_ENDPOINTS.PROJECTS.DETAIL(projectId));
       setActiveProject(data);
@@ -70,15 +73,18 @@ export default function ProjectDetailPage() {
     } catch (err) {
       setFeedback({ type: 'error', message: err.message || 'Failed to load project node details' });
     } finally {
-      setProjectLoading(false);
+      if (!silent && isDifferentProject) {
+        setProjectLoading(false);
+      }
     }
   };
 
   useEffect(() => {
-    loadProject();
-    return () => {
-      useProjectStore.getState().clearActiveProject();
-    };
+    if (!activeProject || activeProject.id !== Number(projectId)) {
+      loadProject(false);
+    } else {
+      loadProject(true);
+    }
   }, [projectId]);
 
   const handleSaveSettings = async (e) => {
@@ -248,7 +254,7 @@ export default function ProjectDetailPage() {
           )}
 
           {resolvedActiveTab === 'events' && (
-            <EventConfigTab project={activeProject} onRefresh={loadProject} />
+            <EventConfigTab project={activeProject} onRefresh={() => loadProject(true)} />
           )}
 
           {resolvedActiveTab === 'simulator' && (
