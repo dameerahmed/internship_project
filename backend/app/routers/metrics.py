@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import func, case, delete
+from sqlalchemy import func, case, delete, or_, and_
 
 from database import get_db
 from app.services.dependencies import get_current_company
@@ -231,11 +231,16 @@ async def get_project_specific_metrics(
             detail="Project not found or unauthorized"
         )
 
-    # Get event configs for this project
+    # Get event configs and events for this project
     ec_res = await db.execute(
         select(EventConfig.id).where(EventConfig.project_id == project_id)
     )
     event_config_ids = [row[0] for row in ec_res.fetchall()]
+
+    evt_res = await db.execute(
+        select(WebhookEvent.event_id).where(WebhookEvent.project_id == project_id)
+    )
+    project_event_ids = [row[0] for row in evt_res.fetchall() if row[0]]
 
     now = datetime.utcnow()
     twenty_four_hours_ago = now - timedelta(hours=24)
@@ -246,7 +251,15 @@ async def get_project_specific_metrics(
     avg_latency_ms = 0.0
     latencies_list = []
 
+    log_conds = []
     if event_config_ids:
+        log_conds.append(WebhookLog.event_config_id.in_(event_config_ids))
+    if project_event_ids:
+        log_conds.append(WebhookLog.event_id.in_(project_event_ids))
+
+    if log_conds:
+        where_filter = and_(or_(*log_conds), WebhookLog.created_at >= twenty_four_hours_ago)
+
         agg_stmt = (
             select(
                 func.count(WebhookLog.id).label("total"),
@@ -254,10 +267,7 @@ async def get_project_specific_metrics(
                 func.sum(case((WebhookLog.status == WebhookStatus.FAILED, 1), else_=0)).label("failures"),
                 func.avg(WebhookLog.processing_duration_ms).label("avg_latency")
             )
-            .where(
-                WebhookLog.event_config_id.in_(event_config_ids),
-                WebhookLog.created_at >= twenty_four_hours_ago
-            )
+            .where(where_filter)
         )
         agg_res = await db.execute(agg_stmt)
         agg_row = agg_res.fetchone()
@@ -270,11 +280,7 @@ async def get_project_specific_metrics(
 
         lat_stmt = (
             select(WebhookLog.processing_duration_ms)
-            .where(
-                WebhookLog.event_config_id.in_(event_config_ids),
-                WebhookLog.created_at >= twenty_four_hours_ago,
-                WebhookLog.processing_duration_ms.isnot(None)
-            )
+            .where(where_filter, WebhookLog.processing_duration_ms.isnot(None))
         )
         lat_res = await db.execute(lat_stmt)
         latencies_list = [row[0] for row in lat_res.fetchall() if row[0] is not None]
@@ -287,10 +293,7 @@ async def get_project_specific_metrics(
     project_dlq_count = 0
     try:
         raw_dlq = await rabbitmq_manager.peek_dlq_messages(limit=250)
-        evt_res = await db.execute(
-            select(WebhookEvent.event_id).where(WebhookEvent.project_id == project_id)
-        )
-        evt_set = set(row[0] for row in evt_res.fetchall())
+        evt_set = set(project_event_ids)
 
         for msg in raw_dlq:
             pid = msg.get("project_id")
@@ -303,7 +306,7 @@ async def get_project_specific_metrics(
 
     # Hourly throughput series for this project
     throughput_series = []
-    if event_config_ids:
+    if log_conds:
         series_stmt = (
             select(
                 func.date_trunc('hour', WebhookLog.created_at).label("hour_bucket"),
@@ -311,10 +314,7 @@ async def get_project_specific_metrics(
                 func.sum(case((WebhookLog.status == WebhookStatus.SUCCESS, 1), else_=0)).label("successes"),
                 func.sum(case((WebhookLog.status == WebhookStatus.FAILED, 1), else_=0)).label("failures")
             )
-            .where(
-                WebhookLog.event_config_id.in_(event_config_ids),
-                WebhookLog.created_at >= twenty_four_hours_ago
-            )
+            .where(where_filter)
             .group_by("hour_bucket")
             .order_by("hour_bucket")
         )
