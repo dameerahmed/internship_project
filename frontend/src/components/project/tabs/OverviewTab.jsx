@@ -215,7 +215,7 @@ export default function OverviewTab({ project, onNavigateTab }) {
 
         <div className="flex items-center gap-2 mt-2 sm:mt-0">
           <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400">
-            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="h-2 w-2 rounded-full bg-emerald-500" />
             Live WebSocket Active
           </span>
           <button

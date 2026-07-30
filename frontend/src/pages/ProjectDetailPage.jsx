@@ -29,14 +29,12 @@ export default function ProjectDetailPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
 
-  const {
-    activeProject,
-    setActiveProject,
-    activeTab,
-    setActiveTab,
-    projectLoading,
-    setProjectLoading
-  } = useProjectStore();
+  const activeProject = useProjectStore((s) => s.activeProject);
+  const setActiveProject = useProjectStore((s) => s.setActiveProject);
+  const activeTab = useProjectStore((s) => s.activeTab);
+  const setActiveTab = useProjectStore((s) => s.setActiveTab);
+  const projectLoading = useProjectStore((s) => s.projectLoading);
+  const setProjectLoading = useProjectStore((s) => s.setProjectLoading);
 
   const [feedback, setFeedback] = useState({ type: '', message: '' });
   const resolvedActiveTab = activeTab === 'security' ? 'settings' : activeTab;
@@ -61,14 +59,17 @@ export default function ProjectDetailPage() {
     try {
       const { data } = await apiClient.get(API_ENDPOINTS.PROJECTS.DETAIL(projectId));
       setActiveProject(data);
-      setForm({
-        name: data.name || '',
-        description: data.description || '',
-        retention_mode: data.retention_mode || 'rolling_days',
-        retention_days: data.retention_days ?? 30,
-        delete_date: data.delete_date || '',
-        delete_time: data.delete_time || '02:00',
-        is_active: data.is_active ?? true,
+      setForm((prev) => {
+        const nextForm = {
+          name: data.name || '',
+          description: data.description || '',
+          retention_mode: data.retention_mode || 'rolling_days',
+          retention_days: data.retention_days ?? 30,
+          delete_date: data.delete_date || '',
+          delete_time: data.delete_time || '02:00',
+          is_active: data.is_active ?? true,
+        };
+        return JSON.stringify(prev) === JSON.stringify(nextForm) ? prev : nextForm;
       });
     } catch (err) {
       setFeedback({ type: 'error', message: err.message || 'Failed to load project node details' });
@@ -203,7 +204,7 @@ export default function ProjectDetailPage() {
               <span className={`inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full border ${
                 activeProject.is_active ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20' : 'bg-zinc-200 text-zinc-600 border-zinc-300 dark:bg-zinc-800 dark:text-zinc-400 dark:border-zinc-700'
               }`}>
-                <span className={`h-2 w-2 rounded-full ${activeProject.is_active ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-400'}`} />
+                <span className={`h-2 w-2 rounded-full ${activeProject.is_active ? 'bg-emerald-500' : 'bg-zinc-400'}`} />
                 {activeProject.is_active ? 'Active' : 'Paused'}
               </span>
             </div>
