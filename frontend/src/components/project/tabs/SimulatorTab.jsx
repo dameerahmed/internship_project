@@ -68,6 +68,68 @@ export default function SimulatorTab({ project }) {
 
 
 
+  const cleanCredential = (val) => {
+    if (!val || typeof val !== 'string') return '';
+    return val
+      .trim()
+      .replace(/^["']|["']$/g, '')
+      .replace(/[\r\n\t]/g, '')
+      .replace(/\s+/g, '');
+  };
+
+  // 🔄 Auto-load or fetch credentials on mount / project change
+  useEffect(() => {
+    if (!project?.id) return;
+    const storedKey = localStorage.getItem(`eds_project_${project.id}_api_key`);
+    const storedSecret = localStorage.getItem(`eds_project_${project.id}_secret_key`);
+    
+    if (storedKey) setApiKey(cleanCredential(storedKey));
+    if (storedSecret) setSecretKey(cleanCredential(storedSecret));
+
+    // Auto-fetch if not stored yet
+    if (!storedKey || !storedSecret) {
+      handleFetchProjectKeys();
+    }
+  }, [project?.id]);
+
+  const handleFetchProjectKeys = async () => {
+    if (!project?.id) return;
+    setFetchingKeys(true);
+    try {
+      const { data } = await apiClient.get(`/v1/projects/refresh_keys/${project.id}`);
+      if (data?.api_key) {
+        const cleanK = cleanCredential(data.api_key);
+        setApiKey(cleanK);
+        localStorage.setItem(`eds_project_${project.id}_api_key`, cleanK);
+      }
+      if (data?.secret_key) {
+        const cleanS = cleanCredential(data.secret_key);
+        setSecretKey(cleanS);
+        localStorage.setItem(`eds_project_${project.id}_secret_key`, cleanS);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch live project credentials:', err);
+    } finally {
+      setFetchingKeys(false);
+    }
+  };
+
+  const handleApiKeyChange = (val) => {
+    const cleaned = cleanCredential(val);
+    setApiKey(cleaned);
+    if (project?.id && cleaned) {
+      localStorage.setItem(`eds_project_${project.id}_api_key`, cleaned);
+    }
+  };
+
+  const handleSecretKeyChange = (val) => {
+    const cleaned = cleanCredential(val);
+    setSecretKey(cleaned);
+    if (project?.id && cleaned) {
+      localStorage.setItem(`eds_project_${project.id}_secret_key`, cleaned);
+    }
+  };
+
   // Set default selected event if configs available
   useEffect(() => {
     if (eventConfigs.length > 0) {
@@ -115,9 +177,10 @@ export default function SimulatorTab({ project }) {
     : [''];
 
   const copyToClipboard = async (text, type) => {
-    if (!text) return;
+    const cleanT = cleanCredential(text);
+    if (!cleanT) return;
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(cleanT);
       if (type === 'key') {
         setCopiedKey(true);
         setTimeout(() => setCopiedKey(false), 2000);
@@ -131,9 +194,18 @@ export default function SimulatorTab({ project }) {
   };
 
   const handleDispatch = async () => {
-    if (!apiKey || !secretKey) {
+    const cleanKey = cleanCredential(apiKey);
+    const cleanSec = cleanCredential(secretKey);
+
+    if (!cleanKey || !cleanSec) {
       alert('API Key and Secret Key are required for gateway authentication test.');
       return;
+    }
+
+    // Save cleaned credentials to localStorage for this project node
+    if (project?.id) {
+      localStorage.setItem(`eds_project_${project.id}_api_key`, cleanKey);
+      localStorage.setItem(`eds_project_${project.id}_secret_key`, cleanSec);
     }
 
     let parsedPayload = {};
@@ -149,8 +221,8 @@ export default function SimulatorTab({ project }) {
 
     try {
       const { data } = await apiClient.post('/v1/gateway/test', {
-        api_key: apiKey,
-        secret_key: secretKey,
+        api_key: cleanKey,
+        secret_key: cleanSec,
         event_type: eventType,
         payload: parsedPayload,
       });
@@ -176,12 +248,12 @@ export default function SimulatorTab({ project }) {
       let secretVal = '';
 
       if (text.includes('API_KEY:') || text.includes('SECRET_KEY:')) {
-        const keyMatch = text.match(/API_KEY:\s*([^\s\n]+)/i);
-        const secretMatch = text.match(/SECRET_KEY:\s*([^\s\n]+)/i);
-        if (keyMatch) keyVal = keyMatch[1];
-        if (secretMatch) secretVal = secretMatch[1];
+        const keyMatch = text.match(/API_KEY:\s*([^\s\n,;]+)/i);
+        const secretMatch = text.match(/SECRET_KEY:\s*([^\s\n,;]+)/i);
+        if (keyMatch) keyVal = cleanCredential(keyMatch[1]);
+        if (secretMatch) secretVal = cleanCredential(secretMatch[1]);
       } else {
-        const parts = text.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+        const parts = text.split(/[\n,;]+/).map(s => cleanCredential(s)).filter(Boolean);
         if (parts.length >= 2) {
           keyVal = parts[0];
           secretVal = parts[1];
@@ -190,8 +262,14 @@ export default function SimulatorTab({ project }) {
         }
       }
 
-      if (keyVal) setApiKey(keyVal);
-      if (secretVal) setSecretKey(secretVal);
+      if (keyVal) {
+        setApiKey(keyVal);
+        if (project?.id) localStorage.setItem(`eds_project_${project.id}_api_key`, keyVal);
+      }
+      if (secretVal) {
+        setSecretKey(secretVal);
+        if (project?.id) localStorage.setItem(`eds_project_${project.id}_secret_key`, secretVal);
+      }
     } catch (err) {
       alert('Could not read clipboard automatically. Please paste credentials manually.');
     }
@@ -208,19 +286,32 @@ export default function SimulatorTab({ project }) {
               Webhook Gateway Simulator & HMAC Inspector
             </h3>
             <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
-              Paste credentials from Settings or click 'Paste Both Credentials' to auto-populate keys.
+              Paste credentials or click 'Auto-Fetch Project Keys' to load live credentials.
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={handlePasteBothCredentials}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-teal-500/30 bg-teal-500/10 hover:bg-teal-500/20 px-3 py-1.5 text-xs font-bold text-teal-600 dark:text-teal-400 transition active:scale-95 shrink-0"
-            title="Paste Both API Key & Secret Key from Clipboard"
-          >
-            <ClipboardPaste className="h-3.5 w-3.5 text-teal-500" />
-            <span>Paste Both Credentials</span>
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handleFetchProjectKeys}
+              disabled={fetchingKeys}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/20 px-2.5 py-1.5 text-xs font-bold text-indigo-600 dark:text-indigo-400 transition active:scale-95 disabled:opacity-50"
+              title="Auto-fetch current project credentials from server"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${fetchingKeys ? 'animate-spin' : ''}`} />
+              <span>{fetchingKeys ? 'Fetching...' : 'Fetch Project Keys'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handlePasteBothCredentials}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-teal-500/30 bg-teal-500/10 hover:bg-teal-500/20 px-2 py-1.5 text-xs font-bold text-teal-600 dark:text-teal-400 transition active:scale-95"
+              title="Paste Both API Key & Secret Key from Clipboard"
+            >
+              <ClipboardPaste className="h-3.5 w-3.5 text-teal-500" />
+              <span>Paste Both</span>
+            </button>
+          </div>
         </div>
 
         <div className="space-y-4 text-xs">
@@ -248,7 +339,7 @@ export default function SimulatorTab({ project }) {
                 type="text"
                 className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 font-mono text-emerald-600 dark:border-zinc-800 dark:bg-zinc-950 dark:text-emerald-400 outline-none focus:border-emerald-500"
                 value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
+                onChange={(e) => handleApiKeyChange(e.target.value)}
                 placeholder="Paste API Key copied from Settings..."
               />
             </div>
@@ -283,7 +374,7 @@ export default function SimulatorTab({ project }) {
                 type={showSecret ? 'text' : 'password'}
                 className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 font-mono text-cyan-600 dark:border-zinc-800 dark:bg-zinc-950 dark:text-cyan-400 outline-none focus:border-emerald-500"
                 value={secretKey}
-                onChange={(e) => setSecretKey(e.target.value)}
+                onChange={(e) => handleSecretKeyChange(e.target.value)}
                 placeholder="Paste HMAC Secret Key copied from Settings..."
               />
             </div>

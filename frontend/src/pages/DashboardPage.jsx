@@ -134,7 +134,7 @@ export default function DashboardPage() {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (socket) socket.close();
     };
-  }, [user]);
+  }, [user?.access_token]);
 
   const m = companyMetrics || {
     total_webhooks_24h: 0,

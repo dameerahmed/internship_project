@@ -82,8 +82,6 @@ export default function ProjectDetailPage() {
   useEffect(() => {
     if (!activeProject || activeProject.id !== Number(projectId)) {
       loadProject(false);
-    } else {
-      loadProject(true);
     }
   }, [projectId]);
 

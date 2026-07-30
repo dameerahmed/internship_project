@@ -73,12 +73,20 @@ export default function SettingsTab({ project, form, setForm, onSave, onToggleAc
     setFeedback({ type: '', message: '' });
     try {
       const { data } = await apiClient.get(`/v1/projects/refresh_keys/${project.id}`);
-      if (data?.api_key) setApiKey(data.api_key);
-      if (data?.secret_key) setSecretKey(data.secret_key);
+      if (data?.api_key) {
+        const cleanK = data.api_key.trim().replace(/^["']|["']$/g, '');
+        setApiKey(cleanK);
+        localStorage.setItem(`eds_project_${project.id}_api_key`, cleanK);
+      }
+      if (data?.secret_key) {
+        const cleanS = data.secret_key.trim().replace(/^["']|["']$/g, '');
+        setSecretKey(cleanS);
+        localStorage.setItem(`eds_project_${project.id}_secret_key`, cleanS);
+      }
       
       setShowCredentials(true);
       setTimerSeconds(60); // Revealed for strictly 1 minute!
-      setFeedback({ type: 'success', message: '✓ Credentials fetched! Visible on frontend for 1 minute.' });
+      setFeedback({ type: 'success', message: '✓ Credentials fetched & saved! Auto-synced to Webhook Simulator.' });
     } catch (err) {
       setFeedback({ type: 'error', message: err.message || 'Failed to fetch credentials.' });
     } finally {
@@ -88,7 +96,7 @@ export default function SettingsTab({ project, form, setForm, onSave, onToggleAc
 
   const copyBothCredentials = async () => {
     if (!apiKey && !secretKey) return;
-    const text = `API Key: ${apiKey}\nSecret Key: ${secretKey}`;
+    const text = `API_KEY: ${apiKey}\nSECRET_KEY: ${secretKey}`;
     try {
       await navigator.clipboard.writeText(text);
       setCopiedKey(true);
@@ -111,12 +119,20 @@ export default function SettingsTab({ project, form, setForm, onSave, onToggleAc
     setFeedback({ type: '', message: '' });
     try {
       const { data } = await apiClient.get(`/v1/projects/refresh_keys/${project.id}?regenerate=true`);
-      if (data?.api_key) setApiKey(data.api_key);
-      if (data?.secret_key) setSecretKey(data.secret_key);
+      if (data?.api_key) {
+        const cleanK = data.api_key.trim().replace(/^["']|["']$/g, '');
+        setApiKey(cleanK);
+        localStorage.setItem(`eds_project_${project.id}_api_key`, cleanK);
+      }
+      if (data?.secret_key) {
+        const cleanS = data.secret_key.trim().replace(/^["']|["']$/g, '');
+        setSecretKey(cleanS);
+        localStorage.setItem(`eds_project_${project.id}_secret_key`, cleanS);
+      }
       
       setShowCredentials(true);
       setTimerSeconds(60); // Revealed for strictly 1 minute!
-      setFeedback({ type: 'success', message: '✓ Project Credentials regenerated! Visible for 1 minute.' });
+      setFeedback({ type: 'success', message: '✓ Project Credentials regenerated & saved! Auto-synced to Webhook Simulator.' });
     } catch (err) {
       setFeedback({ type: 'error', message: err.message || 'Failed to regenerate credentials.' });
     } finally {

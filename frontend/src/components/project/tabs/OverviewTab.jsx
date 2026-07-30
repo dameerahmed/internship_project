@@ -128,7 +128,7 @@ export default function OverviewTab({ project, onNavigateTab }) {
       if (metricsSocket) metricsSocket.close();
       if (logsSocket) logsSocket.close();
     };
-  }, [project?.id, user]);
+  }, [project?.id, user?.access_token]);
 
   const m = metrics || {
     total_webhooks_24h: 0,
@@ -199,150 +199,117 @@ export default function OverviewTab({ project, onNavigateTab }) {
   }
 
   return (
-    <div className="flex flex-col gap-8 font-sans w-full max-w-7xl mx-auto text-zinc-900 dark:text-zinc-100 pb-12 select-none">
+    <div className="flex flex-col gap-6 font-sans select-none w-full max-w-7xl mx-auto pb-12">
       
-      {/* 👑 1. Top Section Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-200 dark:border-zinc-800/80 pb-5">
+      {/* 🚀 1. Section Header */}
+      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-200 dark:border-zinc-800 pb-4">
         <div>
-          <h1 className="text-xl font-extrabold text-zinc-900 dark:text-white tracking-tight flex items-center gap-2.5">
+          <h1 className="text-xl font-extrabold text-zinc-900 dark:text-white flex items-center gap-2">
             <Activity className="h-5 w-5 text-indigo-500" />
             <span>Webhooks Telemetry & Real-Time Analytics</span>
           </h1>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
             Live delivery stream & performance insights for project <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">{project?.name}</span>
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shadow-sm">
+        <div className="flex items-center gap-2 mt-2 sm:mt-0">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400">
             <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span>Live WebSocket Active</span>
+            Live WebSocket Active
           </span>
-
           <button
             type="button"
-            onClick={() => loadData(true)}
-            className="p-2 rounded-xl border border-zinc-200 bg-white hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300 transition"
-            title="Refresh Metrics"
+            onClick={() => loadData(false)}
+            className="p-2 rounded-xl border border-zinc-200 bg-white hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:bg-zinc-800 text-zinc-500 dark:text-zinc-400 transition"
+            title="Refresh Telemetry Data"
           >
-            <RefreshCw className="h-4 w-4" />
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin text-indigo-500' : ''}`} />
           </button>
         </div>
       </div>
 
-      {/* 📊 2. High-Impact Glassmorphic KPI Cards Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        
-        {/* Metric 1: Total Webhooks */}
-        <div className="rounded-2xl border border-zinc-200 bg-white/80 p-4 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md flex flex-col justify-between transition hover:border-indigo-500/40">
+      {/* 📈 2. Real-Time Telemetry Summary Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+        <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-[#0d1017] transition-all hover:border-indigo-500/40">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
-              Total Webhooks (24h)
-            </span>
+            <span className="text-[10px] font-mono font-extrabold uppercase tracking-widest text-zinc-400">TOTAL WEBHOOKS (24H)</span>
             <Zap className="h-4 w-4 text-indigo-500" />
           </div>
-          <div className="mt-3 flex items-baseline justify-between">
-            <span className="text-2xl font-black text-zinc-900 dark:text-white font-mono tracking-tight">
-              {totalSent.toLocaleString()}
-            </span>
-            <svg className="w-10 h-5 text-indigo-500 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2.5">
-              <path strokeLinecap="round" strokeLinejoin="round" d={getSparklinePath('total')} />
-            </svg>
+          <div className="mt-3 text-2xl font-black font-mono text-zinc-900 dark:text-white">
+            {metrics?.total_webhooks_24h ?? 0}
           </div>
         </div>
 
-        {/* Metric 2: Successful */}
-        <div className="rounded-2xl border border-zinc-200 bg-white/80 p-4 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md flex flex-col justify-between transition hover:border-emerald-500/40">
+        <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-[#0d1017] transition-all hover:border-emerald-500/40">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
-              Successful (200 OK)
-            </span>
+            <span className="text-[10px] font-mono font-extrabold uppercase tracking-widest text-zinc-400">SUCCESSFUL (200 OK)</span>
             <CheckCircle2 className="h-4 w-4 text-emerald-500" />
           </div>
-          <div className="mt-3 flex items-baseline justify-between">
-            <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400 font-mono tracking-tight">
-              {isColdStart ? '0' : successfulCount.toLocaleString()}
-            </span>
-            <svg className="w-10 h-5 text-emerald-500 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2.5">
-              <path strokeLinecap="round" strokeLinejoin="round" d={getSparklinePath('success')} />
-            </svg>
+          <div className="mt-3 text-2xl font-black font-mono text-emerald-600 dark:text-emerald-400">
+            {metrics?.total_webhooks_24h !== undefined && metrics?.success_rate_pct !== null && metrics?.success_rate_pct !== undefined
+              ? Math.round((metrics.total_webhooks_24h * metrics.success_rate_pct) / 100)
+              : (metrics?.total_webhooks_24h || 0)}
           </div>
         </div>
 
-        {/* Metric 3: Failed */}
-        <div className="rounded-2xl border border-zinc-200 bg-white/80 p-4 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md flex flex-col justify-between transition hover:border-rose-500/40">
+        <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-[#0d1017] transition-all hover:border-rose-500/40">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
-              Failed (4xx/5xx)
-            </span>
+            <span className="text-[10px] font-mono font-extrabold uppercase tracking-widest text-zinc-400">FAILED (4XX/5XX)</span>
             <AlertTriangle className="h-4 w-4 text-rose-500" />
           </div>
-          <div className="mt-3 flex items-baseline justify-between">
-            <span className="text-2xl font-black text-rose-600 dark:text-rose-400 font-mono tracking-tight">
-              {failedCount}
-            </span>
-            <svg className="w-10 h-5 text-rose-500 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2.5">
-              <path strokeLinecap="round" strokeLinejoin="round" d={getSparklinePath('failed')} />
-            </svg>
+          <div className="mt-3 text-2xl font-black font-mono text-rose-600 dark:text-rose-400">
+            {metrics?.total_webhooks_24h !== undefined && metrics?.failure_rate_pct !== undefined
+              ? Math.round((metrics.total_webhooks_24h * metrics.failure_rate_pct) / 100)
+              : 0}
           </div>
         </div>
 
-        {/* Metric 4: Pending / DLQ */}
-        <div className="rounded-2xl border border-zinc-200 bg-white/80 p-4 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md flex flex-col justify-between transition hover:border-amber-500/40">
+        <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-[#0d1017] transition-all hover:border-amber-500/40">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
-              Pending / DLQ Queue
-            </span>
+            <span className="text-[10px] font-mono font-extrabold uppercase tracking-widest text-zinc-400">PENDING / DLQ QUEUE</span>
             <Inbox className="h-4 w-4 text-amber-500" />
           </div>
-          <div className="mt-3 flex items-baseline justify-between">
-            <span className="text-2xl font-black text-amber-600 dark:text-amber-400 font-mono tracking-tight">
-              {pendingCount}
+          <div className="mt-3 flex items-center justify-between">
+            <span className="text-2xl font-black font-mono text-amber-600 dark:text-amber-400">
+              {metrics?.dlq_count ?? 0}
             </span>
-            <span className="text-[10px] font-bold font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-600 border border-amber-500/20">
-              {pendingCount > 0 ? 'Action Needed' : 'Clean'}
+            <span className="text-[10px] font-mono font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 px-2 py-0.5 rounded border border-amber-500/20">
+              {metrics?.dlq_count > 0 ? 'Action Needed' : 'Clean'}
             </span>
           </div>
         </div>
 
-        {/* Metric 5: Retry Rate */}
-        <div className="rounded-2xl border border-zinc-200 bg-white/80 p-4 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md flex flex-col justify-between transition hover:border-cyan-500/40">
+        <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-[#0d1017] transition-all hover:border-cyan-500/40">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
-              Failure / Retry Rate
-            </span>
+            <span className="text-[10px] font-mono font-extrabold uppercase tracking-widest text-zinc-400">FAILURE / RETRY RATE</span>
             <RotateCcw className="h-4 w-4 text-cyan-500" />
           </div>
-          <div className="mt-3 flex items-baseline justify-between">
-            <span className="text-2xl font-black text-zinc-900 dark:text-white font-mono tracking-tight">
-              {retryRate}
+          <div className="mt-3 flex items-center justify-between">
+            <span className="text-2xl font-black font-mono text-zinc-900 dark:text-white">
+              {metrics?.failure_rate_pct !== undefined ? `${metrics.failure_rate_pct.toFixed(1)}%` : '0.0%'}
             </span>
-            <span className={`text-[10px] font-bold font-mono px-2 py-0.5 rounded ${
-              parseFloat(retryRate) > 10 
-                ? 'bg-rose-500/10 text-rose-500 border border-rose-500/20' 
-                : 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
+            <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
+              (metrics?.failure_rate_pct || 0) > 10 
+                ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20' 
+                : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
             }`}>
-              {parseFloat(retryRate) > 10 ? 'High' : 'Normal'}
+              {(metrics?.failure_rate_pct || 0) > 10 ? 'High' : 'Normal'}
             </span>
           </div>
         </div>
-
       </div>
 
       {/* 📊 3. Analytics Main Section (Hourly Activity & Live Queue) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         
-        {/* Left Column (7 Cols): Hourly Activity Stacked Bar Chart */}
-        <div className="lg:col-span-7 flex flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md">
-          <div className="flex items-center justify-between border-b border-zinc-100 dark:border-zinc-800 pb-3">
+        <div className="lg:col-span-7 flex flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-[#0d1017]">
+          <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 pb-3">
             <div>
               <h2 className="text-sm font-bold text-zinc-900 dark:text-white flex items-center gap-2">
                 <Clock className="h-4 w-4 text-indigo-500" />
                 <span>24-Hour Ingress & Delivery Activity</span>
               </h2>
-              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
-                Hourly breakdown of successful vs failed webhook deliveries
-              </p>
             </div>
             <div className="flex items-center gap-3 text-xs font-semibold">
               <span className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
@@ -354,14 +321,11 @@ export default function OverviewTab({ project, onNavigateTab }) {
             </div>
           </div>
 
-          {/* Interactive Chart Container */}
-          <div className="relative h-64 w-full pt-8 pb-6 flex items-end justify-between gap-1.5 px-2">
-            
-            {/* Interactive Tooltip Card */}
+          <div className="relative h-64 w-full pt-8 pb-6 flex items-end justify-between gap-1 px-1">
             {hoveredBar !== null && series[hoveredBar] && (
               <div 
                 className="absolute top-0 z-30 transform -translate-x-1/2 rounded-xl border border-zinc-200 bg-white/95 dark:border-zinc-800 dark:bg-zinc-950/95 p-3 shadow-xl backdrop-blur text-xs space-y-1.5 min-w-[140px] pointer-events-none transition-all duration-150"
-                style={{ left: `${((hoveredBar + 0.5) / series.length) * 100}%` }}
+                style={{ left: `${((hoveredBar + 0.5) / 24) * 100}%` }}
               >
                 <div className="flex items-center justify-between text-emerald-600 dark:text-emerald-400 font-bold">
                   <span className="flex items-center gap-1.5">
@@ -370,7 +334,6 @@ export default function OverviewTab({ project, onNavigateTab }) {
                   </span>
                   <span className="font-mono">{series[hoveredBar].success || 0}</span>
                 </div>
-
                 <div className="flex items-center justify-between text-rose-600 dark:text-rose-400 font-bold">
                   <span className="flex items-center gap-1.5">
                     <span className="h-2 w-2 rounded-full bg-rose-500" />
@@ -378,18 +341,15 @@ export default function OverviewTab({ project, onNavigateTab }) {
                   </span>
                   <span className="font-mono">{series[hoveredBar].failed || 0}</span>
                 </div>
-
                 <div className="text-[10px] text-zinc-400 border-t border-zinc-100 dark:border-zinc-800 pt-1 mt-1 text-center font-mono">
-                  Bucket: {series[hoveredBar].label || `Bucket ${hoveredBar}`}
+                  Time: {series[hoveredBar].label || `${String(hoveredBar).padStart(2, '0')}:00`}
                 </div>
               </div>
             )}
 
-            {/* Stacked Bars */}
             {series.map((bar, idx) => {
               const total = bar.total || (bar.success + bar.failed) || 0;
-              const heightPct = total > 0 ? Math.max(12, Math.min(100, (total / maxBarTotal) * 100)) : 6;
-
+              const heightPct = total > 0 ? Math.max(15, Math.min(100, (total / maxBarTotal) * 100)) : 8;
               const successRatio = total > 0 ? (bar.success / total) * 100 : 100;
               const failedRatio = total > 0 ? (bar.failed / total) * 100 : 0;
 
@@ -398,32 +358,37 @@ export default function OverviewTab({ project, onNavigateTab }) {
                   key={idx}
                   onMouseEnter={() => setHoveredBar(idx)}
                   onMouseLeave={() => setHoveredBar(null)}
-                  className="flex-1 flex flex-col justify-end h-full cursor-pointer group px-0.5"
+                  className="flex-1 flex flex-col items-center justify-end h-full cursor-pointer group"
                 >
                   <div 
-                    className="w-full flex flex-col justify-end rounded-t-lg overflow-hidden transition-all group-hover:brightness-125"
+                    className="w-full max-w-[12px] sm:max-w-[14px] flex flex-col justify-end rounded-t-md overflow-hidden transition-all group-hover:brightness-125 group-hover:scale-y-105"
                     style={{ height: `${heightPct}%` }}
                   >
-                    {/* Failed segment (top) */}
-                    {bar.failed > 0 && (
-                      <div 
-                        className="w-full bg-rose-500 transition" 
-                        style={{ height: `${failedRatio}%` }} 
-                      />
+                    {total === 0 ? (
+                      <div className="w-full h-full bg-zinc-200/60 dark:bg-zinc-800/40 rounded-t-md" />
+                    ) : (
+                      <>
+                        {bar.failed > 0 && (
+                          <div 
+                            className="w-full bg-rose-500 transition-all" 
+                            style={{ height: `${failedRatio}%` }} 
+                          />
+                        )}
+                        {bar.success > 0 && (
+                          <div 
+                            className="w-full bg-emerald-500 transition-all" 
+                            style={{ height: `${bar.failed > 0 ? successRatio : 100}%` }} 
+                          />
+                        )}
+                      </>
                     )}
-                    {/* Successful segment (bottom) */}
-                    <div 
-                      className="w-full bg-emerald-500/80 group-hover:bg-emerald-500 transition" 
-                      style={{ height: `${successRatio}%` }} 
-                    />
                   </div>
                 </div>
               );
             })}
-
           </div>
 
-          <div className="flex items-center justify-between text-[10px] text-zinc-400 font-mono px-2 border-t border-zinc-100 dark:border-zinc-800/80 pt-2">
+          <div className="flex items-center justify-between text-[10px] text-zinc-400 font-mono px-2 border-t border-zinc-200 dark:border-zinc-800 pt-2">
             <span>00:00</span>
             <span>06:00</span>
             <span>12:00</span>
@@ -432,7 +397,6 @@ export default function OverviewTab({ project, onNavigateTab }) {
           </div>
         </div>
 
-        {/* Right Column (5 Cols): Recent Live Queue Table */}
         <div className="lg:col-span-5 flex flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md">
           <div className="flex items-center justify-between border-b border-zinc-100 dark:border-zinc-800 pb-3">
             <div>

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   Sliders, 
   Plus, 
@@ -504,10 +505,10 @@ export default function EventConfigTab({ project, onRefresh }) {
       </div>
 
       {/* 🛠️ DEDICATED EVENT CONFIGURATION & SCHEMA PAGE / MODAL */}
-      {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-3 sm:p-4">
-          <div className="w-full max-w-4xl max-h-[92vh] overflow-y-auto rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl dark:border-zinc-800 dark:bg-[#0d1017] custom-scrollbar">
-            <div className="sticky top-0 z-10 -mx-6 -mt-6 mb-5 flex items-center justify-between border-b border-zinc-100 bg-white/95 px-6 py-4 backdrop-blur dark:border-zinc-800 dark:bg-[#0a0c12]">
+      {showModal && createPortal(
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+          <div className="relative w-full max-w-3xl max-h-[90vh] my-auto overflow-y-auto rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl dark:border-zinc-800 dark:bg-[#0d1017] custom-scrollbar">
+            <div className="sticky top-0 z-10 -mx-6 -mt-6 mb-5 flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 bg-white/95 dark:bg-[#0a0c12] px-6 py-4 backdrop-blur">
               <div>
                 <h3 className="text-base font-extrabold text-zinc-900 dark:text-white flex items-center gap-2">
                   <Sliders className="h-5 w-5 text-indigo-500" />
@@ -654,8 +655,8 @@ export default function EventConfigTab({ project, onRefresh }) {
                 </span>
               </div>
 
-              {/* Action Buttons: Cancel & Save/Update */}
-              <div className="pt-4 border-t border-zinc-100 dark:border-zinc-800 flex items-center justify-end gap-3">
+              {/* Action Buttons Footer */}
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-zinc-200 dark:border-zinc-800">
                 <button
                   type="button"
                   onClick={() => setShowModal(false)}
@@ -674,7 +675,8 @@ export default function EventConfigTab({ project, onRefresh }) {
               </div>
             </form>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
