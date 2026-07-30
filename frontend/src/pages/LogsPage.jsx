@@ -54,11 +54,15 @@ export default function LogsPage({ projectId, embedded = false }) {
 
   const normalizeLog = (log) => {
     const metadata = log?.metadata || {};
-    const responseCode = log?.response_code ?? log?.status_code ?? metadata?.response_code ?? metadata?.status_code ?? 200;
+    const isFailedStatus = log?.status === 'FAILED' || log?.status === 'REJECTED' || metadata?.status === 'FAILED' || metadata?.status === 'REJECTED';
+    const fallbackCode = isFailedStatus ? 400 : 200;
+    const responseCode = log?.response_code ?? log?.status_code ?? metadata?.response_code ?? metadata?.status_code ?? fallbackCode;
+    
     const createdAt = log?.created_at || log?.timestamp || metadata?.created_at || '';
     const eventType = log?.event_type || metadata?.event_type || log?.delivery_packet?.event_type || '';
     const targetUrl = log?.target_url || log?.path || metadata?.target_url || log?.delivery_packet?.target_url || '';
     const httpMethod = log?.http_method || metadata?.http_method || log?.delivery_packet?.http_method || 'POST';
+    const errorMessage = log?.error_message || metadata?.error_message || metadata?.detail || log?.response_body || '';
 
     return {
       ...log,
@@ -69,6 +73,7 @@ export default function LogsPage({ projectId, embedded = false }) {
       target_url: targetUrl,
       path: targetUrl,
       http_method: httpMethod,
+      error_message: errorMessage,
       payload: log?.payload || metadata?.request_payload || log?.delivery_packet?.payload || {},
       metadata,
     };
@@ -663,6 +668,18 @@ export default function LogsPage({ projectId, embedded = false }) {
                     {currentSelection.referer || 'Not provided'}
                   </a>
                 </div>
+
+                {/* Explicit Failure / Error Detail Box if present */}
+                {(currentSelection.error_message || currentSelection.metadata?.error_message || currentSelection.metadata?.detail) && (
+                  <div className="p-3.5 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-400 space-y-1.5 font-sans">
+                    <div className="font-extrabold text-[11px] uppercase tracking-wider flex items-center gap-1.5 text-rose-600 dark:text-rose-400">
+                      <span>⚠️ FAILURE REASON / EXCEPTION DETAIL</span>
+                    </div>
+                    <p className="font-mono text-xs leading-relaxed whitespace-pre-wrap">
+                      {currentSelection.error_message || currentSelection.metadata?.error_message || currentSelection.metadata?.detail}
+                    </p>
+                  </div>
+                )}
 
                 {/* Request Metadata JSON code block matching user screenshot */}
                 <div className="space-y-2 pt-2 border-t border-zinc-100 dark:border-zinc-800">
