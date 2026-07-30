@@ -42,15 +42,28 @@ export default function DashboardPage() {
       // 2. Fetch recent webhook logs
       const { data: logsData } = await apiClient.get('/v1/webhooks/logs?limit=8');
       const list = Array.isArray(logsData) ? logsData : (logsData?.logs || []);
-      setRecentLogs(list.map((log) => ({
-        ...log,
-        created_at: log.created_at || log.timestamp || '',
-        response_code: log.response_code ?? log.status_code ?? 200,
-        status_code: log.response_code ?? log.status_code ?? 200,
-        event_type: log.event_type || log.metadata?.event_type || log.delivery_packet?.event_type || 'webhook.event',
-        target_url: log.target_url || log.path || log.metadata?.target_url || log.delivery_packet?.target_url || '',
-        http_method: log.http_method || log.metadata?.http_method || log.delivery_packet?.http_method || 'POST',
-      })));
+      setRecentLogs(list.map((log) => {
+        const metadata = log?.metadata || {};
+        const status = (log?.status || metadata?.status || '').toUpperCase();
+        const level = (log?.level || '').toUpperCase();
+        const isFailed = status === 'FAILED' || status === 'REJECTED' || level === 'ERROR';
+        let code = log.response_code ?? log.status_code ?? metadata.response_code ?? metadata.status_code;
+        if (isFailed) {
+          if (!code || Number(code) === 200) code = 500;
+        } else if (!code) {
+          code = 200;
+        }
+        return {
+          ...log,
+          status: status || (isFailed ? 'FAILED' : 'SUCCESS'),
+          created_at: log.created_at || log.timestamp || '',
+          response_code: Number(code),
+          status_code: Number(code),
+          event_type: log.event_type || metadata.event_type || log.delivery_packet?.event_type || 'webhook.event',
+          target_url: log.target_url || log.path || metadata.target_url || log.delivery_packet?.target_url || '',
+          http_method: log.http_method || metadata.http_method || log.delivery_packet?.http_method || 'POST',
+        };
+      }));
 
       // 3. Compute top event frequencies
       const counts = {};

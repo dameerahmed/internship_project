@@ -54,21 +54,32 @@ export default function LogsPage({ projectId, embedded = false }) {
 
   const normalizeLog = (log) => {
     const metadata = log?.metadata || {};
-    const isFailedStatus = log?.status === 'FAILED' || log?.status === 'REJECTED' || metadata?.status === 'FAILED' || metadata?.status === 'REJECTED';
-    const fallbackCode = isFailedStatus ? 400 : 200;
-    const responseCode = log?.response_code ?? log?.status_code ?? metadata?.response_code ?? metadata?.status_code ?? fallbackCode;
-    
+    const status = (log?.status || metadata?.status || '').toUpperCase();
+    const level = (log?.level || '').toUpperCase();
+    const isFailedStatus = status === 'FAILED' || status === 'REJECTED' || level === 'ERROR';
+
+    let responseCode = log?.response_code ?? log?.status_code ?? metadata?.response_code ?? metadata?.status_code;
+
+    if (isFailedStatus) {
+      if (!responseCode || Number(responseCode) === 200) {
+        responseCode = 500;
+      }
+    } else if (!responseCode) {
+      responseCode = 200;
+    }
+
     const createdAt = log?.created_at || log?.timestamp || metadata?.created_at || '';
-    const eventType = log?.event_type || metadata?.event_type || log?.delivery_packet?.event_type || '';
+    const eventType = log?.event_type || metadata?.event_type || log?.delivery_packet?.event_type || 'webhook.event';
     const targetUrl = log?.target_url || log?.path || metadata?.target_url || log?.delivery_packet?.target_url || '';
     const httpMethod = log?.http_method || metadata?.http_method || log?.delivery_packet?.http_method || 'POST';
     const errorMessage = log?.error_message || metadata?.error_message || metadata?.detail || log?.response_body || '';
 
     return {
       ...log,
+      status: status || (isFailedStatus ? 'FAILED' : 'SUCCESS'),
       created_at: createdAt,
-      response_code: responseCode,
-      status_code: responseCode,
+      response_code: Number(responseCode),
+      status_code: Number(responseCode),
       event_type: eventType,
       target_url: targetUrl,
       path: targetUrl,
@@ -206,7 +217,7 @@ export default function LogsPage({ projectId, embedded = false }) {
   }, [logs, searchQuery, statusFilter, productFilter, methodFilter, timeFilter, customStartDate, customEndDate]);
 
   const chartData = useMemo(() => {
-    const buckets = Array.from({ length: 24 }, (_, i) => ({ id: i, count: 0 }));
+    const buckets = Array.from({ length: 24 }, (_, i) => ({ id: i, count: 0, success: 0, failed: 0 }));
     const now = Date.now();
 
     filteredLogs.forEach((log) => {
@@ -214,6 +225,14 @@ export default function LogsPage({ projectId, embedded = false }) {
       const ageHours = Math.max(0, Math.min(23, (now - ts) / (1000 * 60 * 60)));
       const bucketIndex = Math.floor(ageHours);
       buckets[bucketIndex].count += 1;
+
+      const code = Number(log.response_code || log.status_code || 200);
+      const isFailed = log.status === 'FAILED' || code >= 400 || log.level === 'ERROR';
+      if (isFailed) {
+        buckets[bucketIndex].failed += 1;
+      } else {
+        buckets[bucketIndex].success += 1;
+      }
     });
 
     return buckets;
@@ -434,24 +453,61 @@ export default function LogsPage({ projectId, embedded = false }) {
       {/* 📈 2. Supabase Mini Timeline Histogram Bar Chart */}
       {showChart && (
         <div className="flex flex-col gap-1 border-b border-zinc-200 dark:border-zinc-800 pb-4 mb-4">
-          <div className="text-[10px] font-mono text-zinc-400">Logs / Time</div>
-          <div className="h-10 w-full flex items-end justify-between gap-1 pt-2">
+          <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400">
+            <span>Logs / Time (24h Activity Distribution)</span>
+            <div className="flex items-center gap-3">
+              <span className="flex items-center gap-1 text-emerald-500 font-semibold">
+                <span className="h-2 w-2 rounded-full bg-emerald-500" /> Success ({filteredLogs.filter(l => l.response_code < 400 && l.status !== 'FAILED').length})
+              </span>
+              <span className="flex items-center gap-1 text-rose-500 font-semibold">
+                <span className="h-2 w-2 rounded-full bg-rose-500" /> Failed ({filteredLogs.filter(l => l.response_code >= 400 || l.status === 'FAILED').length})
+              </span>
+            </div>
+          </div>
+          <div className="h-12 w-full flex items-end justify-between gap-1 pt-2">
             {chartData.map((bucket) => {
               const maxCount = Math.max(1, ...chartData.map((item) => item.count));
-              const hPct = bucket.count === 0 ? 8 : Math.max(12, Math.round((bucket.count / maxCount) * 100));
+              const hPct = bucket.count === 0 ? 8 : Math.max(14, Math.round((bucket.count / maxCount) * 100));
+              const failedRatio = bucket.count > 0 ? (bucket.failed / bucket.count) * 100 : 0;
+              const successRatio = bucket.count > 0 ? (bucket.success / bucket.count) * 100 : 100;
+
               return (
                 <div 
                   key={bucket.id} 
-                  className="flex-1 bg-emerald-500/70 hover:bg-emerald-500 rounded-t transition cursor-pointer" 
-                  style={{ height: `${hPct}%` }}
-                  title={`${bucket.count} log entries`}
-                />
+                  className="flex-1 flex flex-col justify-end h-full rounded-t overflow-hidden transition cursor-pointer group relative"
+                  title={`Hour - Total: ${bucket.count} (${bucket.success} success, ${bucket.failed} failed)`}
+                >
+                  <div 
+                    className="w-full flex flex-col justify-end rounded-t overflow-hidden group-hover:brightness-125 transition-all"
+                    style={{ height: `${hPct}%` }}
+                  >
+                    {bucket.count === 0 ? (
+                      <div className="w-full h-full bg-zinc-200/50 dark:bg-zinc-800/40 rounded-t" />
+                    ) : (
+                      <>
+                        {bucket.failed > 0 && (
+                          <div 
+                            className="w-full bg-rose-500 transition-all" 
+                            style={{ height: `${failedRatio}%` }} 
+                          />
+                        )}
+                        {bucket.success > 0 && (
+                          <div 
+                            className="w-full bg-emerald-500 transition-all" 
+                            style={{ height: `${bucket.failed > 0 ? successRatio : 100}%` }} 
+                          />
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
               );
             })}
           </div>
           <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400 pt-1">
-            <span>Recent Activity</span>
-            <span>Real-time Ingress Stream</span>
+            <span>24h ago</span>
+            <span>12h ago</span>
+            <span>Now</span>
           </div>
         </div>
       )}

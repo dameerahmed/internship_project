@@ -87,11 +87,12 @@ def _serialize_log_entry(log: WebhookLog) -> dict:
     )
     status_name = log.status.name if log.status else "UNKNOWN"
     level = "SUCCESS" if status_name == "SUCCESS" else "ERROR" if status_name == "FAILED" else "INFO"
+    effective_code = log.response_code if log.response_code is not None else (500 if status_name == "FAILED" else 200)
 
     metadata = {
         "event_type": event_type,
         "status": status_name,
-        "response_code": log.response_code,
+        "response_code": effective_code,
         "attempt": log.attempt_number,
         "http_method": log.http_method or "POST",
         "source_ip": log.source_ip or "127.0.0.1",
@@ -100,7 +101,7 @@ def _serialize_log_entry(log: WebhookLog) -> dict:
         "incoming_headers": incoming_headers,
         "request_payload": event_payload,
         "response_data": {
-            "status_code": log.response_code or 200,
+            "status_code": effective_code,
             "status": status_name,
             "error_message": log.error_message,
             "processing_duration_ms": log.processing_duration_ms,
@@ -121,8 +122,8 @@ def _serialize_log_entry(log: WebhookLog) -> dict:
         "message": (event_payload.get("message") if isinstance(event_payload, dict) else None) or (event_payload.get("event") if isinstance(event_payload, dict) else None) or f"Webhook event '{event_type}'",
         "source": "gateway",
         "status": status_name,
-        "status_code": log.response_code,
-        "response_code": log.response_code,
+        "status_code": effective_code,
+        "response_code": effective_code,
         "event_type": event_type,
         "http_method": log.http_method or "POST",
         "target_url": target_url,

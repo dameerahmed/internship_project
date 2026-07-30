@@ -427,8 +427,15 @@ export default function OverviewTab({ project, onNavigateTab }) {
               </div>
             ) : (
               recentLogs.map((log, i) => {
-                const status = log.status_code || log.response_code || 200;
-                const isSuccess = status >= 200 && status < 300;
+                const logStatus = (log.status || log.metadata?.status || '').toUpperCase();
+                const isFailed = logStatus === 'FAILED' || log.level === 'ERROR';
+                let status = log.response_code || log.status_code || log.metadata?.response_code;
+                if (isFailed && (!status || Number(status) === 200)) {
+                  status = 500;
+                } else if (!status) {
+                  status = 200;
+                }
+                const isSuccess = !isFailed && Number(status) >= 200 && Number(status) < 300;
                 const eventName = log.event_type || log.event?.event_type || 'webhook.received';
                 const targetUrl = log.target_url || log.delivery_packet?.target_url || '/v1/webhooks';
 
