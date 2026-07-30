@@ -13,6 +13,7 @@ from  app.routers import company
 from  app.routers import gateway
 from  app.routers import logs
 from  app.routers import metrics
+from  app.routers import target_webhook
 from  database import SessionLocal
 from  app.models.webhook_log import WebhookLog, WebhookStatus
 from  app.services.celery_worker import dispatch_webhook_task
@@ -76,8 +77,8 @@ app.include_router(project.router)
 app.include_router(gateway.router)
 app.include_router(company.router)
 app.include_router(metrics.router)
-
 app.include_router(logs.router)
+app.include_router(target_webhook.router)
 
 
 @app.get("/v1/health", status_code=status.HTTP_200_OK, tags=["Health Check"])
