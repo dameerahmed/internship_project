@@ -39,15 +39,33 @@ def dlq_channel(company_id: int) -> str:
 
 async def publish_log_event(project_id: int, log_entry: dict) -> None:
     """
-    Publish a serialized log entry to the project-scoped channel.
+    Publish a serialized log entry to the project-scoped channel and global webhook_telemetry channel.
     Called by the Celery worker after persisting a WebhookLog.
     """
     redis = None
     try:
         redis = await get_redis_client()
-        await redis.publish(logs_channel(project_id), json.dumps(log_entry))
+        payload_str = json.dumps(log_entry)
+        await redis.publish(logs_channel(project_id), payload_str)
+        await redis.publish("webhook_telemetry", payload_str)
     except Exception as exc:
         logger.warning("Failed to publish log event for project %s: %s", project_id, exc)
+    finally:
+        if redis:
+            await redis.aclose()
+
+
+async def publish_telemetry_event(payload: dict) -> None:
+    """
+    Publish a telemetry JSON payload directly to the 'webhook_telemetry' Redis Pub/Sub channel.
+    Called whenever a Celery worker completes a webhook delivery task (success or failure).
+    """
+    redis = None
+    try:
+        redis = await get_redis_client()
+        await redis.publish("webhook_telemetry", json.dumps(payload))
+    except Exception as exc:
+        logger.warning("Failed to publish webhook_telemetry event: %s", exc)
     finally:
         if redis:
             await redis.aclose()

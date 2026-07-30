@@ -6,10 +6,10 @@ from datetime import datetime, timezone, timedelta
 from urllib.parse import unquote
 from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect, Query, HTTPException
 from fastapi.encoders import jsonable_encoder
-from fastapi.sse import EventSourceResponse, ServerSentEvent
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import delete, func, case
+from sqlalchemy import delete, func, case, or_
 from sqlalchemy.orm import selectinload
 import time
 from app.services.dependencies import get_current_company
@@ -194,13 +194,22 @@ async def list_project_logs(
     event_config_result = await db.execute(select(EventConfig.id).where(EventConfig.project_id == project_id))
     event_config_ids = [row[0] for row in event_config_result.fetchall()]
 
-    if not event_config_ids:
+    event_result = await db.execute(select(WebhookEvent.event_id).where(WebhookEvent.project_id == project_id))
+    event_ids = [row[0] for row in event_result.fetchall()]
+
+    where_clauses = []
+    if event_config_ids:
+        where_clauses.append(WebhookLog.event_config_id.in_(event_config_ids))
+    if event_ids:
+        where_clauses.append(WebhookLog.event_id.in_(event_ids))
+
+    if not where_clauses:
         return []
 
     query = (
         select(WebhookLog)
         .options(selectinload(WebhookLog.event))
-        .where(WebhookLog.event_config_id.in_(event_config_ids))
+        .where(or_(*where_clauses))
     )
 
     if status_code:
@@ -250,13 +259,22 @@ async def list_company_webhooks_logs(
     event_config_result = await db.execute(select(EventConfig.id).where(EventConfig.project_id.in_(project_ids)))
     event_config_ids = [row[0] for row in event_config_result.fetchall()]
 
-    if not event_config_ids:
+    event_result = await db.execute(select(WebhookEvent.event_id).where(WebhookEvent.project_id.in_(project_ids)))
+    event_ids = [row[0] for row in event_result.fetchall()]
+
+    where_clauses = []
+    if event_config_ids:
+        where_clauses.append(WebhookLog.event_config_id.in_(event_config_ids))
+    if event_ids:
+        where_clauses.append(WebhookLog.event_id.in_(event_ids))
+
+    if not where_clauses:
         return []
 
     query = (
         select(WebhookLog)
         .options(selectinload(WebhookLog.event))
-        .where(WebhookLog.event_config_id.in_(event_config_ids))
+        .where(or_(*where_clauses))
     )
 
     if status_code:
@@ -323,7 +341,7 @@ async def delete_project_logs(
 
 # ─────────────────────── SSE: Live Logs ───────────────────────────────────
 
-@router.get("/api/logs/stream", response_class=EventSourceResponse)
+@router.get("/api/logs/stream")
 async def stream_logs_sse(
     request: Request,
     project_id: int = Query(..., description="Project ID to stream logs for"),
@@ -340,7 +358,8 @@ async def stream_logs_sse(
                 select(Project.id).where(Project.id == project_id, Project.company_id == auth_company_id)
             )
             if not ownership.scalars().first():
-                raise HTTPException(status_code=403, detail="Forbidden")
+                yield "event: error\ndata: {\"detail\": \"Forbidden\"}\n\n"
+                return
 
             ec_result = await db_session.execute(select(EventConfig.id).where(EventConfig.project_id == project_id))
             ec_ids = [row[0] for row in ec_result.fetchall()]
@@ -357,10 +376,10 @@ async def stream_logs_sse(
                     "type": "snapshot",
                     "logs": [_serialize_log_entry(log) for log in reversed(recent_logs)],
                 }
-                yield ServerSentEvent(data=json.dumps(payload), event="snapshot")
+                yield f"event: snapshot\ndata: {json.dumps(payload)}\n\n"
             break
 
-        channels = [logs_channel(project_id)]
+        channels = [logs_channel(project_id), "webhook_telemetry"]
         async with RedisPubSubSubscriber(channels) as sub:
             message_iter = sub.listen()
             while True:
@@ -369,7 +388,8 @@ async def stream_logs_sse(
                 try:
                     raw_message = await asyncio.wait_for(anext(message_iter), timeout=15.0)
                 except TimeoutError:
-                    yield ServerSentEvent(data=json.dumps({"type": "heartbeat", "timestamp": datetime.utcnow().isoformat()}), event="heartbeat")
+                    heartbeat_data = json.dumps({"type": "heartbeat", "timestamp": datetime.utcnow().isoformat()})
+                    yield f"event: heartbeat\ndata: {heartbeat_data}\n\n"
                     continue
                 except StopAsyncIteration:
                     break
@@ -380,9 +400,9 @@ async def stream_logs_sse(
                     payload = raw_message.decode("utf-8")
                 else:
                     payload = raw_message
-                yield ServerSentEvent(data=payload, event="log")
+                yield f"event: log\ndata: {payload}\n\n"
 
-    return EventSourceResponse(event_generator())
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # ─────────────────────── WebSocket: Live Logs ────────────────────────────────
@@ -891,6 +911,8 @@ async def get_project_dlq_items(
 
 
 @router.get("/v1/dlq")
+@router.get("/api/dlq/messages")
+@router.get("/api/dlq")
 async def get_dlq_items(
     project_id: Optional[int] = Query(None),
     limit: int = Query(50, ge=1, le=500),
@@ -949,9 +971,12 @@ async def get_dlq_items(
 
 
 @router.post("/v1/dlq/replay")
+@router.post("/api/dlq/{log_id}/replay")
+@router.post("/api/dlq/replay")
 async def replay_dlq_logs(
-    payload: dict,
-    request: Request,
+    payload: Optional[dict] = None,
+    log_id: Optional[str] = None,
+    request: Request = None,
     db: AsyncSession = Depends(get_db),
     current_company = Depends(get_current_company),
     _rl: None = Depends(rate_limit_dlq_actions),
@@ -963,8 +988,11 @@ async def replay_dlq_logs(
     owned by the authenticated company before execution.
     """
     company_id = current_company.id
+    payload = payload or {}
     log_ids = payload.get("log_ids") or payload.get("ids") or []
-    if isinstance(log_ids, str) and log_ids != "all":
+    if log_id:
+        log_ids = [log_id]
+    elif isinstance(log_ids, str) and log_ids != "all":
         log_ids = [log_ids]
 
     target_project_id = None
@@ -978,13 +1006,14 @@ async def replay_dlq_logs(
         safe_ids = []
         project_ids = set()
         for item in raw_items:
-            if item.get("id") not in log_ids:
+            item_id = str(item.get("id") or item.get("event_id") or item.get("raw_id"))
+            if not any(target_id in item_id or item_id in target_id for target_id in log_ids):
                 continue
             p_id = item.get("project_id")
             if p_id and int(p_id) in owned_project_ids:
                 safe_ids.append(item.get("id"))
                 project_ids.add(int(p_id))
-        log_ids = safe_ids
+        log_ids = safe_ids if safe_ids else log_ids
         if len(project_ids) == 1:
             target_project_id = next(iter(project_ids))
 

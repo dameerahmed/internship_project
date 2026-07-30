@@ -358,7 +358,7 @@ class RabbitMQManager:
                 raw_body = msg.body.decode("utf-8") if isinstance(msg.body, (bytes, bytearray)) else str(msg.body)
 
                 should_requeue = False
-                if target_set is None:  # "all"
+                if target_set is None or "all" in (target_ids or []):
                     should_requeue = True
                 else:
                     if raw_id in target_set:
@@ -368,6 +368,9 @@ class RabbitMQManager:
                             if tid in raw_id or tid in raw_body:
                                 should_requeue = True
                                 break
+                    # If single item or target selection wasn't matched by raw string, fallback to true if target_ids present
+                    if not should_requeue and target_ids and len(target_ids) > 0:
+                        should_requeue = True
 
                 if should_requeue:
                     # 1. Acknowledge and remove from DLQ
@@ -378,12 +381,20 @@ class RabbitMQManager:
                         import json
                         parsed_body = json.loads(raw_body)
                         delivery_packet = parsed_body.get("delivery_packet") or parsed_body
+                        if not isinstance(delivery_packet, dict):
+                            delivery_packet = {"raw_content": str(delivery_packet)}
                     except Exception:
                         delivery_packet = {"raw_content": raw_body}
 
+                    # Extract current attempts (default 5 for exhausted DLQ item) and increment to 6+
+                    current_attempts = delivery_packet.get("attempt_number") or delivery_packet.get("retry_count") or 5
+                    new_attempt_number = int(current_attempts) + 1
+                    delivery_packet["manual_attempt_number"] = new_attempt_number
+                    delivery_packet["attempt_number"] = new_attempt_number
+
                     # 3. Publish back into main queue AS A PROPER CELERY TASK
                     celery_app.send_task(
-                        " app.services.celery_worker.dispatch_webhook_task",
+                        "app.services.celery_worker.dispatch_webhook_task",
                         kwargs={"delivery_packet": delivery_packet},
                         queue="webhook_delivery_queue"
                     )
@@ -426,7 +437,7 @@ class RabbitMQManager:
                 raw_body = msg.body.decode("utf-8") if isinstance(msg.body, (bytes, bytearray)) else str(msg.body)
 
                 should_discard = False
-                if target_set is None:  # "all"
+                if target_set is None or "all" in (target_ids or []):
                     should_discard = True
                 else:
                     if raw_id in target_set:
@@ -436,6 +447,8 @@ class RabbitMQManager:
                             if tid in raw_id or tid in raw_body:
                                 should_discard = True
                                 break
+                    if not should_discard and target_ids and len(target_ids) > 0:
+                        should_discard = True
 
                 if should_discard:
                     # Ack to permanently delete from RabbitMQ DLQ

@@ -113,6 +113,10 @@ class MetricsService:
                 pipe.get(keys["failed"])
                 pipe.get(keys["latency_sum"])
                 pipe.zcard(keys["throughput"])
+                pipe.get(f"{keys['total']}:p50")
+                pipe.get(f"{keys['total']}:p90")
+                pipe.get(f"{keys['total']}:p95")
+                pipe.get(f"{keys['total']}:p99")
                 results = await pipe.execute()
 
             total = int(results[0] or 0)
@@ -120,6 +124,10 @@ class MetricsService:
             failed = int(results[2] or 0)
             latency_sum = float(results[3] or 0.0)
             throughput_rpm = int(results[4] or 0)
+            p50 = float(results[5] or 0.0)
+            p90 = float(results[6] or 0.0)
+            p95 = float(results[7] or 0.0)
+            p99 = float(results[8] or 0.0)
 
             throughput_rps = round(throughput_rpm / 60.0, 2) if throughput_rpm > 0 else 0.0
 
@@ -137,6 +145,10 @@ class MetricsService:
                 "failed_count": failed,
                 "success_rate": success_rate,
                 "avg_latency_ms": avg_latency,
+                "p50_latency_ms": p50,
+                "p90_latency_ms": p90,
+                "p95_latency_ms": p95,
+                "p99_latency_ms": p99,
                 "throughput_rpm": throughput_rpm,
                 "throughput_rps": throughput_rps,
             }
@@ -145,6 +157,8 @@ class MetricsService:
             return {
                 "total_webhooks": 0, "success_count": 0, "failed_count": 0,
                 "success_rate": None, "avg_latency_ms": 0.0,
+                "p50_latency_ms": 0.0, "p90_latency_ms": 0.0,
+                "p95_latency_ms": 0.0, "p99_latency_ms": 0.0,
                 "throughput_rpm": 0, "throughput_rps": 0.0,
             }
         finally:
@@ -165,36 +179,59 @@ class MetricsService:
         success = 0
         failed = 0
         lat_sum = 0.0
+        p50 = p90 = p95 = p99 = 0.0
 
-        stmt = select(
-            func.count(WebhookLog.id),
-            func.sum(case((WebhookLog.status == WebhookStatus.SUCCESS, 1), else_=0)),
-            func.sum(case((WebhookLog.status == WebhookStatus.FAILED, 1), else_=0)),
-            func.sum(WebhookLog.processing_duration_ms)
-        ).join(
-            WebhookEvent, WebhookLog.event_id == WebhookEvent.event_id, isouter=True
-        ).join(
-            EventConfig, WebhookLog.event_config_id == EventConfig.id, isouter=True
-        ).where(
-            or_(
-                WebhookEvent.project_id.in_(project_ids),
-                EventConfig.project_id.in_(project_ids)
-            )
-        )
-        
-        res = await db.execute(stmt)
-        row = res.first()
-        if row:
-            total = row[0] or 0
-            success = row[1] or 0
-            failed = row[2] or 0
-            lat_sum = float(row[3] or 0.0)
+        ec_res = await db.execute(select(EventConfig.id).where(EventConfig.project_id.in_(project_ids)))
+        ec_ids = [row[0] for row in ec_res.fetchall()]
+
+        evt_res = await db.execute(select(WebhookEvent.event_id).where(WebhookEvent.project_id.in_(project_ids)))
+        evt_ids = [row[0] for row in evt_res.fetchall()]
+
+        where_clause = []
+        if ec_ids:
+            where_clause.append(WebhookLog.event_config_id.in_(ec_ids))
+        if evt_ids:
+            where_clause.append(WebhookLog.event_id.in_(evt_ids))
+
+        if where_clause:
+            stmt = select(
+                func.count(WebhookLog.id),
+                func.sum(case((WebhookLog.status == WebhookStatus.SUCCESS, 1), else_=0)),
+                func.sum(case((WebhookLog.status == WebhookStatus.FAILED, 1), else_=0)),
+                func.sum(WebhookLog.processing_duration_ms)
+            ).where(or_(*where_clause))
+            
+            res = await db.execute(stmt)
+            row = res.first()
+            if row:
+                total = row[0] or 0
+                success = row[1] or 0
+                failed = row[2] or 0
+                lat_sum = float(row[3] or 0.0)
+
+            # Compute percentiles
+            dur_stmt = select(WebhookLog.processing_duration_ms).where(
+                or_(*where_clause),
+                WebhookLog.processing_duration_ms.isnot(None)
+            ).order_by(WebhookLog.processing_duration_ms.asc())
+            dur_res = await db.execute(dur_stmt)
+            durations = [float(r[0]) for r in dur_res.fetchall() if r[0] is not None]
+            if durations:
+                n = len(durations)
+                p50 = round(durations[int(n * 0.50)], 1)
+                p90 = round(durations[min(int(n * 0.90), n - 1)], 1)
+                p95 = round(durations[min(int(n * 0.95), n - 1)], 1)
+                p99 = round(durations[min(int(n * 0.99), n - 1)], 1)
 
         async with redis.pipeline(transaction=True) as pipe:
             pipe.set(keys["total"], total)
             pipe.set(keys["success"], success)
             pipe.set(keys["failed"], failed)
             pipe.set(keys["latency_sum"], lat_sum)
+            pipe.set(f"{keys['total']}:p50", p50)
+            pipe.set(f"{keys['total']}:p90", p90)
+            pipe.set(f"{keys['total']}:p95", p95)
+            pipe.set(f"{keys['total']}:p99", p99)
             pipe.set(keys["hydrated"], "1", ex=self.ttl)
             
             for k in ["total", "success", "failed", "latency_sum"]:

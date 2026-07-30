@@ -141,6 +141,24 @@ async def _persist_webhook_log(**kwargs):
                 except Exception as pub_exc:
                     logger.warning("Pub/Sub log publish failed: %s", pub_exc)
 
+            # ── Redis Pub/Sub: publish webhook_telemetry event ──
+            try:
+                telemetry_payload = {
+                    "event_id": event_id,
+                    "project_id": project_id,
+                    "company_id": company_id,
+                    "status": status_val.name if hasattr(status_val, "name") else str(status_val),
+                    "attempt": kwargs.get("attempt_number", 1),
+                    "response_code": kwargs.get("response_code"),
+                    "error_message": kwargs.get("error_message"),
+                    "processing_duration_ms": kwargs.get("processing_duration_ms"),
+                    "http_method": kwargs.get("http_method", "POST"),
+                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                }
+                await pubsub_service.publish_telemetry_event(telemetry_payload)
+            except Exception as tel_exc:
+                logger.warning("Pub/Sub telemetry publish failed: %s", tel_exc)
+
             # ── Redis Pub/Sub: update metrics and publish snapshot ──
             if status_val in [WebhookStatus.SUCCESS, WebhookStatus.FAILED]:
                 if company_id:
@@ -248,6 +266,9 @@ async def orchestrate_webhook_lifecycle(task_instance: Task, delivery_packet: di
         event_id = f"evt_{unique_timestamp}_{uuid.uuid4().hex[:8]}"
         delivery_packet["event_id"] = event_id
 
+    manual_attempt = delivery_packet.get("manual_attempt_number") or delivery_packet.get("attempt_number")
+    effective_retry_count = (manual_attempt - 1) if (manual_attempt and manual_attempt > 5) else task_instance.request.retries
+
     try:
         result = await _process_webhook_delivery(
             event_id=event_id,
@@ -257,7 +278,7 @@ async def orchestrate_webhook_lifecycle(task_instance: Task, delivery_packet: di
             data_payload=data_payload,
             target_url=target_url,
             url_index=url_index,
-            retry_count=task_instance.request.retries,
+            retry_count=effective_retry_count,
             request_headers=delivery_packet.get("request_headers"),
             started_at=delivery_packet.get("started_at", time.time()),
         )
@@ -291,7 +312,10 @@ async def orchestrate_webhook_lifecycle(task_instance: Task, delivery_packet: di
             "event_type": event_type,
             "data_payload": data_payload,
             "target_url": result.get("target_url") or target_url,
-            "url_index": url_index
+            "url_index": url_index,
+            "retry_count": 5,
+            "attempt_number": 5,
+            "request_headers": delivery_packet.get("request_headers"),
         }
         try:
             with celery_app.producer_pool.acquire(block=True) as producer:

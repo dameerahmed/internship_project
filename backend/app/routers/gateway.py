@@ -265,9 +265,47 @@ async def incoming_webhook_receiver(
 
         return sanitize_response_payload({"status": "Accepted", "detail": "Valid signature. Webhook delivery task queued."})
         
-    except HTTPException:
-        raise
+    except HTTPException as http_exc:
+        try:
+            body_bytes = await request.body()
+            body_json = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+        except Exception:
+            body_json = {}
+        log_payload = build_log_payload(
+            event_id=event_id,
+            request_headers={k: v for k, v in request.headers.items() if k.lower() not in {"authorization", "cookie", "x-api-key", "x-hub-signature"}},
+            request_payload=sanitize_for_logging(body_json),
+            project_id=locals().get("project_id"),
+            event_type=locals().get("incoming_event_type", "webhook.received"),
+            status="FAILED",
+            attempt_number=1,
+            response_code=http_exc.status_code,
+            error_message=str(http_exc.detail),
+            source_ip=request.client.host if request.client else None,
+            http_method=request.method,
+        )
+        asyncio.create_task(_persist_gateway_log(log_payload))
+        raise http_exc
     except Exception as general_err:
+        try:
+            body_bytes = await request.body()
+            body_json = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+        except Exception:
+            body_json = {}
+        log_payload = build_log_payload(
+            event_id=event_id,
+            request_headers={k: v for k, v in request.headers.items() if k.lower() not in {"authorization", "cookie", "x-api-key", "x-hub-signature"}},
+            request_payload=sanitize_for_logging(body_json),
+            project_id=locals().get("project_id"),
+            event_type=locals().get("incoming_event_type", "webhook.received"),
+            status="FAILED",
+            attempt_number=1,
+            response_code=500,
+            error_message=f"Fatal Gateway Crash: {str(general_err)}",
+            source_ip=request.client.host if request.client else None,
+            http_method=request.method,
+        )
+        asyncio.create_task(_persist_gateway_log(log_payload))
         raise HTTPException(status_code=500, detail=f"Fatal Gateway Crash: {str(general_err)}")
 
 

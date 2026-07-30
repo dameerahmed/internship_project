@@ -25,6 +25,8 @@ from  app.models.webhook_log import WebhookLog
 from  app.models.webhook_event import WebhookEvent
 from  app.services.queue_client import rabbitmq_manager
 
+from app.services.metrics_service import metrics_service
+
 router = APIRouter(prefix="/v1/projects", tags=["Projects"])
 logger = logging.getLogger("project_router")
 
@@ -38,8 +40,25 @@ async def list_projects(
     result = await db.execute(select(Project).where(Project.company_id == company_id))
     projects = result.scalars().all()
 
-    return [
-        {
+    res_list = []
+    for project in projects:
+        m = await metrics_service.get_or_hydrate_metrics(company_id, db, project_id=project.id)
+        total_w = m.get("total_webhooks", 0)
+        success_r = m.get("success_rate")
+        s_rate = success_r if success_r is not None else 100.0
+        f_rate = round(100.0 - s_rate, 1) if success_r is not None else 0.0
+
+        dlq_c = 0
+        try:
+            raw_dlq = await rabbitmq_manager.peek_dlq_messages(limit=200)
+            for d_item in raw_dlq:
+                p_id = d_item.get("project_id")
+                if p_id and int(p_id) == project.id:
+                    dlq_c += 1
+        except Exception:
+            pass
+
+        res_list.append({
             "id": project.id,
             "name": project.name,
             "description": project.description,
@@ -47,9 +66,13 @@ async def list_projects(
             "company_id": project.company_id,
             "created_at": project.created_at,
             "updated_at": project.updated_at,
-        }
-        for project in projects
-    ]
+            "total_webhooks": total_w,
+            "success_rate_pct": s_rate,
+            "failure_rate_pct": f_rate,
+            "dlq_count": dlq_c,
+            "avg_latency_ms": m.get("avg_latency_ms", 0.0),
+        })
+    return res_list
 
 @router.post("", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
 @router.post("/Create", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
@@ -222,35 +245,43 @@ async def discard_dlq_items(
 @router.get("/{project_id}/refresh_keys", response_model=dict)
 async def refresh_project_keys(
     project_id: int,
+    regenerate: bool = False,
     db: AsyncSession = Depends(get_db),
     current_company = Depends(get_current_company),
 ):
     company_id = current_company.id
-    result = await db.execute(select(Project).where(Project.id == project_id, Project.company_id == company_id))
+    result = await db.execute(select(Project).options(selectinload(Project.event_configs)).where(Project.id == project_id, Project.company_id == company_id))
     db_project = result.scalars().first()
     if db_project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
     client_api_key, hashed_secret = WebhookSecurity.generate_raw_and_hash_key(project_id=project_id, company_id=company_id)
-    db_project.hashed_secret = hashed_secret
-    db_project.secret_key = WebhookSecurity.generate_webhook_secret()
-    await db.commit()
-    await db.refresh(db_project)
+    
+    if regenerate or not db_project.secret_key or db_project.secret_key == "temp_provisioning":
+        db_project.hashed_secret = hashed_secret
+        db_project.secret_key = WebhookSecurity.generate_webhook_secret()
+        await db.commit()
+        await db.refresh(db_project)
 
-    try:
-        from  app.services.project_service import refresh_project_cache
-        from  app.services.redis_client import get_redis_client
-        redis_conn = await get_redis_client()
         try:
-            await refresh_project_cache(project_id, db, redis_conn)
-        finally:
-            await redis_conn.close()
-    except Exception as redis_err:
-        logger.warning("Redis cache synchronization skipped during key refresh: %s", redis_err)
+            from  app.services.project_service import refresh_project_cache
+            from  app.services.redis_client import get_redis_client
+            redis_conn = await get_redis_client()
+            try:
+                await refresh_project_cache(project_id, db, redis_conn)
+            finally:
+                await redis_conn.close()
+        except Exception as redis_err:
+            logger.warning("Redis cache synchronization skipped during key refresh: %s", redis_err)
+
+    target_url = None
+    if db_project.event_configs and len(db_project.event_configs) > 0:
+        target_url = db_project.event_configs[0].target_url
 
     return {
         "api_key": client_api_key,
         "secret_key": db_project.secret_key,
+        "target_url": target_url,
         "project_id": project_id,
         "company_id": company_id,
     }

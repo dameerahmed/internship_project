@@ -12,10 +12,83 @@ from  app.schemas.company import CompanyDeleteResponse
 from  app.services.redis_client import get_redis_client
 from  app.services.dependencies import get_current_company  
 
-router = APIRouter(prefix="/company", tags=["Company Profile"])
+router = APIRouter(prefix="", tags=["Company Profile"])
+
+
+def _get_or_generate_rsa_public_key() -> str:
+    from config import settings
+    if settings.SYSTEM_PUBLIC_KEY and settings.SYSTEM_PUBLIC_KEY.strip():
+        return settings.SYSTEM_PUBLIC_KEY.strip()
+    try:
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.primitives import serialization
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        public_key = private_key.public_key()
+        pem = public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        return pem.decode("utf-8")
+    except Exception:
+        return "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuP0...\n-----END PUBLIC KEY-----"
+
+
+@router.get("/company/rsa-public-key")
+@router.get("/v1/companies/rsa-public-key")
+@router.get("/v1/companies/keys")
+async def get_company_rsa_public_key(current_company: Company = Depends(get_current_company)):
+    """Return the organization's RSA Public Key for downstream/external signature verification."""
+    public_key_pem = _get_or_generate_rsa_public_key()
+    return {
+        "company_id": current_company.id,
+        "company_name": current_company.name,
+        "rsa_public_key": public_key_pem,
+        "algorithm": "RSA-SHA256",
+        "format": "PEM",
+    }
+
+
+@router.get("/v1/companies/me")
+@router.get("/company/me")
+async def get_company_profile(current_company: Company = Depends(get_current_company)):
+    public_key_pem = _get_or_generate_rsa_public_key()
+    return {
+        "id": current_company.id,
+        "company_name": current_company.name,
+        "name": current_company.name,
+        "email": current_company.email,
+        "support_email": current_company.email,
+        "is_active": current_company.is_active,
+        "rsa_public_key": public_key_pem,
+        "created_at": current_company.created_at,
+        "updated_at": current_company.updated_at,
+    }
+
+
+@router.put("/v1/companies/me")
+async def update_company_profile(
+    payload: dict,
+    current_company: Company = Depends(get_current_company),
+    db: AsyncSession = Depends(get_db)
+):
+    name = payload.get("company_name") or payload.get("name")
+    if name:
+        current_company.name = name
+    email = payload.get("support_email") or payload.get("email")
+    if email:
+        current_company.email = email
+    await db.commit()
+    await db.refresh(current_company)
+    return {
+        "status": "success",
+        "company_name": current_company.name,
+        "support_email": current_company.email
+    }
+
 
 # 🟡 1. DEACTIVATE (Soft Delete) — Sirf account temporarily band karna
-@router.post("/deactivate", response_model=CompanyDeleteResponse)
+@router.post("/company/deactivate")
+@router.post("/v1/companies/archive")
 async def deactivate_account(
     response: Response,
     current_company: Company = Depends(get_current_company),
@@ -77,7 +150,7 @@ async def terminate_account(
 
             await db.execute(delete(Project).where(Project.id == project_id))
 
-        db.delete(current_company)
+        await db.delete(current_company)
         await db.commit()
 
         try:

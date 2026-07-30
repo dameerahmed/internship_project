@@ -1,5 +1,9 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { RefreshCw, ArrowUpRight, Activity, Clock, Layers } from 'lucide-react';
+import { 
+  RefreshCw, ArrowUpRight, Activity, Clock, Layers, Zap, 
+  CheckCircle2, AlertTriangle, Inbox, RotateCcw, ShieldCheck,
+  TrendingUp, TrendingDown, ArrowRight
+} from 'lucide-react';
 import apiClient from '@/api/client';
 import { useAuth } from '@/context/AuthContext';
 import { API_ENDPOINTS, WS_ENDPOINTS, withToken } from '@/utils/constants';
@@ -17,10 +21,9 @@ export default function OverviewTab({ project, onNavigateTab }) {
       setLoading(true);
     }
     try {
-      // Fetch real project metrics and recent project logs in parallel
       const [metricsRes, logsRes] = await Promise.allSettled([
         apiClient.get(API_ENDPOINTS.METRICS.PROJECT(project.id)),
-        apiClient.get(`/v1/projects/${project.id}/logs?limit=6`)
+        apiClient.get(`/v1/projects/${project.id}/logs?limit=8`)
       ]);
 
       if (metricsRes.status === 'fulfilled') {
@@ -66,8 +69,12 @@ export default function OverviewTab({ project, onNavigateTab }) {
                 success_rate_pct: payload.success_rate_pct ?? payload.success_rate ?? prev?.success_rate_pct ?? null,
                 failure_rate_pct: payload.failure_rate_pct ?? payload.failure_rate ?? prev?.failure_rate_pct ?? 0,
                 avg_latency_ms: payload.avg_latency_ms ?? prev?.avg_latency_ms ?? 0,
+                p50_latency_ms: payload.p50_latency_ms ?? prev?.p50_latency_ms ?? 0,
+                p90_latency_ms: payload.p90_latency_ms ?? prev?.p90_latency_ms ?? 0,
+                p95_latency_ms: payload.p95_latency_ms ?? prev?.p95_latency_ms ?? 0,
+                p99_latency_ms: payload.p99_latency_ms ?? prev?.p99_latency_ms ?? 0,
                 dlq_count: payload.dlq_count ?? payload.total_dlq_count ?? prev?.dlq_count ?? 0,
-                throughput_series: payload.throughput_series ?? prev?.throughput_series ?? [],
+                throughput_series: (payload.throughput_series && payload.throughput_series.length > 0) ? payload.throughput_series : (prev?.throughput_series || []),
               }));
             }
           } catch (err) {
@@ -101,7 +108,7 @@ export default function OverviewTab({ project, onNavigateTab }) {
               setRecentLogs((prev) => {
                 const exists = prev.some((log) => log.id === payload.id);
                 if (exists) return prev;
-                return [payload, ...prev].slice(0, 6);
+                return [payload, ...prev].slice(0, 8);
               });
             }
           } catch (err) {
@@ -141,14 +148,25 @@ export default function OverviewTab({ project, onNavigateTab }) {
   const successfulCount = isColdStart ? 0 : Math.round(totalSent * ((m.success_rate_pct || 0) / 100));
   const failedCount = Math.round(totalSent * ((m.failure_rate_pct || 0) / 100));
   const pendingCount = m.dlq_count || 0;
-  const retryRate = `${(m.failure_rate_pct || 0).toFixed(0)}%`;
+  const retryRate = `${(m.failure_rate_pct || 0).toFixed(1)}%`;
 
-  const series = Array.isArray(m.throughput_series) ? m.throughput_series : [];
-  const maxBarTotal = Math.max(...series.map((s) => s.total || 1), 1);
+  const series = useMemo(() => {
+    if (Array.isArray(m.throughput_series) && m.throughput_series.length > 0) {
+      return m.throughput_series;
+    }
+    // Generate 24 hourly buckets if empty
+    return Array.from({ length: 24 }).map((_, idx) => ({
+      label: `${idx}:00`,
+      total: 0,
+      success: 0,
+      failed: 0
+    }));
+  }, [m.throughput_series]);
 
-  // Dynamic Micro Sparkline Generator
+  const maxBarTotal = Math.max(...series.map((s) => s.total || (s.success + s.failed) || 1), 1);
+
   const getSparklinePath = (key = 'total') => {
-    if (!series || series.length === 0) return 'M 2 10 L 38 10';
+    if (!series || series.length === 0) return 'M 2 12 L 38 12';
     const vals = series.map(s => s[key] || 0);
     const maxVal = Math.max(...vals, 1);
     return vals.map((v, i) => {
@@ -158,153 +176,219 @@ export default function OverviewTab({ project, onNavigateTab }) {
     }).join(' ');
   };
 
+  const formatRelativeTime = (isoString) => {
+    if (!isoString) return 'Just now';
+    try {
+      const date = new Date(isoString);
+      const diffSec = Math.floor((Date.now() - date.getTime()) / 1000);
+      if (diffSec < 60) return `${diffSec}s ago`;
+      if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+      return `${Math.floor(diffSec / 3600)}h ago`;
+    } catch {
+      return 'Just now';
+    }
+  };
+
   if (loading && !metrics) {
     return (
       <div className="flex h-64 items-center justify-center text-xs font-semibold text-zinc-400">
         <RefreshCw className="mr-2 h-4 w-4 animate-spin text-emerald-500" />
-        Loading project workspace metrics...
+        Loading real-time project metrics...
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col gap-8 font-sans w-full max-w-7xl mx-auto text-zinc-900 dark:text-zinc-100 pb-8 select-none">
+    <div className="flex flex-col gap-8 font-sans w-full max-w-7xl mx-auto text-zinc-900 dark:text-zinc-100 pb-12 select-none">
       
-      {/* 👑 1. Header */}
-      <div className="border-b border-zinc-200 dark:border-zinc-800 pb-4">
-        <h1 className="text-2xl font-bold text-zinc-900 dark:text-white tracking-tight">
-          Webhooks Telemetry & Analytics
-        </h1>
-        <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
-          Last 24 hours activity for <span className="font-semibold text-zinc-800 dark:text-zinc-200">{project?.name || 'Project'}</span>
-        </p>
+      {/* 👑 1. Top Section Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-200 dark:border-zinc-800/80 pb-5">
+        <div>
+          <h1 className="text-xl font-extrabold text-zinc-900 dark:text-white tracking-tight flex items-center gap-2.5">
+            <Activity className="h-5 w-5 text-indigo-500" />
+            <span>Webhooks Telemetry & Real-Time Analytics</span>
+          </h1>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+            Live delivery stream & performance insights for project <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">{project?.name}</span>
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shadow-sm">
+            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span>Live WebSocket Active</span>
+          </span>
+
+          <button
+            type="button"
+            onClick={() => loadData(true)}
+            className="p-2 rounded-xl border border-zinc-200 bg-white hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300 transition"
+            title="Refresh Metrics"
+          >
+            <RefreshCw className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
-      {/* 📈 2. Resend-Style Micro Inline Metrics Row */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-6 border-b border-zinc-200 dark:border-zinc-800 pb-8">
+      {/* 📊 2. High-Impact Glassmorphic KPI Cards Grid */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         
         {/* Metric 1: Total Webhooks */}
-        <div className="space-y-1">
-          <span className="text-[11px] font-semibold text-zinc-400 block uppercase tracking-wider">
-            Total Webhooks Sent
-          </span>
-          <div className="flex items-baseline gap-3">
-            <span className="text-2xl font-bold text-zinc-900 dark:text-white">
+        <div className="rounded-2xl border border-zinc-200 bg-white/80 p-4 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md flex flex-col justify-between transition hover:border-indigo-500/40">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
+              Total Webhooks (24h)
+            </span>
+            <Zap className="h-4 w-4 text-indigo-500" />
+          </div>
+          <div className="mt-3 flex items-baseline justify-between">
+            <span className="text-2xl font-black text-zinc-900 dark:text-white font-mono tracking-tight">
               {totalSent.toLocaleString()}
             </span>
-            <svg className="w-12 h-5 text-indigo-500 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
+            <svg className="w-10 h-5 text-indigo-500 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2.5">
               <path strokeLinecap="round" strokeLinejoin="round" d={getSparklinePath('total')} />
             </svg>
           </div>
         </div>
 
         {/* Metric 2: Successful */}
-        <div className="space-y-1">
-          <span className="text-[11px] font-semibold text-zinc-400 block uppercase tracking-wider">
-            Successful
-          </span>
-          <div className="flex items-baseline gap-3">
-            <span className="text-2xl font-bold text-zinc-900 dark:text-white">
+        <div className="rounded-2xl border border-zinc-200 bg-white/80 p-4 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md flex flex-col justify-between transition hover:border-emerald-500/40">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
+              Successful (200 OK)
+            </span>
+            <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+          </div>
+          <div className="mt-3 flex items-baseline justify-between">
+            <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400 font-mono tracking-tight">
               {isColdStart ? '0' : successfulCount.toLocaleString()}
             </span>
-            <svg className="w-12 h-5 text-emerald-500 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
+            <svg className="w-10 h-5 text-emerald-500 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2.5">
               <path strokeLinecap="round" strokeLinejoin="round" d={getSparklinePath('success')} />
             </svg>
           </div>
         </div>
 
         {/* Metric 3: Failed */}
-        <div className="space-y-1">
-          <span className="text-[11px] font-semibold text-zinc-400 block uppercase tracking-wider">
-            Failed
-          </span>
-          <div className="flex items-baseline gap-3">
-            <span className="text-2xl font-bold text-zinc-900 dark:text-white">
+        <div className="rounded-2xl border border-zinc-200 bg-white/80 p-4 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md flex flex-col justify-between transition hover:border-rose-500/40">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
+              Failed (4xx/5xx)
+            </span>
+            <AlertTriangle className="h-4 w-4 text-rose-500" />
+          </div>
+          <div className="mt-3 flex items-baseline justify-between">
+            <span className="text-2xl font-black text-rose-600 dark:text-rose-400 font-mono tracking-tight">
               {failedCount}
             </span>
-            <svg className="w-12 h-5 text-rose-500 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
+            <svg className="w-10 h-5 text-rose-500 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2.5">
               <path strokeLinecap="round" strokeLinejoin="round" d={getSparklinePath('failed')} />
             </svg>
           </div>
         </div>
 
-        {/* Metric 4: Pending */}
-        <div className="space-y-1">
-          <span className="text-[11px] font-semibold text-zinc-400 block uppercase tracking-wider">
-            Pending
-          </span>
-          <div className="flex items-baseline gap-3">
-            <span className="text-2xl font-bold text-zinc-900 dark:text-white">
+        {/* Metric 4: Pending / DLQ */}
+        <div className="rounded-2xl border border-zinc-200 bg-white/80 p-4 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md flex flex-col justify-between transition hover:border-amber-500/40">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
+              Pending / DLQ Queue
+            </span>
+            <Inbox className="h-4 w-4 text-amber-500" />
+          </div>
+          <div className="mt-3 flex items-baseline justify-between">
+            <span className="text-2xl font-black text-amber-600 dark:text-amber-400 font-mono tracking-tight">
               {pendingCount}
             </span>
-            <svg className="w-12 h-5 text-amber-500 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
-              <path strokeLinecap="round" strokeLinejoin="round" d={getSparklinePath('failed')} />
-            </svg>
+            <span className="text-[10px] font-bold font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-600 border border-amber-500/20">
+              {pendingCount > 0 ? 'Action Needed' : 'Clean'}
+            </span>
           </div>
         </div>
 
         {/* Metric 5: Retry Rate */}
-        <div className="space-y-1">
-          <span className="text-[11px] font-semibold text-zinc-400 block uppercase tracking-wider">
-            Retry Rate
-          </span>
-          <div className="flex items-baseline gap-3">
-            <span className="text-2xl font-bold text-zinc-900 dark:text-white">
+        <div className="rounded-2xl border border-zinc-200 bg-white/80 p-4 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md flex flex-col justify-between transition hover:border-cyan-500/40">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
+              Failure / Retry Rate
+            </span>
+            <RotateCcw className="h-4 w-4 text-cyan-500" />
+          </div>
+          <div className="mt-3 flex items-baseline justify-between">
+            <span className="text-2xl font-black text-zinc-900 dark:text-white font-mono tracking-tight">
               {retryRate}
             </span>
-            <svg className="w-12 h-5 text-rose-400 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
-              <path strokeLinecap="round" strokeLinejoin="round" d={getSparklinePath('failed')} />
-            </svg>
+            <span className={`text-[10px] font-bold font-mono px-2 py-0.5 rounded ${
+              parseFloat(retryRate) > 10 
+                ? 'bg-rose-500/10 text-rose-500 border border-rose-500/20' 
+                : 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
+            }`}>
+              {parseFloat(retryRate) > 10 ? 'High' : 'Normal'}
+            </span>
           </div>
         </div>
 
       </div>
 
-      {/* 📊 3. Main Dashboard Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+      {/* 📊 3. Analytics Main Section (Hourly Activity & Live Queue) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         
         {/* Left Column (7 Cols): Hourly Activity Stacked Bar Chart */}
-        <div className="lg:col-span-7 flex flex-col gap-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-bold text-zinc-900 dark:text-white">
-              Hourly Activity
-            </h2>
+        <div className="lg:col-span-7 flex flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md">
+          <div className="flex items-center justify-between border-b border-zinc-100 dark:border-zinc-800 pb-3">
+            <div>
+              <h2 className="text-sm font-bold text-zinc-900 dark:text-white flex items-center gap-2">
+                <Clock className="h-4 w-4 text-indigo-500" />
+                <span>24-Hour Ingress & Delivery Activity</span>
+              </h2>
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+                Hourly breakdown of successful vs failed webhook deliveries
+              </p>
+            </div>
+            <div className="flex items-center gap-3 text-xs font-semibold">
+              <span className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
+                <span className="h-2.5 w-2.5 rounded-sm bg-emerald-500" /> Success
+              </span>
+              <span className="flex items-center gap-1.5 text-rose-600 dark:text-rose-400">
+                <span className="h-2.5 w-2.5 rounded-sm bg-rose-500" /> Failed
+              </span>
+            </div>
           </div>
 
-          <div className="relative h-60 w-full pt-8 pb-6 border-b border-zinc-200 dark:border-zinc-800 flex items-end justify-between gap-1.5 px-2">
+          {/* Interactive Chart Container */}
+          <div className="relative h-64 w-full pt-8 pb-6 flex items-end justify-between gap-1.5 px-2">
             
             {/* Interactive Tooltip Card */}
             {hoveredBar !== null && series[hoveredBar] && (
               <div 
-                className="absolute top-0 z-30 transform -translate-x-1/2 rounded-xl border border-zinc-200 bg-white/95 dark:border-zinc-800 dark:bg-zinc-900/95 p-3 shadow-xl backdrop-blur text-xs space-y-1.5 min-w-[140px] pointer-events-none transition-all duration-150"
+                className="absolute top-0 z-30 transform -translate-x-1/2 rounded-xl border border-zinc-200 bg-white/95 dark:border-zinc-800 dark:bg-zinc-950/95 p-3 shadow-xl backdrop-blur text-xs space-y-1.5 min-w-[140px] pointer-events-none transition-all duration-150"
                 style={{ left: `${((hoveredBar + 0.5) / series.length) * 100}%` }}
               >
-                <div className="flex items-center justify-between text-emerald-600 dark:text-emerald-400 font-semibold">
+                <div className="flex items-center justify-between text-emerald-600 dark:text-emerald-400 font-bold">
                   <span className="flex items-center gap-1.5">
                     <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                    Successful
+                    Success
                   </span>
-                  <span>{series[hoveredBar].success || 0}</span>
+                  <span className="font-mono">{series[hoveredBar].success || 0}</span>
                 </div>
 
-                <div className="flex items-center justify-between text-rose-600 dark:text-rose-400 font-semibold">
+                <div className="flex items-center justify-between text-rose-600 dark:text-rose-400 font-bold">
                   <span className="flex items-center gap-1.5">
                     <span className="h-2 w-2 rounded-full bg-rose-500" />
                     Failed
                   </span>
-                  <span>{series[hoveredBar].failed || 0}</span>
+                  <span className="font-mono">{series[hoveredBar].failed || 0}</span>
                 </div>
 
                 <div className="text-[10px] text-zinc-400 border-t border-zinc-100 dark:border-zinc-800 pt-1 mt-1 text-center font-mono">
-                  {series[hoveredBar].label || `Bucket ${hoveredBar}`}
+                  Bucket: {series[hoveredBar].label || `Bucket ${hoveredBar}`}
                 </div>
               </div>
             )}
 
             {/* Stacked Bars */}
             {series.map((bar, idx) => {
-              const total = bar.total || (bar.success + bar.failed) || 1;
-              const heightPct = Math.max(8, Math.min(100, (total / maxBarTotal) * 100));
+              const total = bar.total || (bar.success + bar.failed) || 0;
+              const heightPct = total > 0 ? Math.max(12, Math.min(100, (total / maxBarTotal) * 100)) : 6;
 
               const successRatio = total > 0 ? (bar.success / total) * 100 : 100;
               const failedRatio = total > 0 ? (bar.failed / total) * 100 : 0;
@@ -317,13 +401,13 @@ export default function OverviewTab({ project, onNavigateTab }) {
                   className="flex-1 flex flex-col justify-end h-full cursor-pointer group px-0.5"
                 >
                   <div 
-                    className="w-full flex flex-col justify-end rounded-t overflow-hidden transition-all group-hover:opacity-80"
+                    className="w-full flex flex-col justify-end rounded-t-lg overflow-hidden transition-all group-hover:brightness-125"
                     style={{ height: `${heightPct}%` }}
                   >
                     {/* Failed segment (top) */}
                     {bar.failed > 0 && (
                       <div 
-                        className="w-full bg-rose-500" 
+                        className="w-full bg-rose-500 transition" 
                         style={{ height: `${failedRatio}%` }} 
                       />
                     )}
@@ -339,33 +423,40 @@ export default function OverviewTab({ project, onNavigateTab }) {
 
           </div>
 
-          <div className="flex items-center justify-between text-[11px] text-zinc-400 font-mono px-1">
-            <span>0:00</span>
-            <span>6:00</span>
+          <div className="flex items-center justify-between text-[10px] text-zinc-400 font-mono px-2 border-t border-zinc-100 dark:border-zinc-800/80 pt-2">
+            <span>00:00</span>
+            <span>06:00</span>
             <span>12:00</span>
             <span>18:00</span>
             <span>24:00</span>
           </div>
         </div>
 
-        {/* Right Column (5 Cols): Recent Queue Table */}
-        <div className="lg:col-span-5 flex flex-col gap-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-bold text-zinc-900 dark:text-white">
-              Recent Queue
-            </h2>
+        {/* Right Column (5 Cols): Recent Live Queue Table */}
+        <div className="lg:col-span-5 flex flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md">
+          <div className="flex items-center justify-between border-b border-zinc-100 dark:border-zinc-800 pb-3">
+            <div>
+              <h2 className="text-sm font-bold text-zinc-900 dark:text-white flex items-center gap-2">
+                <Layers className="h-4 w-4 text-emerald-500" />
+                <span>Recent Live Ingress Queue</span>
+              </h2>
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+                Real-time stream of recent webhooks processed
+              </p>
+            </div>
             {onNavigateTab && (
               <button
                 type="button"
                 onClick={() => onNavigateTab('logs')}
-                className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline"
+                className="inline-flex items-center gap-1 text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:underline"
               >
-                View all logs
+                <span>View logs</span>
+                <ArrowRight className="h-3.5 w-3.5" />
               </button>
             )}
           </div>
 
-          <div className="flex flex-col gap-2.5">
+          <div className="flex flex-col gap-2">
             {recentLogs.length === 0 ? (
               <div className="p-8 text-center text-xs text-zinc-400 border border-dashed border-zinc-200 dark:border-zinc-800 rounded-xl">
                 No recent webhooks queued for this project.
@@ -374,30 +465,35 @@ export default function OverviewTab({ project, onNavigateTab }) {
               recentLogs.map((log, i) => {
                 const status = log.status_code || log.response_code || 200;
                 const isSuccess = status >= 200 && status < 300;
-                const eventName = log.event_type || log.delivery_packet?.event_type || 'webhook.event';
+                const eventName = log.event_type || log.event?.event_type || 'webhook.received';
                 const targetUrl = log.target_url || log.delivery_packet?.target_url || '/v1/webhooks';
 
                 return (
                   <div 
                     key={log.id || i} 
-                    className="flex items-center justify-between py-2 border-b border-zinc-100 dark:border-zinc-800/60 text-xs font-mono"
+                    className="flex items-center justify-between p-2.5 rounded-xl border border-zinc-100 bg-zinc-50/60 dark:border-zinc-800/60 dark:bg-zinc-950/60 text-xs font-mono transition hover:border-indigo-500/30"
                   >
                     <div className="flex items-center gap-3 truncate">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold shrink-0 ${
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold shrink-0 ${
                         isSuccess 
                           ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' 
                           : 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/20'
                       }`}>
                         {status}
                       </span>
-                      <span className="text-zinc-800 dark:text-zinc-200 font-sans font-medium truncate">
+                      <span className="text-zinc-900 dark:text-zinc-100 font-sans font-bold truncate">
                         {eventName}
                       </span>
                     </div>
 
-                    <span className="text-[11px] text-zinc-400 truncate max-w-[150px] font-sans">
-                      {targetUrl}
-                    </span>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="text-[10px] text-zinc-400 truncate max-w-[130px] font-sans">
+                        {targetUrl.replace(/^https?:\/\/[^\/]+/, '')}
+                      </span>
+                      <span className="text-[10px] text-zinc-400 font-sans">
+                        {formatRelativeTime(log.created_at)}
+                      </span>
+                    </div>
                   </div>
                 );
               })
@@ -407,63 +503,75 @@ export default function OverviewTab({ project, onNavigateTab }) {
 
       </div>
 
-      {/* ⚡ 4. Latency Percentiles + Setup Summary */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 border-t border-zinc-200 dark:border-zinc-800 pt-8">
+      {/* ⚡ 4. Real Latency Percentiles & Setup Summary */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 border-t border-zinc-200 dark:border-zinc-800/80 pt-8">
         
         {/* Latency Percentiles */}
-        <div className="space-y-4">
-          <h3 className="text-sm font-bold text-zinc-900 dark:text-white">
-            Latency Percentiles
-          </h3>
+        <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md space-y-4">
+          <div>
+            <h3 className="text-sm font-bold text-zinc-900 dark:text-white flex items-center gap-2">
+              <Clock className="h-4 w-4 text-cyan-500" />
+              <span>Real Latency Percentiles (End-to-End)</span>
+            </h3>
+            <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+              Calculated execution durations across delivered webhooks
+            </p>
+          </div>
 
-          <div className="grid grid-cols-4 gap-4">
-            <div>
-              <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider block">P50</span>
-              <span className="text-base font-bold text-zinc-900 dark:text-white mt-1 block">
-                {m.p50_latency_ms || 0.0} <span className="text-xs font-normal text-zinc-400">ms</span>
+          <div className="grid grid-cols-4 gap-3 font-mono">
+            <div className="rounded-xl border border-zinc-100 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-950 text-center">
+              <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block font-sans">P50</span>
+              <span className="text-lg font-black text-cyan-600 dark:text-cyan-400 mt-1 block">
+                {m.p50_latency_ms || m.avg_latency_ms || 0}<span className="text-xs font-normal text-zinc-400">ms</span>
               </span>
             </div>
 
-            <div>
-              <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider block">P90</span>
-              <span className="text-base font-bold text-zinc-900 dark:text-white mt-1 block">
-                {m.p90_latency_ms || 0.0} <span className="text-xs font-normal text-zinc-400">ms</span>
+            <div className="rounded-xl border border-zinc-100 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-950 text-center">
+              <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block font-sans">P90</span>
+              <span className="text-lg font-black text-cyan-600 dark:text-cyan-400 mt-1 block">
+                {m.p90_latency_ms || m.avg_latency_ms || 0}<span className="text-xs font-normal text-zinc-400">ms</span>
               </span>
             </div>
 
-            <div>
-              <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider block">P95</span>
-              <span className="text-base font-bold text-zinc-900 dark:text-white mt-1 block">
-                {m.p95_latency_ms || 0.0} <span className="text-xs font-normal text-zinc-400">ms</span>
+            <div className="rounded-xl border border-zinc-100 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-950 text-center">
+              <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block font-sans">P95</span>
+              <span className="text-lg font-black text-cyan-600 dark:text-cyan-400 mt-1 block">
+                {m.p95_latency_ms || m.avg_latency_ms || 0}<span className="text-xs font-normal text-zinc-400">ms</span>
               </span>
             </div>
 
-            <div>
-              <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider block">P99</span>
-              <span className="text-base font-bold text-zinc-900 dark:text-white mt-1 block">
-                {m.p99_latency_ms || 0.0} <span className="text-xs font-normal text-zinc-400">ms</span>
+            <div className="rounded-xl border border-zinc-100 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-950 text-center">
+              <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block font-sans">P99</span>
+              <span className="text-lg font-black text-cyan-600 dark:text-cyan-400 mt-1 block">
+                {m.p99_latency_ms || m.avg_latency_ms || 0}<span className="text-xs font-normal text-zinc-400">ms</span>
               </span>
             </div>
           </div>
         </div>
 
         {/* Setup Summary */}
-        <div className="space-y-4">
-          <h3 className="text-sm font-bold text-zinc-900 dark:text-white">
-            Setup Summary
-          </h3>
+        <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md space-y-4">
+          <div>
+            <h3 className="text-sm font-bold text-zinc-900 dark:text-white flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-emerald-500" />
+              <span>Project Configuration Summary</span>
+            </h3>
+            <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+              Active configuration parameters for this workspace
+            </p>
+          </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider block">Total Webhooks Sent</span>
-              <span className="text-base font-bold text-zinc-900 dark:text-white mt-1 block">
+          <div className="grid grid-cols-2 gap-4 font-mono text-xs">
+            <div className="rounded-xl border border-zinc-100 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-950">
+              <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block font-sans">Total Webhooks Dispatched</span>
+              <span className="text-lg font-black text-zinc-900 dark:text-white mt-1 block">
                 {totalSent.toLocaleString()}
               </span>
             </div>
 
-            <div>
-              <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider block">Events Subscribed</span>
-              <span className="text-base font-bold text-zinc-900 dark:text-white mt-1 block">
+            <div className="rounded-xl border border-zinc-100 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-950">
+              <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block font-sans">Events Subscribed</span>
+              <span className="text-lg font-black text-indigo-600 dark:text-indigo-400 mt-1 block">
                 {project?.event_configs?.length || 0}
               </span>
             </div>

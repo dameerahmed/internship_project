@@ -8,9 +8,12 @@ import DashboardPage from './pages/DashboardPage';
 import ProjectsPage from './pages/ProjectsPage';
 import ProjectDetailPage from './pages/ProjectDetailPage';
 import SettingsPage from './pages/SettingsPage';
+import ProjectSettingsPage from './pages/ProjectSettingsPage';
 import LogsPage from './pages/LogsPage';
 import DLQPage from './pages/DLQPage';
 import AccountBlocked from './components/Auth/AccountBlocked';
+
+import SandboxPage from './pages/SandboxPage';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -54,8 +57,14 @@ function AppRoutes() {
       <Route path="/dashboard/projects/:projectId" element={<ProtectedRoute><ProjectDetailPage /></ProtectedRoute>} />
       <Route path="/projects/:projectId/logs" element={<ProtectedRoute><LogsPage /></ProtectedRoute>} />
       <Route path="/logs" element={<ProtectedRoute><LogsPage /></ProtectedRoute>} />
+      <Route path="/activity" element={<ProtectedRoute><LogsPage /></ProtectedRoute>} />
       <Route path="/dlq" element={<ProtectedRoute><DLQPage /></ProtectedRoute>} />
+      <Route path="/tasks" element={<ProtectedRoute><DLQPage /></ProtectedRoute>} />
       <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+      <Route path="/settings/company" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+      <Route path="/settings/project" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+      <Route path="/simulate" element={<ProtectedRoute><SandboxPage /></ProtectedRoute>} />
+      <Route path="/sandbox" element={<ProtectedRoute><SandboxPage /></ProtectedRoute>} />
 
       <Route path="*" element={<Navigate to={user ? '/dashboard' : '/'} replace />} />
     </Routes>

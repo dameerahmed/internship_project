@@ -66,26 +66,7 @@ export default function SimulatorTab({ project }) {
     return JSON.stringify(sampleObj, null, 2);
   };
 
-  // Auto populate keys on load and when project changes
-  useEffect(() => {
-    const loadKeys = async () => {
-      if (!project?.id) return;
-      setApiKey('');
-      setSecretKey('');
-      setFetchingKeys(true);
-      try {
-        const { data } = await apiClient.get(`/v1/projects/${project.id}/refresh_keys`);
-        setApiKey((prev) => prev || data?.api_key || '');
-        setSecretKey((prev) => prev || data?.secret_key || '');
-      } catch (err) {
-        console.warn('Could not auto-fetch project test credentials:', err);
-      } finally {
-        setFetchingKeys(false);
-      }
-    };
 
-    loadKeys();
-  }, [project?.id]);
 
   // Set default selected event if configs available
   useEffect(() => {
@@ -184,6 +165,38 @@ export default function SimulatorTab({ project }) {
     }
   };
 
+  const handlePasteBothCredentials = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text) {
+        alert('Clipboard is empty.');
+        return;
+      }
+      let keyVal = '';
+      let secretVal = '';
+
+      if (text.includes('API_KEY:') || text.includes('SECRET_KEY:')) {
+        const keyMatch = text.match(/API_KEY:\s*([^\s\n]+)/i);
+        const secretMatch = text.match(/SECRET_KEY:\s*([^\s\n]+)/i);
+        if (keyMatch) keyVal = keyMatch[1];
+        if (secretMatch) secretVal = secretMatch[1];
+      } else {
+        const parts = text.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+        if (parts.length >= 2) {
+          keyVal = parts[0];
+          secretVal = parts[1];
+        } else if (parts.length === 1) {
+          keyVal = parts[0];
+        }
+      }
+
+      if (keyVal) setApiKey(keyVal);
+      if (secretVal) setSecretKey(secretVal);
+    } catch (err) {
+      alert('Could not read clipboard automatically. Please paste credentials manually.');
+    }
+  };
+
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 font-sans">
       {/* Left Box: Test Payload Configuration */}
@@ -195,9 +208,19 @@ export default function SimulatorTab({ project }) {
               Webhook Gateway Simulator & HMAC Inspector
             </h3>
             <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
-              Paste credentials from Settings, select event to auto-populate default keys, or edit custom payload to test validation
+              Paste credentials from Settings or click 'Paste Both Credentials' to auto-populate keys.
             </p>
           </div>
+
+          <button
+            type="button"
+            onClick={handlePasteBothCredentials}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-teal-500/30 bg-teal-500/10 hover:bg-teal-500/20 px-3 py-1.5 text-xs font-bold text-teal-600 dark:text-teal-400 transition active:scale-95 shrink-0"
+            title="Paste Both API Key & Secret Key from Clipboard"
+          >
+            <ClipboardPaste className="h-3.5 w-3.5 text-teal-500" />
+            <span>Paste Both Credentials</span>
+          </button>
         </div>
 
         <div className="space-y-4 text-xs">

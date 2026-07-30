@@ -125,6 +125,12 @@ class ProjectSummary(ProjectBase):
     created_at: datetime
     updated_at: datetime
 
+    total_webhooks: Optional[int] = 0
+    success_rate_pct: Optional[float] = 100.0
+    failure_rate_pct: Optional[float] = 0.0
+    dlq_count: Optional[int] = 0
+    avg_latency_ms: Optional[float] = 0.0
+
     class Config:
         from_attributes = True
 

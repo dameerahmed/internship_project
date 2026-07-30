@@ -378,118 +378,139 @@ export default function EventConfigTab({ project, onRefresh }) {
             <X className="h-4 w-4" />
           </button>
         </div>
-      )}
+        )}
+        {/* 🖼️ DASHBOARD UI KIT 2.0 CONTAINER LAYOUT MATCHING SETTINGS PAGE */}
+      <div className="flex flex-col w-full rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#0d1017] shadow-xl overflow-hidden font-sans select-none">
+        
+        {/* Top Header Bar */}
+        <div className="p-6 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-[#0a0c12] flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-xl font-extrabold text-zinc-900 dark:text-white flex items-center gap-2">
+              <Sliders className="h-5 w-5 text-indigo-500" />
+              Configured Webhook Events Directory ({eventConfigs.length})
+            </h2>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+              Manage webhook event routing rules, destination URLs, and payload validation schemas
+            </p>
+          </div>
 
-      {/* Header Bar */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md">
-        <div>
-          <h2 className="text-lg font-extrabold tracking-tight text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
-            <Sliders className="h-5 w-5 text-emerald-500" />
-            Configured Webhook Events Directory ({eventConfigs.length})
-          </h2>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
-            Click any event row below to open its dedicated configuration page & payload schema inspector
-          </p>
+          <button
+            type="button"
+            onClick={handleOpenAddModal}
+            className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 px-5 py-2.5 text-xs font-bold text-white shadow-lg transition active:scale-95 shrink-0"
+          >
+            <Plus className="h-4 w-4" />
+            <span>Add New Event Rule</span>
+          </button>
         </div>
 
-        <button
-          type="button"
-          onClick={handleOpenAddModal}
-          className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 px-4 py-2.5 text-xs font-bold text-white shadow-md transition active:scale-95 shrink-0"
-        >
-          <Plus className="h-4 w-4" />
-          <span>Add New Event Rule</span>
-        </button>
-      </div>
+        {/* 🚀 Stacked Line-by-Line Event Routing Cards */}
+        <div className="p-6 lg:p-8 bg-white dark:bg-[#0d1017] space-y-4">
+          {eventConfigs.length === 0 ? (
+            <div className="flex h-56 flex-col items-center justify-center text-center text-xs text-zinc-400 rounded-2xl border border-dashed border-zinc-200 dark:border-zinc-800/80 p-8">
+              <Sliders className="h-8 w-8 text-indigo-400 mb-2" />
+              <p className="font-bold text-zinc-700 dark:text-zinc-200 text-sm">No webhook events configured yet</p>
+              <p className="text-zinc-500 mt-1">Click 'Add New Event Rule' above to create your first event hook.</p>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3.5">
+              {eventConfigs.map((config) => {
+                const urls = Array.isArray(config.target_urls) && config.target_urls.length
+                  ? config.target_urls
+                  : (Array.isArray(config.metadata_json?.urls) && config.metadata_json.urls.length
+                    ? config.metadata_json.urls
+                    : [config.target_url || 'https://api.yourcompany.com/webhooks']);
 
-      {/* 🚀 Clean Line-by-Line Stacked Event List (Clickable row to open event detail page!) */}
-      <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800/80 dark:bg-[#0c0e17]/90 backdrop-blur-md">
-        {eventConfigs.length === 0 ? (
-          <div className="flex h-48 flex-col items-center justify-center text-center text-xs text-zinc-400">
-            <Sliders className="h-8 w-8 text-zinc-400 mb-2" />
-            <p className="font-semibold text-zinc-700 dark:text-zinc-300">No webhook events configured yet</p>
-            <p className="text-zinc-500 mt-1">Click 'Add New Event Rule' above to create your first event hook.</p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {eventConfigs.map((config) => {
-              const urls = Array.isArray(config.target_urls) && config.target_urls.length
-                ? config.target_urls
-                : (Array.isArray(config.metadata_json?.urls) && config.metadata_json.urls.length
-                  ? config.metadata_json.urls
-                  : [config.target_url || 'https://api.yourcompany.com/webhooks']);
+                const keys = config.payload_keys || config.metadata_json?.payload_keys || ['order_id'];
+                const primaryUrl = urls[0] || 'https://api.yourcompany.com/webhooks';
 
-              const keys = config.payload_keys || config.metadata_json?.payload_keys || ['order_id'];
-              const primaryUrl = urls[0] || 'https://api.yourcompany.com/webhooks';
-
-              return (
-                <div
-                  key={config.id || config.event_type}
-                  onClick={() => handleOpenEditModal(config)}
-                  className="group relative flex items-center justify-between gap-4 rounded-xl border border-zinc-200 bg-zinc-50/50 p-4 shadow-sm backdrop-blur-md dark:border-zinc-800/80 dark:bg-zinc-950/60 hover:border-emerald-500/50 hover:bg-zinc-100/80 dark:hover:bg-zinc-900/80 transition-all duration-150 cursor-pointer"
-                >
-                  {/* Left: Event Type Name & Active Status ONLY */}
-                  <div className="flex items-center gap-3.5">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-extrabold text-xs shrink-0">
-                      ⚡
+                return (
+                  <div
+                    key={config.id || config.event_type}
+                    onClick={() => handleOpenEditModal(config)}
+                    className="group relative flex flex-col md:flex-row md:items-center justify-between gap-4 rounded-xl border border-zinc-200 dark:border-zinc-800/80 bg-zinc-50/60 dark:bg-[#0a0c12]/80 p-4 shadow-sm backdrop-blur-md hover:border-indigo-500/50 hover:bg-zinc-100/80 dark:hover:bg-[#121623] transition-all duration-200 cursor-pointer"
+                  >
+                    {/* Left: Event Type & Status */}
+                    <div className="flex items-center gap-3.5">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-indigo-500/20 bg-indigo-500/10 text-indigo-400 font-extrabold text-xs shrink-0">
+                        ⚡
+                      </div>
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-3">
+                          <span className="font-mono text-sm font-extrabold text-zinc-900 dark:text-white group-hover:text-indigo-400 transition">
+                            {config.event_type}
+                          </span>
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                            config.is_active ?? true
+                              ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
+                              : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'
+                          }`}>
+                            {config.is_active ?? true ? 'Active' : 'Disabled'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs font-mono text-zinc-500 dark:text-zinc-400 truncate">
+                          <Globe className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
+                          <span className="truncate max-w-md">{primaryUrl}</span>
+                          {urls.length > 1 && (
+                            <span className="text-[10px] bg-indigo-500/15 text-indigo-400 font-bold px-1.5 py-0.2 rounded">
+                              +{urls.length - 1} more
+                            </span>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-3">
-                      <span className="font-mono text-sm font-extrabold text-zinc-900 dark:text-white group-hover:text-emerald-500 transition">
-                        {config.event_type}
-                      </span>
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
-                        config.is_active ?? true
-                          ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
-                          : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'
-                      }`}>
-                        {config.is_active ?? true ? 'Active' : 'Disabled'}
-                      </span>
+
+                    {/* Middle: Payload Schema Keys Summary */}
+                    <div className="hidden lg:flex items-center gap-2 text-xs font-mono text-zinc-400 bg-zinc-100 dark:bg-zinc-950 px-3 py-1.5 rounded-xl border border-zinc-200 dark:border-zinc-800/80">
+                      <Code2 className="h-3.5 w-3.5 text-indigo-400" />
+                      <span>Schema:</span>
+                      <span className="text-emerald-400 font-bold">{keys.slice(0, 3).join(', ')}{keys.length > 3 ? ` +${keys.length - 3}` : ''}</span>
+                    </div>
+
+                    {/* Right: Actions */}
+                    <div className="flex items-center justify-end gap-3 shrink-0">
+                      <button
+                        type="button"
+                        onClick={(e) => handleToggleEvent(e, config)}
+                        className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-bold transition ${
+                          config.is_active ?? true
+                            ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30 hover:bg-amber-500/20'
+                            : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20'
+                        }`}
+                      >
+                        {config.is_active ?? true ? 'Disable' : 'Enable'}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={(e) => handleDeleteEventConfig(e, config.id, config.event_type)}
+                        className="p-2 rounded-xl text-zinc-400 hover:text-rose-500 hover:bg-rose-500/10 transition"
+                        title="Delete Event Rule"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+
+                      <div className="flex items-center gap-1 text-xs font-bold text-indigo-400 group-hover:translate-x-1 transition-transform pl-1">
+                        <span>Configure</span>
+                        <ArrowRight className="h-4 w-4" />
+                      </div>
                     </div>
                   </div>
-
-                  {/* Right: Actions */}
-                  <div className="flex items-center justify-end gap-3 shrink-0">
-                    <button
-                      type="button"
-                      onClick={(e) => handleToggleEvent(e, config)}
-                      className={`inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-                        config.is_active ?? true
-                          ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 hover:bg-amber-500/20'
-                          : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20'
-                      }`}
-                    >
-                      {config.is_active ?? true ? 'Disable' : 'Enable'}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={(e) => handleDeleteEventConfig(e, config.id, config.event_type)}
-                      className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-500/10 transition"
-                      title="Delete Event Rule"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-
-                    <div className="flex items-center gap-1 text-xs font-bold text-indigo-500 group-hover:translate-x-1 transition-transform pl-1">
-                      <span>Configure</span>
-                      <ArrowRight className="h-4 w-4" />
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* 🛠️ DEDICATED EVENT CONFIGURATION & SCHEMA PAGE / MODAL */}
       {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-3 sm:p-4">
-          <div className="w-full max-w-4xl max-h-[92vh] overflow-y-auto rounded-3xl border border-zinc-200 bg-white p-5 shadow-2xl dark:border-zinc-800 dark:bg-zinc-900 custom-scrollbar">
-            <div className="sticky top-0 z-10 -mx-5 mb-4 flex items-center justify-between border-b border-zinc-100 bg-white/95 px-5 py-4 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-3 sm:p-4">
+          <div className="w-full max-w-4xl max-h-[92vh] overflow-y-auto rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl dark:border-zinc-800 dark:bg-[#0d1017] custom-scrollbar">
+            <div className="sticky top-0 z-10 -mx-6 -mt-6 mb-5 flex items-center justify-between border-b border-zinc-100 bg-white/95 px-6 py-4 backdrop-blur dark:border-zinc-800 dark:bg-[#0a0c12]">
               <div>
                 <h3 className="text-base font-extrabold text-zinc-900 dark:text-white flex items-center gap-2">
-                  <Sliders className="h-5 w-5 text-emerald-500" />
+                  <Sliders className="h-5 w-5 text-indigo-500" />
                   {editingConfigId ? `Event Configuration Page: "${eventForm.event_type}"` : 'Configure New Webhook Event Rule'}
                 </h3>
                 <p className="text-xs text-zinc-400 mt-0.5">Configure target URLs, custom payload keys, and sample schema JSON</p>
