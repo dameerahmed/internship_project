@@ -88,7 +88,7 @@ interface ProjectStoreState {
 
   // Actions
   setCompanyProjects: (projects: ProjectSummary[]) => void;
-  setCompanyMetrics: (metrics: CompanyMetrics | null) => void;
+  setCompanyMetrics: (metrics: CompanyMetrics | null | ((prev: CompanyMetrics | null) => CompanyMetrics | null)) => void;
   setCompanyMetricsLoading: (loading: boolean) => void;
   
   setActiveProject: (project: ProjectDetail | null) => void;
@@ -122,7 +122,13 @@ export const useProjectStore = create<ProjectStoreState>()((set) => ({
   ...initialProjectState,
 
   setCompanyProjects: (companyProjects) => set({ companyProjects }),
-  setCompanyMetrics: (companyMetrics) => set({ companyMetrics }),
+  setCompanyMetrics: (companyMetrics) =>
+    set((state) => ({
+      companyMetrics:
+        typeof companyMetrics === "function"
+          ? (companyMetrics as (prev: CompanyMetrics | null) => CompanyMetrics | null)(state.companyMetrics)
+          : companyMetrics,
+    })),
   setCompanyMetricsLoading: (companyMetricsLoading) => set({ companyMetricsLoading }),
 
   setActiveProject: (project) =>

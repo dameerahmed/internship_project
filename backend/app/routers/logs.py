@@ -14,11 +14,13 @@ from sqlalchemy.orm import selectinload
 import time
 from app.services.dependencies import get_current_company
 from app.services.redis_client import get_redis_client
+from app.models.company import Company
 from app.models.event_config import EventConfig
 from app.models.project import Project
 from app.models.webhook_log import WebhookLog, WebhookStatus
 from app.models.webhook_event import WebhookEvent
 from app.services.celery_worker import dispatch_webhook_task
+from app.routers.metrics import get_company_aggregated_metrics, get_project_specific_metrics
 from app.services.metrics_service import metrics_service
 from app.services.pubsub_service import (
     RedisPubSubSubscriber,
@@ -679,11 +681,26 @@ async def _build_dashboard_snapshot(auth_company_id: int, target_project_id: Opt
         except Exception:
             pass
 
-        metrics = await metrics_service.get_or_hydrate_metrics(auth_company_id, db_session, project_id=target_project_id)
+        if target_project_id:
+            company = await db_session.get(Company, auth_company_id)
+            metrics = await get_project_specific_metrics(target_project_id, db_session, company)
+        else:
+            company = await db_session.get(Company, auth_company_id)
+            metrics = await get_company_aggregated_metrics(db_session, company)
         break
 
-    success_rate_pct = metrics["success_rate"]
+    success_rate_pct = metrics.get("success_rate_pct") if metrics.get("success_rate_pct") is not None else metrics.get("success_rate")
     failure_rate_pct = None if success_rate_pct is None else round(100 - success_rate_pct, 2)
+
+    total_webhooks_24h = metrics.get("total_webhooks_24h") if metrics.get("total_webhooks_24h") is not None else metrics.get("total_webhooks", 0)
+    total_webhooks = metrics.get("total_webhooks") if metrics.get("total_webhooks") is not None else total_webhooks_24h
+    throughput_rpm = metrics.get("throughput_rpm", 0)
+    throughput_rps = metrics.get("throughput_rps", 0.0)
+    success_count = metrics.get("success_count")
+    failed_count = metrics.get("failed_count")
+    if success_count is None or failed_count is None:
+        success_count = round((total_webhooks_24h * (success_rate_pct or 0)) / 100) if total_webhooks_24h else 0
+        failed_count = total_webhooks_24h - success_count
 
     return {
         "type": "DASHBOARD_UPDATE",
@@ -691,32 +708,24 @@ async def _build_dashboard_snapshot(auth_company_id: int, target_project_id: Opt
         "total_projects": len(projects),
         "active_projects": active_projects,
         "total_event_routes": total_routes,
-        "total_webhooks": metrics["total_webhooks"],
-        "total_webhooks_24h": metrics["total_webhooks"],
-        "throughput_rpm": metrics["throughput_rpm"],
-        "throughput_rps": metrics["throughput_rps"],
-        "success_count": metrics["success_count"],
-        "failed_count": metrics["failed_count"],
+        "total_webhooks": total_webhooks,
+        "total_webhooks_24h": total_webhooks_24h,
+        "throughput_rpm": throughput_rpm,
+        "throughput_rps": throughput_rps,
+        "success_count": success_count,
+        "failed_count": failed_count,
         "success_rate": success_rate_pct,
         "success_rate_pct": success_rate_pct,
         "failure_rate": failure_rate_pct,
         "failure_rate_pct": failure_rate_pct,
-        "avg_latency_ms": metrics["avg_latency_ms"],
+        "avg_latency_ms": metrics.get("avg_latency_ms", 0.0),
         "dlq_count": company_dlq_count,
         "total_dlq_count": company_dlq_count,
         "main_queue_count": pending_count,
         "redis_status": redis_status,
         "redis_latency_ms": redis_latency_ms,
         "rabbitmq_status": rabbitmq_status,
-        "throughput_series": [
-            {
-                "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "label": "now",
-                "total": metrics["total_webhooks"],
-                "success": metrics["success_count"],
-                "failed": metrics["failed_count"],
-            }
-        ],
+        "throughput_series": metrics.get("throughput_series", []),
     }
 
 

@@ -41,6 +41,7 @@ def normalize_event_config_payload(event: Any) -> Dict[str, Any]:
             candidate_urls = [raw_target_url.strip()]
 
     metadata["urls"] = candidate_urls
+    metadata["target_urls"] = candidate_urls
 
     payload_keys = _coerce_string_list(_get_value(event, "payload_keys") or _get_value(event, "payload_key"))
     payload_types = _coerce_string_list(_get_value(event, "payload_types") or _get_value(event, "payload_type"))
@@ -55,6 +56,7 @@ def normalize_event_config_payload(event: Any) -> Dict[str, Any]:
     return {
         "event_type": normalized_event_type,
         "target_url": candidate_urls[0] if candidate_urls else "",
+        "target_urls": candidate_urls,
         "metadata_json": metadata,
         "payload_keys": payload_keys,
         "payload_types": payload_types,

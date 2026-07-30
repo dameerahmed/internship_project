@@ -5,7 +5,9 @@ export const normalizeEventConfig = (config = {}) => {
     ? normalizedConfig.target_urls
     : (Array.isArray(normalizedConfig.metadata_json?.urls) && normalizedConfig.metadata_json.urls.length
       ? normalizedConfig.metadata_json.urls
-      : (normalizedConfig.target_url ? [normalizedConfig.target_url] : []));
+      : (Array.isArray(normalizedConfig.metadata_json?.target_urls) && normalizedConfig.metadata_json.target_urls.length
+        ? normalizedConfig.metadata_json.target_urls
+        : (normalizedConfig.target_url ? [normalizedConfig.target_url] : [])));
 
   const payloadKeys = Array.isArray(normalizedConfig.payload_keys)
     ? normalizedConfig.payload_keys
