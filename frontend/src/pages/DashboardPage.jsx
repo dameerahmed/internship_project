@@ -166,8 +166,8 @@ export default function DashboardPage() {
 
   const totalSent = m.total_webhooks_24h || 0;
   const isColdStart = m.success_rate_pct === null || m.success_rate_pct === undefined;
-  const successfulCount = isColdStart ? 0 : Math.round(totalSent * ((m.success_rate_pct || 0) / 100));
-  const failedCount = Math.round(totalSent * ((m.failure_rate_pct || 0) / 100));
+  const successfulCount = m.success_count_24h ?? (isColdStart ? 0 : Math.round(totalSent * ((m.success_rate_pct || 0) / 100)));
+  const failedCount = m.failed_count_24h ?? Math.round(totalSent * ((m.failure_rate_pct || 0) / 100));
   const pendingCount = m.total_dlq_count || 0;
   const retryRate = `${(m.failure_rate_pct || 0).toFixed(0)}%`;
 
@@ -219,12 +219,12 @@ export default function DashboardPage() {
 
   return (
     <ProtectedLayout>
-      <div className="flex flex-col gap-8 font-sans w-full max-w-7xl mx-auto text-zinc-900 dark:text-zinc-100 pb-12 select-none">
+      <div className="flex flex-col gap-8 font-sans w-full max-w-7xl mx-auto text-zinc-100 pb-12 select-none">
         
         {/* 🌟 1. Top Header Bar */}
-        <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 pb-4">
+        <div className="flex items-center justify-between border-b border-cyan-900/20 pb-4">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight text-zinc-900 dark:text-white">
+            <h1 className="text-2xl font-bold tracking-tight text-white">
               Company Webhooks Overview
             </h1>
             <p className="text-xs text-zinc-400 font-normal mt-0.5">
@@ -235,7 +235,7 @@ export default function DashboardPage() {
           <button
             type="button"
             onClick={() => navigate('/dashboard/projects')}
-            className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 px-4 py-2 text-xs font-bold text-white shadow-md transition active:scale-95 shrink-0"
+            className="inline-flex items-center gap-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 px-4 py-2 text-xs font-bold text-white shadow-lg shadow-cyan-950/40 transition active:scale-95 shrink-0 border border-cyan-400/30"
           >
             <span>Manage Projects</span>
             <ArrowRight className="h-4 w-4" />
@@ -243,22 +243,22 @@ export default function DashboardPage() {
         </div>
 
         {/* 📈 2. Resend-Style Micro Inline Metrics Row */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-6 border-b border-zinc-200 dark:border-zinc-800 pb-8">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-6 border-b border-cyan-900/20 pb-8">
           
           {/* Metric 1: Total Webhooks Sent */}
           <div 
             onClick={() => navigate('/dashboard/projects?sort=volume')}
             title="Click to view projects sorted by webhook volume"
-            className="space-y-1 p-2 rounded-xl cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-900/60 transition group select-none"
+            className="space-y-1 p-3 rounded-xl cursor-pointer bg-[#0d151c] border border-cyan-900/30 hover:border-cyan-500/40 transition group select-none"
           >
-            <span className="text-[11px] font-semibold text-zinc-400 group-hover:text-indigo-500 block uppercase tracking-wider transition">
+            <span className="text-[11px] font-mono font-bold text-cyan-400/80 group-hover:text-cyan-300 block uppercase tracking-wider transition">
               Total Webhooks Sent ↗
             </span>
             <div className="flex items-baseline gap-3">
-              <span className="text-2xl font-bold text-zinc-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition">
+              <span className="text-2xl font-extrabold text-white group-hover:text-cyan-400 transition">
                 {totalSent.toLocaleString()}
               </span>
-              <svg className="w-12 h-5 text-indigo-500 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
+              <svg className="w-12 h-5 text-cyan-400 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
                 <path strokeLinecap="round" strokeLinejoin="round" d={getSparklinePath('total')} />
               </svg>
             </div>
@@ -268,16 +268,16 @@ export default function DashboardPage() {
           <div 
             onClick={() => navigate('/dashboard/projects?sort=success')}
             title="Click to view projects sorted by highest success rate"
-            className="space-y-1 p-2 rounded-xl cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-900/60 transition group select-none"
+            className="space-y-1 p-3 rounded-xl cursor-pointer bg-[#0d151c] border border-cyan-900/30 hover:border-cyan-500/40 transition group select-none"
           >
-            <span className="text-[11px] font-semibold text-zinc-400 group-hover:text-emerald-500 block uppercase tracking-wider transition">
+            <span className="text-[11px] font-mono font-bold text-cyan-400/80 group-hover:text-emerald-400 block uppercase tracking-wider transition">
               Successful ↗
             </span>
             <div className="flex items-baseline gap-3">
-              <span className="text-2xl font-bold text-zinc-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition">
+              <span className="text-2xl font-extrabold text-white group-hover:text-emerald-400 transition">
                 {isColdStart ? '0' : successfulCount.toLocaleString()}
               </span>
-              <svg className="w-12 h-5 text-emerald-500 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
+              <svg className="w-12 h-5 text-emerald-400 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
                 <path strokeLinecap="round" strokeLinejoin="round" d={getSparklinePath('success')} />
               </svg>
             </div>
@@ -287,16 +287,16 @@ export default function DashboardPage() {
           <div 
             onClick={() => navigate('/dashboard/projects?sort=failure')}
             title="Click to view projects sorted by highest failure rate"
-            className="space-y-1 p-2 rounded-xl cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-900/60 transition group select-none"
+            className="space-y-1 p-3 rounded-xl cursor-pointer bg-[#0d151c] border border-cyan-900/30 hover:border-rose-500/40 transition group select-none"
           >
-            <span className="text-[11px] font-semibold text-zinc-400 group-hover:text-rose-500 block uppercase tracking-wider transition">
+            <span className="text-[11px] font-mono font-bold text-cyan-400/80 group-hover:text-rose-400 block uppercase tracking-wider transition">
               Failed ↗
             </span>
             <div className="flex items-baseline gap-3">
-              <span className="text-2xl font-bold text-rose-600 dark:text-rose-400 transition">
+              <span className="text-2xl font-extrabold text-rose-400 transition">
                 {failedCount}
               </span>
-              <svg className="w-12 h-5 text-rose-500 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
+              <svg className="w-12 h-5 text-rose-400 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
                 <path strokeLinecap="round" strokeLinejoin="round" d={getSparklinePath('failed')} />
               </svg>
             </div>
@@ -306,16 +306,16 @@ export default function DashboardPage() {
           <div 
             onClick={() => navigate('/dashboard/projects?sort=dlq')}
             title="Click to view projects sorted by DLQ items"
-            className="space-y-1 p-2 rounded-xl cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-900/60 transition group select-none"
+            className="space-y-1 p-3 rounded-xl cursor-pointer bg-[#0d151c] border border-cyan-900/30 hover:border-amber-500/40 transition group select-none"
           >
-            <span className="text-[11px] font-semibold text-zinc-400 group-hover:text-amber-500 block uppercase tracking-wider transition">
+            <span className="text-[11px] font-mono font-bold text-cyan-400/80 group-hover:text-amber-400 block uppercase tracking-wider transition">
               Pending DLQ ↗
             </span>
             <div className="flex items-baseline gap-3">
-              <span className="text-2xl font-bold text-zinc-900 dark:text-white group-hover:text-amber-600 dark:group-hover:text-amber-400 transition">
+              <span className="text-2xl font-extrabold text-white group-hover:text-amber-400 transition">
                 {pendingCount}
               </span>
-              <svg className="w-12 h-5 text-amber-500 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
+              <svg className="w-12 h-5 text-amber-400 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
                 <path strokeLinecap="round" strokeLinejoin="round" d={getSparklinePath('failed')} />
               </svg>
             </div>
@@ -325,13 +325,13 @@ export default function DashboardPage() {
           <div 
             onClick={() => navigate('/dashboard/projects?sort=failure')}
             title="Click to view projects sorted by failure & retry rate"
-            className="space-y-1 p-2 rounded-xl cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-900/60 transition group select-none"
+            className="space-y-1 p-3 rounded-xl cursor-pointer bg-[#0d151c] border border-cyan-900/30 hover:border-rose-500/40 transition group select-none"
           >
-            <span className="text-[11px] font-semibold text-zinc-400 group-hover:text-rose-500 block uppercase tracking-wider transition">
+            <span className="text-[11px] font-mono font-bold text-cyan-400/80 group-hover:text-rose-400 block uppercase tracking-wider transition">
               Retry Rate ↗
             </span>
             <div className="flex items-baseline gap-3">
-              <span className="text-2xl font-bold text-zinc-900 dark:text-white group-hover:text-rose-600 dark:group-hover:text-rose-400 transition">
+              <span className="text-2xl font-extrabold text-white group-hover:text-rose-400 transition">
                 {retryRate}
               </span>
               <svg className="w-12 h-5 text-rose-400 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
@@ -346,16 +346,16 @@ export default function DashboardPage() {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
           
           {/* Left Analytics Card (7 Cols): Webhook Delivery Statistics */}
-          <div className="lg:col-span-7 flex flex-col justify-between rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800/80 dark:bg-[#0c0e17]/90 backdrop-blur-md space-y-4">
+          <div className="lg:col-span-7 flex flex-col justify-between rounded-2xl border border-cyan-900/30 bg-[#0d151c] p-5 shadow-xl space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-sm font-extrabold text-zinc-900 dark:text-white tracking-tight">
+                <h2 className="text-sm font-extrabold text-white tracking-tight">
                   Webhook Delivery Statistics
                 </h2>
                 <p className="text-[11px] text-zinc-400 font-medium">Real-time throughput trend (24h)</p>
               </div>
 
-              <select className="rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 text-xs px-2.5 py-1 text-zinc-700 dark:text-zinc-300 font-medium focus:outline-none">
+              <select className="rounded-xl border border-cyan-900/40 bg-[#070e14] text-xs px-2.5 py-1 text-zinc-300 font-medium focus:outline-none">
                 <option>Last 24 Hours</option>
               </select>
             </div>
@@ -365,15 +365,15 @@ export default function DashboardPage() {
               <svg className="w-full h-full overflow-visible" viewBox="0 0 500 160" preserveAspectRatio="none">
                 <defs>
                   <linearGradient id="splineGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.35" />
-                    <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.0" />
+                    <stop offset="0%" stopColor="#06b6d4" stopOpacity="0.35" />
+                    <stop offset="100%" stopColor="#06b6d4" stopOpacity="0.0" />
                   </linearGradient>
                 </defs>
 
                 {/* Grid Lines */}
-                <line x1="0" y1="40" x2="500" y2="40" stroke="currentColor" className="text-zinc-100 dark:text-zinc-800/50" strokeDasharray="3 3" />
-                <line x1="0" y1="80" x2="500" y2="80" stroke="currentColor" className="text-zinc-100 dark:text-zinc-800/50" strokeDasharray="3 3" />
-                <line x1="0" y1="120" x2="500" y2="120" stroke="currentColor" className="text-zinc-100 dark:text-zinc-800/50" strokeDasharray="3 3" />
+                <line x1="0" y1="40" x2="500" y2="40" stroke="currentColor" className="text-cyan-900/20" strokeDasharray="3 3" />
+                <line x1="0" y1="80" x2="500" y2="80" stroke="currentColor" className="text-cyan-900/20" strokeDasharray="3 3" />
+                <line x1="0" y1="120" x2="500" y2="120" stroke="currentColor" className="text-cyan-900/20" strokeDasharray="3 3" />
 
                 {/* Dynamic Area Path */}
                 <path d={chartGeometry.areaPath} fill="url(#splineGradient)" />
@@ -382,26 +382,26 @@ export default function DashboardPage() {
                 <path
                   d={chartGeometry.linePath}
                   fill="none"
-                  stroke="#3b82f6"
+                  stroke="#06b6d4"
                   strokeWidth="3"
                   strokeLinecap="round"
                 />
 
                 {/* Peak Highlight Circle */}
-                <circle cx={chartGeometry.peakX} cy={chartGeometry.peakY} r="5" fill="#3b82f6" stroke="#ffffff" strokeWidth="2" />
+                <circle cx={chartGeometry.peakX} cy={chartGeometry.peakY} r="5" fill="#06b6d4" stroke="#ffffff" strokeWidth="2" />
               </svg>
 
               {/* Peak Tooltip Pill */}
               <div 
                 style={{ left: `${(chartGeometry.peakX / 500) * 100}%` }}
-                className="absolute top-6 -translate-x-1/2 rounded-md bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 px-2.5 py-1 text-[11px] font-bold shadow-lg flex flex-col items-center pointer-events-none z-10"
+                className="absolute top-6 -translate-x-1/2 rounded-lg bg-[#070e14] border border-cyan-500/40 text-cyan-400 px-2.5 py-1 text-[11px] font-bold shadow-lg flex flex-col items-center pointer-events-none z-10 font-mono"
               >
-                <span className="text-[10px] text-zinc-400 font-mono">Peak Traffic</span>
+                <span className="text-[10px] text-zinc-400">Peak Traffic</span>
                 <span>{chartGeometry.peakTotal > 0 ? `${chartGeometry.peakTotal} Webhooks` : 'Real-time Ingress'}</span>
               </div>
             </div>
 
-            <div className="flex items-center justify-between text-[11px] text-zinc-400 font-mono pt-2 border-t border-zinc-100 dark:border-zinc-800/80">
+            <div className="flex items-center justify-between text-[11px] text-zinc-400 font-mono pt-2 border-t border-cyan-900/20">
               <span>0:00</span>
               <span>6:00</span>
               <span>12:00</span>
@@ -411,16 +411,16 @@ export default function DashboardPage() {
           </div>
 
           {/* Right Analytics Card (5 Cols): Delivery Status Breakdown */}
-          <div className="lg:col-span-5 flex flex-col justify-between rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800/80 dark:bg-[#0c0e17]/90 backdrop-blur-md space-y-4">
+          <div className="lg:col-span-5 flex flex-col justify-between rounded-2xl border border-cyan-900/30 bg-[#0d151c] p-5 shadow-xl space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-sm font-extrabold text-zinc-900 dark:text-white tracking-tight">
+                <h2 className="text-sm font-extrabold text-white tracking-tight">
                   Delivery Status Distribution
                 </h2>
                 <p className="text-[11px] text-zinc-400 font-medium">Real-time status ratio</p>
               </div>
 
-              <select className="rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 text-xs px-2 py-1 text-zinc-700 dark:text-zinc-300 font-medium focus:outline-none">
+              <select className="rounded-xl border border-cyan-900/40 bg-[#070e14] text-xs px-2 py-1 text-zinc-300 font-medium focus:outline-none">
                 <option>All Events</option>
               </select>
             </div>
@@ -433,7 +433,7 @@ export default function DashboardPage() {
                   d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
                   fill="none"
                   stroke="currentColor"
-                  className="text-zinc-100 dark:text-zinc-800/80"
+                  className="text-cyan-900/20"
                   strokeWidth="3.8"
                 />
 
@@ -462,18 +462,18 @@ export default function DashboardPage() {
               {/* Center Donut Label */}
               <div className="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none">
                 <span className="text-[10px] text-zinc-400 font-mono uppercase tracking-wider">Total</span>
-                <span className="text-lg font-extrabold text-zinc-900 dark:text-white">
+                <span className="text-lg font-extrabold text-white">
                   {totalSent}
                 </span>
               </div>
             </div>
 
             {/* Donut Legend Items */}
-            <div className="flex items-center justify-around text-xs font-semibold pt-2 border-t border-zinc-100 dark:border-zinc-800/80">
+            <div className="flex items-center justify-around text-xs font-semibold pt-2 border-t border-cyan-900/20">
               <div className="flex items-center gap-2">
                 <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 shrink-0" />
                 <div className="flex flex-col">
-                  <span className="text-zinc-800 dark:text-zinc-200">Successful</span>
+                  <span className="text-zinc-200">Successful</span>
                   <span className="text-[11px] text-zinc-400 font-mono">
                     {successfulCount} ({isColdStart ? 'N/A' : `${m.success_rate_pct}%`})
                   </span>
@@ -483,7 +483,7 @@ export default function DashboardPage() {
               <div className="flex items-center gap-2">
                 <span className="h-2.5 w-2.5 rounded-full bg-rose-500 shrink-0" />
                 <div className="flex flex-col">
-                  <span className="text-zinc-800 dark:text-zinc-200">Failed / DLQ</span>
+                  <span className="text-zinc-200">Failed / DLQ</span>
                   <span className="text-[11px] text-zinc-400 font-mono">{failedCount} ({m.failure_rate_pct}%)</span>
                 </div>
               </div>
@@ -494,38 +494,38 @@ export default function DashboardPage() {
         </div>
 
         {/* ⚡ 4. Latency Percentiles */}
-        <div className="border-t border-zinc-200 dark:border-zinc-800 pt-8">
+        <div className="border-t border-cyan-900/20 pt-8">
           
           <div className="space-y-4">
-            <h3 className="text-sm font-bold text-zinc-900 dark:text-white">
+            <h3 className="text-sm font-bold text-white">
               Latency Percentiles
             </h3>
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-              <div>
-                <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider block">P50</span>
-                <span className="text-base font-bold text-zinc-900 dark:text-white mt-1 block">
+              <div className="rounded-xl border border-cyan-900/30 bg-[#0d151c] p-4">
+                <span className="text-[11px] font-mono font-bold text-cyan-400/80 uppercase tracking-wider block">P50</span>
+                <span className="text-base font-bold text-white mt-1 block">
                   {m.p50_latency_ms || 0.0} <span className="text-xs font-normal text-zinc-400">ms</span>
                 </span>
               </div>
 
-              <div>
-                <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider block">P90</span>
-                <span className="text-base font-bold text-zinc-900 dark:text-white mt-1 block">
+              <div className="rounded-xl border border-cyan-900/30 bg-[#0d151c] p-4">
+                <span className="text-[11px] font-mono font-bold text-cyan-400/80 uppercase tracking-wider block">P90</span>
+                <span className="text-base font-bold text-white mt-1 block">
                   {m.p90_latency_ms || 0.0} <span className="text-xs font-normal text-zinc-400">ms</span>
                 </span>
               </div>
 
-              <div>
-                <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider block">P95</span>
-                <span className="text-base font-bold text-zinc-900 dark:text-white mt-1 block">
+              <div className="rounded-xl border border-cyan-900/30 bg-[#0d151c] p-4">
+                <span className="text-[11px] font-mono font-bold text-cyan-400/80 uppercase tracking-wider block">P95</span>
+                <span className="text-base font-bold text-white mt-1 block">
                   {m.p95_latency_ms || 0.0} <span className="text-xs font-normal text-zinc-400">ms</span>
                 </span>
               </div>
 
-              <div>
-                <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider block">P99</span>
-                <span className="text-base font-bold text-zinc-900 dark:text-white mt-1 block">
+              <div className="rounded-xl border border-cyan-900/30 bg-[#0d151c] p-4">
+                <span className="text-[11px] font-mono font-bold text-cyan-400/80 uppercase tracking-wider block">P99</span>
+                <span className="text-base font-bold text-white mt-1 block">
                   {m.p99_latency_ms || 0.0} <span className="text-xs font-normal text-zinc-400">ms</span>
                 </span>
               </div>

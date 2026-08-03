@@ -8,9 +8,8 @@ export default function ProjectsGrid({ projects = [], onRefresh, onCreateClick }
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [searchTerm, setSearchTerm] = useState('');
-  const [togglingId, setTogglingId] = useState(null);
 
-  // Derive current active sort parameter from URL query string (e.g. ?sort=failure)
+  // Derive current active sort parameter from URL query string
   const currentSort = searchParams.get('sort') || 'default';
 
   const handleSortChange = (newSort) => {
@@ -52,24 +51,19 @@ export default function ProjectsGrid({ projects = [], onRefresh, onCreateClick }
     switch (currentSort) {
       case 'dlq':
       case 'failure':
-        // Sort highest DLQ count and failure rate first
         result.sort((a, b) => (b.dlq_count - a.dlq_count) || (b.failure_rate_pct - a.failure_rate_pct));
         break;
       case 'latency':
-        // Sort highest latency first
         result.sort((a, b) => b.avg_latency_ms - a.avg_latency_ms);
         break;
       case 'success':
-        // Sort highest success rate first
         result.sort((a, b) => b.success_rate_pct - a.success_rate_pct);
         break;
       case 'volume':
-        // Sort highest volume first
         result.sort((a, b) => b.total_webhooks - a.total_webhooks);
         break;
       case 'default':
       default:
-        // Best performing first (highest success, lowest latency)
         result.sort((a, b) => (b.success_rate_pct - a.success_rate_pct) || (a.avg_latency_ms - b.avg_latency_ms));
         break;
     }
@@ -83,16 +77,16 @@ export default function ProjectsGrid({ projects = [], onRefresh, onCreateClick }
   };
 
   return (
-    <div className="flex flex-col gap-6 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md font-sans transition-colors w-full select-none">
+    <div className="flex flex-col gap-6 rounded-2xl border border-cyan-900/30 bg-[#0d151c] p-6 shadow-xl font-sans transition-colors w-full select-none">
       
       {/* 🚀 Header & Search controls */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-100 dark:border-zinc-800/80 pb-4">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b border-cyan-900/20 pb-4">
         <div>
-          <h2 className="text-lg font-extrabold text-zinc-900 dark:text-white tracking-tight flex items-center gap-2">
-            <Database className="h-5 w-5 text-emerald-500" />
+          <h2 className="text-lg font-extrabold text-white tracking-tight flex items-center gap-2">
+            <Database className="h-5 w-5 text-cyan-400" />
             Company Projects Directory ({projects.length})
           </h2>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+          <p className="text-xs text-zinc-400 mt-0.5">
             Manage company projects & inspect metric performance
           </p>
         </div>
@@ -105,14 +99,14 @@ export default function ProjectsGrid({ projects = [], onRefresh, onCreateClick }
               placeholder="Search projects..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full rounded-xl border border-zinc-200 bg-zinc-50 py-2 pl-9 pr-4 text-xs text-zinc-900 placeholder-zinc-400 outline-none focus:border-emerald-500 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:placeholder-zinc-500 transition"
+              className="w-full rounded-xl border border-cyan-900/40 bg-[#070e14] py-2 pl-9 pr-4 text-xs text-white placeholder-zinc-500 outline-none focus:border-cyan-500 transition"
             />
           </div>
 
           <button
             type="button"
             onClick={onCreateClick}
-            className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 px-4 py-2 text-xs font-bold text-white shadow-md transition active:scale-95 shrink-0"
+            className="inline-flex items-center gap-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 px-4 py-2 text-xs font-bold text-white shadow-lg shadow-cyan-950/40 transition active:scale-95 shrink-0 border border-cyan-400/30"
           >
             <Plus className="h-4 w-4" />
             <span>New Project</span>
@@ -122,8 +116,8 @@ export default function ProjectsGrid({ projects = [], onRefresh, onCreateClick }
 
       {/* 📊 Sort Filter Pills Toolbar */}
       <div className="flex items-center justify-between flex-wrap gap-2 text-xs">
-        <div className="flex items-center gap-1.5 text-zinc-400 font-semibold">
-          <ArrowUpDown size={14} className="text-indigo-400" />
+        <div className="flex items-center gap-1.5 text-zinc-400 font-semibold font-mono">
+          <ArrowUpDown size={14} className="text-cyan-400" />
           <span>Sort By:</span>
         </div>
 
@@ -141,14 +135,14 @@ export default function ProjectsGrid({ projects = [], onRefresh, onCreateClick }
                 key={st.id}
                 type="button"
                 onClick={() => handleSortChange(st.id)}
-                className={`rounded-lg px-3 py-1.5 font-semibold text-xs transition border ${
+                className={`rounded-xl px-3 py-1.5 font-semibold text-xs transition border ${
                   isActive
                     ? st.id === 'dlq' || st.id === 'failure'
-                      ? 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/40 shadow-sm'
+                      ? 'bg-rose-500/15 text-rose-400 border-rose-500/40 shadow-sm'
                       : st.id === 'latency'
-                      ? 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400 border-cyan-500/40 shadow-sm'
-                      : 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
-                    : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-950 dark:text-zinc-400 dark:hover:bg-zinc-800 border-zinc-200 dark:border-zinc-800'
+                      ? 'bg-cyan-500/15 text-cyan-400 border-cyan-500/40 shadow-sm'
+                      : 'bg-cyan-600 text-white border-cyan-400/40 shadow-md'
+                    : 'bg-[#070e14] text-zinc-400 hover:bg-cyan-500/10 hover:text-white border-cyan-900/30'
                 }`}
               >
                 {st.label}
@@ -158,12 +152,12 @@ export default function ProjectsGrid({ projects = [], onRefresh, onCreateClick }
         </div>
       </div>
 
-      {/* 🚀 Stacked Vertical List (One above another) */}
+      {/* 🚀 Stacked Vertical List */}
       {sortedAndFilteredProjects.length === 0 ? (
-        <div className="flex h-48 flex-col items-center justify-center rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 p-8 text-center">
-          <Layers className="h-8 w-8 text-zinc-400 mb-2" />
-          <p className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">No projects found</p>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Get started by creating your first project.</p>
+        <div className="flex h-48 flex-col items-center justify-center rounded-xl border border-dashed border-cyan-900/30 p-8 text-center bg-[#070e14]">
+          <Layers className="h-8 w-8 text-zinc-500 mb-2" />
+          <p className="text-sm font-semibold text-zinc-300">No projects found</p>
+          <p className="text-xs text-zinc-400 mt-1">Get started by creating your first project.</p>
         </div>
       ) : (
         <div className="flex flex-col gap-3.5 w-full">
@@ -171,71 +165,82 @@ export default function ProjectsGrid({ projects = [], onRefresh, onCreateClick }
             <div
               key={project.id}
               onClick={(e) => handleOpenWorkspace(e, project.id)}
-              className={`group relative flex flex-col md:flex-row md:items-center justify-between gap-4 rounded-xl border p-4 shadow-sm backdrop-blur-md transition-all duration-200 cursor-pointer ${
+              className={`group relative flex flex-col md:flex-row md:items-center justify-between gap-4 rounded-xl border p-4 shadow-md backdrop-blur-md transition-all duration-200 cursor-pointer ${
                 (currentSort === 'failure' || currentSort === 'dlq') && (project.failure_rate_pct > 10 || project.dlq_count > 0)
-                  ? 'border-rose-500/50 bg-rose-500/5 hover:bg-rose-500/10 dark:bg-rose-950/20'
-                  : 'border-zinc-200 bg-zinc-50/50 hover:border-indigo-500/50 hover:bg-zinc-100/80 dark:border-zinc-800/80 dark:bg-zinc-950/60 dark:hover:bg-zinc-900/80'
+                  ? 'border-rose-500/50 bg-rose-500/10 hover:bg-rose-500/20'
+                  : 'border-cyan-900/30 bg-[#111b24] hover:border-cyan-500/50 hover:bg-[#152330]'
               }`}
             >
               {/* Left Column: Project Icon & Details */}
               <div className="flex items-center gap-3.5 min-w-[240px]">
-                <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-indigo-500/20 bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 font-extrabold text-xs shrink-0">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-cyan-500/30 bg-cyan-500/10 text-cyan-400 font-extrabold text-xs shrink-0">
                   {project.name.substring(0, 2).toUpperCase()}
                 </div>
                 <div className="truncate">
                   <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-bold text-zinc-900 dark:text-white group-hover:text-indigo-500 transition truncate">
+                    <h3 className="text-sm font-bold text-white group-hover:text-cyan-400 transition truncate">
                       {project.name}
                     </h3>
                     <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 ${
                       project.is_active !== false
-                        ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
-                        : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'
+                        ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20'
+                        : 'bg-zinc-800 text-zinc-400'
                     }`}>
                       {project.is_active !== false ? 'Active' : 'Paused'}
                     </span>
                   </div>
-                  <p className="text-xs text-zinc-500 dark:text-zinc-400 truncate mt-0.5 max-w-sm">
+                  <p className="text-xs text-zinc-400 truncate mt-0.5 max-w-sm">
                     {project.description || 'Active webhook ingress workspace'}
                   </p>
                 </div>
               </div>
 
-              {/* Middle Column: Full Telemetry Metrics Strip */}
-              <div className="grid grid-cols-4 gap-4 md:gap-6 text-xs font-mono py-2 md:py-0 border-y md:border-y-0 md:border-x border-zinc-200 dark:border-zinc-800/80 md:px-6">
-                <div>
-                  <span className="text-zinc-400 block text-[10px] uppercase tracking-wider font-sans">Total</span>
-                  <span className="font-bold text-zinc-900 dark:text-white text-sm">{project.total_webhooks}</span>
-                </div>
-
-                <div>
-                  <span className="text-zinc-400 block text-[10px] uppercase tracking-wider font-sans">Success</span>
-                  <span className="font-bold text-emerald-600 dark:text-emerald-400 text-sm">{project.success_rate_pct}%</span>
-                </div>
-
-                <div>
-                  <span className="text-zinc-400 block text-[10px] uppercase tracking-wider font-sans">Failure / DLQ</span>
-                  <span className={`font-bold text-sm ${project.failure_rate_pct > 10 || project.dlq_count > 0 ? 'text-rose-600 dark:text-rose-400 font-extrabold' : 'text-rose-500'}`}>
-                    {project.failure_rate_pct}% ({project.dlq_count} DLQ)
+              {/* Center Column: Key Real Metrics */}
+              <div className="flex flex-wrap items-center gap-6 text-xs border-t border-b border-cyan-900/20 md:border-0 py-2 md:py-0">
+                <div className="flex flex-col">
+                  <span className="text-[10px] uppercase font-mono font-bold text-zinc-400">Total (24h)</span>
+                  <span className="font-extrabold text-white font-mono">
+                    {project.total_webhooks.toLocaleString()}
                   </span>
                 </div>
 
-                <div>
-                  <span className="text-zinc-400 block text-[10px] uppercase tracking-wider font-sans">Latency</span>
-                  <span className="font-bold text-cyan-600 dark:text-cyan-400 text-sm">{project.avg_latency_ms}ms</span>
+                <div className="flex flex-col">
+                  <span className="text-[10px] uppercase font-mono font-bold text-zinc-400">Success Rate</span>
+                  <span className={`font-extrabold font-mono ${project.success_rate_pct >= 90 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {project.success_rate_pct}%
+                  </span>
+                </div>
+
+                <div className="flex flex-col">
+                  <span className="text-[10px] uppercase font-mono font-bold text-zinc-400">Avg Latency</span>
+                  <span className="font-extrabold text-cyan-400 font-mono">
+                    {project.avg_latency_ms} ms
+                  </span>
+                </div>
+
+                <div className="flex flex-col">
+                  <span className="text-[10px] uppercase font-mono font-bold text-zinc-400">DLQ Items</span>
+                  <span className={`font-extrabold font-mono ${project.dlq_count > 0 ? 'text-amber-400' : 'text-zinc-500'}`}>
+                    {project.dlq_count}
+                  </span>
                 </div>
               </div>
 
-              {/* Right Column: Enter Action */}
-              <div className="flex items-center justify-end gap-2 text-xs font-semibold text-zinc-500 group-hover:text-indigo-500 transition shrink-0">
-                <span className="hidden sm:inline">Workspace</span>
-                <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
+              {/* Right Column: Open Workspace Button */}
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={(e) => handleOpenWorkspace(e, project.id)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3.5 py-1.5 text-xs font-bold text-cyan-400 hover:bg-cyan-500/20 transition"
+                >
+                  <span>Workspace</span>
+                  <ArrowRight className="h-3.5 w-3.5 group-hover:translate-x-1 transition-transform" />
+                </button>
               </div>
             </div>
           ))}
         </div>
       )}
-
     </div>
   );
 }

@@ -10,7 +10,7 @@ from urllib.parse import unquote
 import httpx
 from celery import Celery, Task
 from kombu import Exchange, Queue
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, or_
 
 from config import settings
 
@@ -52,11 +52,11 @@ celery_app.conf.update(
     task_create_missing_queues=False  
 )
 
-# Periodic cleanup: remove webhook logs older than per-project retention_days
+# Periodic cleanup: check for old webhook logs matching per-project retention (runs every minute)
 celery_app.conf.beat_schedule = {
-    'cleanup-old-webhook-logs-daily': {
+    'cleanup-old-webhook-logs-frequent': {
         'task': 'webhook_workers.cleanup_old_webhook_logs',
-        'schedule': 60 * 60 * 24,  # once per day
+        'schedule': 60.0,  # every 60 seconds
     },
 }
 
@@ -558,10 +558,20 @@ async def _cleanup_old_logs():
 
             ec_res = await db_session.execute(select(EventConfig.id).where(EventConfig.project_id == project_id))
             ec_ids = [row[0] for row in ec_res.fetchall()]
+
+            evt_res = await db_session.execute(select(WebhookEvent.event_id).where(WebhookEvent.project_id == project_id))
+            evt_ids = [row[0] for row in evt_res.fetchall()]
+
+            # Build OR condition matching either event_config_id or event_id
+            where_conds = []
+            if ec_ids:
+                where_conds.append(WebhookLog.event_config_id.in_(ec_ids))
+            if evt_ids:
+                where_conds.append(WebhookLog.event_id.in_(evt_ids))
             
             # Delete expired Webhook Logs
-            if ec_ids:
-                del_logs_stmt = delete(WebhookLog).where(WebhookLog.event_config_id.in_(ec_ids), WebhookLog.created_at < cutoff)
+            if where_conds:
+                del_logs_stmt = delete(WebhookLog).where(or_(*where_conds), WebhookLog.created_at < cutoff)
                 await db_session.execute(del_logs_stmt)
 
             # Delete expired Webhook Ingress Events

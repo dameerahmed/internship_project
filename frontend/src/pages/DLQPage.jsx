@@ -143,12 +143,21 @@ export default function DLQPage({ projectId, embedded = false }) {
     setActionLoading(true);
     setMessage(null);
     try {
+      const targetStrList = eventIds.map((id) => String(id));
       const endpoint = '/v1/dlq/replay';
       await apiClient.post(endpoint, { log_ids: eventIds, ids: eventIds });
       setMessage({ type: 'success', text: `Requeued ${eventIds.length} failed event(s) for redelivery.` });
-      setItems((prev) => prev.filter((item) => !eventIds.includes(item.id || item.event_id)));
-      setSelectedIds([]);
-      await fetchDLQ(false);
+      setItems((prev) => prev.filter((item) => {
+        const k1 = String(item.id || '');
+        const k2 = String(item.event_id || '');
+        const k3 = String(item.raw_id || '');
+        return !targetStrList.includes(k1) && !targetStrList.includes(k2) && !targetStrList.includes(k3);
+      }));
+      setSelectedIds((prev) => prev.filter((id) => !targetStrList.includes(String(id))));
+      if (selectedItem && (targetStrList.includes(String(selectedItem.id)) || targetStrList.includes(String(selectedItem.event_id)))) {
+        setSelectedItem(null);
+      }
+      setTimeout(() => fetchDLQ(true), 1500);
     } catch (err) {
       setMessage({ type: 'error', text: err.response?.data?.detail || 'Replay operation failed.' });
     } finally {
@@ -162,13 +171,21 @@ export default function DLQPage({ projectId, embedded = false }) {
     setActionLoading(true);
     setMessage(null);
     try {
+      const targetStrList = eventIds.map((id) => String(id));
       const endpoint = '/v1/dlq/discard';
       await apiClient.post(endpoint, { log_ids: eventIds, ids: eventIds });
       setMessage({ type: 'success', text: `Discarded ${eventIds.length} DLQ item(s).` });
-      setItems((prev) => prev.filter((item) => !eventIds.includes(item.id || item.event_id)));
-      setSelectedIds([]);
-      setSelectedItem(null);
-      await fetchDLQ(false);
+      setItems((prev) => prev.filter((item) => {
+        const k1 = String(item.id || '');
+        const k2 = String(item.event_id || '');
+        const k3 = String(item.raw_id || '');
+        return !targetStrList.includes(k1) && !targetStrList.includes(k2) && !targetStrList.includes(k3);
+      }));
+      setSelectedIds((prev) => prev.filter((id) => !targetStrList.includes(String(id))));
+      if (selectedItem && (targetStrList.includes(String(selectedItem.id)) || targetStrList.includes(String(selectedItem.event_id)))) {
+        setSelectedItem(null);
+      }
+      setTimeout(() => fetchDLQ(true), 1500);
     } catch (err) {
       setMessage({ type: 'error', text: err.response?.data?.detail || 'Discard operation failed.' });
     } finally {
@@ -364,8 +381,8 @@ export default function DLQPage({ projectId, embedded = false }) {
                     </div>
 
                     <div className="flex items-center gap-3 shrink-0">
-                      <span className="text-[10px] font-semibold bg-zinc-100 dark:bg-zinc-800 text-zinc-500 px-2 py-0.5 rounded font-sans">
-                        {attempts} retries
+                      <span className="text-[10px] font-bold font-mono bg-rose-500/10 text-rose-500 dark:text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded">
+                        Attempt #{attempts}/5 Failed
                       </span>
 
                       <button

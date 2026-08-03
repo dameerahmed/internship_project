@@ -58,6 +58,7 @@ async def get_company_profile(current_company: Company = Depends(get_current_com
         "name": current_company.name,
         "email": current_company.email,
         "support_email": current_company.email,
+        "timezone": getattr(current_company, "timezone", "UTC") or "UTC",
         "is_active": current_company.is_active,
         "rsa_public_key": public_key_pem,
         "created_at": current_company.created_at,
@@ -77,12 +78,16 @@ async def update_company_profile(
     email = payload.get("support_email") or payload.get("email")
     if email:
         current_company.email = email
+    tz = payload.get("timezone")
+    if tz and hasattr(current_company, "timezone"):
+        current_company.timezone = tz
     await db.commit()
     await db.refresh(current_company)
     return {
         "status": "success",
         "company_name": current_company.name,
-        "support_email": current_company.email
+        "support_email": current_company.email,
+        "timezone": getattr(current_company, "timezone", "UTC") or "UTC",
     }
 
 

@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, UniqueCons
 from datetime import datetime
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
-from  database import Base
+from database import Base
 
 class EventConfig(Base):
     __tablename__ = "event_configs"
@@ -16,8 +16,6 @@ class EventConfig(Base):
     target_url = Column(String(2048), nullable=False)
     is_active = Column(Boolean, default=True, nullable=False, index=True)
     metadata_json = Column(JSONB, nullable=True)  # Key-value or config headers
-    retention_days = Column(Integer, nullable=True)
-    delete_time = Column(String(16), nullable=True)
     payload_keys = Column(JSONB, nullable=True)
     payload_types = Column(JSONB, nullable=True)
 

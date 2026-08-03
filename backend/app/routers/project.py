@@ -193,11 +193,24 @@ async def schedule_pruning(
     if db_project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    retention_days = payload.get("retention_days")
+    retention_days = payload.get("retention_days") or payload.get("retentionDays")
     if retention_days is not None:
         db_project.retention_days = int(retention_days)
+    if "retention_mode" in payload or "retentionMode" in payload:
+        db_project.retention_mode = payload.get("retention_mode") or payload.get("retentionMode")
+    if "delete_date" in payload or "deleteDate" in payload:
+        db_project.delete_date = payload.get("delete_date") or payload.get("deleteDate")
+    if "delete_time" in payload or "deleteTime" in payload:
+        db_project.delete_time = payload.get("delete_time") or payload.get("deleteTime")
     await db.commit()
-    return {"status": "scheduled", "project_id": project_id, "retention_days": db_project.retention_days}
+    return {
+        "status": "scheduled",
+        "project_id": project_id,
+        "retention_mode": getattr(db_project, "retention_mode", "rolling_days"),
+        "retention_days": db_project.retention_days,
+        "delete_date": getattr(db_project, "delete_date", None),
+        "delete_time": getattr(db_project, "delete_time", "02:00:00"),
+    }
 
 
 @router.post("/{project_id}/dlq/replay")
@@ -311,8 +324,10 @@ async def get_project(
         "name": db_project.name,
         "description": db_project.description,
         "is_active": db_project.is_active,
+        "retention_mode": getattr(db_project, "retention_mode", "rolling_days") or "rolling_days",
         "retention_days": db_project.retention_days,
-        "delete_time": None,
+        "delete_date": getattr(db_project, "delete_date", None),
+        "delete_time": getattr(db_project, "delete_time", "02:00:00") or "02:00:00",
         "company_id": company_id,
         "created_at": db_project.created_at,
         "updated_at": db_project.updated_at,
@@ -430,6 +445,12 @@ async def update_project(
 
         if getattr(payload, "retention_days", None) is not None:
             db_project.retention_days = payload.retention_days
+        if getattr(payload, "retention_mode", None) is not None:
+            db_project.retention_mode = payload.retention_mode
+        if getattr(payload, "delete_date", None) is not None:
+            db_project.delete_date = payload.delete_date
+        if getattr(payload, "delete_time", None) is not None:
+            db_project.delete_time = payload.delete_time
 
         if payload.event_configs is not None:
             existing_events_res = await db.execute(select(EventConfig).where(EventConfig.project_id == project_id))
@@ -486,7 +507,10 @@ async def update_project(
             "name": db_project.name,
             "description": db_project.description,
             "is_active": db_project.is_active,
+            "retention_mode": getattr(db_project, "retention_mode", "rolling_days") or "rolling_days",
             "retention_days": db_project.retention_days,
+            "delete_date": getattr(db_project, "delete_date", None),
+            "delete_time": getattr(db_project, "delete_time", "02:00:00") or "02:00:00",
             "company_id": company_id,
             "created_at": db_project.created_at,
             "updated_at": db_project.updated_at,

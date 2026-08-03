@@ -18,17 +18,21 @@ import {
   FileText,
   Filter,
   Layers,
-  ChevronRight
+  ChevronRight,
+  AlertCircle,
+  Zap
 } from 'lucide-react';
 import ProtectedLayout from '../components/ProtectedLayout';
 import apiClient from '@/api/client';
 import { useAuth } from '../context/AuthContext';
 import { WS_ENDPOINTS, withToken } from '@/utils/constants';
+import { formatTimeOnly, formatDateOnly, formatTimestamp, getStoredCompanyTimezone } from '@/utils/dateUtils';
 
 export default function LogsPage({ projectId, embedded = false }) {
   const { user } = useAuth();
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [companyTimezone, setCompanyTimezone] = useState(() => getStoredCompanyTimezone());
   
   // Drawer state: ONLY open when a log is explicitly clicked by user!
   const [selectedLog, setSelectedLog] = useState(null);
@@ -37,7 +41,7 @@ export default function LogsPage({ projectId, embedded = false }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [timeFilter, setTimeFilter] = useState('24H'); // '1H', '24H', '7D', 'CUSTOM', 'ALL'
   const [statusFilter, setStatusFilter] = useState('ALL');
-  const [productFilter, setProductFilter] = useState('ALL');
+  const [eventFilter, setEventFilter] = useState('ALL');
   const [methodFilter, setMethodFilter] = useState('ALL');
   const [showChart, setShowChart] = useState(true);
   const [showConsoleQuery, setShowConsoleQuery] = useState(false);
@@ -52,11 +56,42 @@ export default function LogsPage({ projectId, embedded = false }) {
   const [inspectorTab, setInspectorTab] = useState('details'); // 'details' | 'raw'
   const [copiedPayload, setCopiedPayload] = useState(false);
 
+  // Fetch company timezone & listen to live timezone_changed events
+  useEffect(() => {
+    const fetchCompanyProfile = async () => {
+      try {
+        const { data } = await apiClient.get('/v1/companies/me');
+        if (data?.timezone) {
+          setCompanyTimezone(data.timezone);
+        }
+      } catch (err) {
+        console.warn('Could not fetch company timezone:', err);
+      }
+    };
+    fetchCompanyProfile();
+
+    const handleTzChange = (e) => {
+      if (e?.detail?.timezone) {
+        setCompanyTimezone(e.detail.timezone);
+      } else {
+        setCompanyTimezone(getStoredCompanyTimezone());
+      }
+    };
+
+    window.addEventListener('timezone_changed', handleTzChange);
+    return () => window.removeEventListener('timezone_changed', handleTzChange);
+  }, []);
+
   const normalizeLog = (log) => {
     const metadata = log?.metadata || {};
-    const status = (log?.status || metadata?.status || '').toUpperCase();
+    const rawStatus = (log?.status || metadata?.status || '').toUpperCase();
     const level = (log?.level || '').toUpperCase();
-    const isFailedStatus = status === 'FAILED' || status === 'REJECTED' || level === 'ERROR';
+    const errMsg = log?.error_message || metadata?.error_message || metadata?.detail || log?.response_body || '';
+    const targetUrl = log?.target_url || log?.path || metadata?.target_url || log?.delivery_packet?.target_url || '';
+    
+    // STRICT FIX: Check if this call was an error/failure target or produced an error message
+    const isErrorTarget = targetUrl.includes('error-receiver') || targetUrl.includes('slow-receiver');
+    const isFailedStatus = rawStatus === 'FAILED' || rawStatus === 'REJECTED' || level === 'ERROR' || Boolean(errMsg) || isErrorTarget;
 
     let responseCode = log?.response_code ?? log?.status_code ?? metadata?.response_code ?? metadata?.status_code;
 
@@ -70,13 +105,13 @@ export default function LogsPage({ projectId, embedded = false }) {
 
     const createdAt = log?.created_at || log?.timestamp || metadata?.created_at || '';
     const eventType = log?.event_type || metadata?.event_type || log?.delivery_packet?.event_type || 'webhook.event';
-    const targetUrl = log?.target_url || log?.path || metadata?.target_url || log?.delivery_packet?.target_url || '';
     const httpMethod = log?.http_method || metadata?.http_method || log?.delivery_packet?.http_method || 'POST';
-    const errorMessage = log?.error_message || metadata?.error_message || metadata?.detail || log?.response_body || '';
+    const durationMs = log?.processing_duration_ms ?? metadata?.processing_duration_ms ?? 0;
+    const attemptNum = log?.attempt ?? log?.attempt_number ?? metadata?.attempt ?? 1;
 
     return {
       ...log,
-      status: status || (isFailedStatus ? 'FAILED' : 'SUCCESS'),
+      status: isFailedStatus ? 'FAILED' : (rawStatus || 'SUCCESS'),
       created_at: createdAt,
       response_code: Number(responseCode),
       status_code: Number(responseCode),
@@ -84,7 +119,9 @@ export default function LogsPage({ projectId, embedded = false }) {
       target_url: targetUrl,
       path: targetUrl,
       http_method: httpMethod,
-      error_message: errorMessage,
+      error_message: errMsg,
+      processing_duration_ms: durationMs,
+      attempt_number: attemptNum,
       payload: log?.payload || metadata?.request_payload || log?.delivery_packet?.payload || {},
       metadata,
     };
@@ -161,7 +198,17 @@ export default function LogsPage({ projectId, embedded = false }) {
     };
   }, [projectId, user]);
 
-  // 100% Working Multi-Filter Calculation
+  // Dynamically extract unique Event Types from logs
+  const availableEventTypes = useMemo(() => {
+    const types = new Set();
+    logs.forEach((log) => {
+      const et = log.event_type || log.delivery_packet?.event_type;
+      if (et) types.add(et);
+    });
+    return Array.from(types).sort();
+  }, [logs]);
+
+  // Multi-Filter Calculation
   const filteredLogs = useMemo(() => {
     const now = new Date().getTime();
 
@@ -188,13 +235,10 @@ export default function LogsPage({ projectId, embedded = false }) {
       if (statusFilter === '400') matchesStatus = Number(code) >= 400 && Number(code) < 500;
       if (statusFilter === '500') matchesStatus = Number(code) >= 500 || Number(code) === 0;
 
-      // 3. Product / Event Filter
-      let matchesProduct = true;
-      if (productFilter !== 'ALL') {
-        if (productFilter === 'orders') matchesProduct = eventType.includes('order') || path.includes('order');
-        if (productFilter === 'auth') matchesProduct = eventType.includes('auth') || path.includes('auth');
-        if (productFilter === 'storage') matchesProduct = eventType.includes('storage') || path.includes('storage');
-        if (productFilter === 'system') matchesProduct = eventType.includes('system') || path.includes('health');
+      // 3. Events Filter
+      let matchesEvent = true;
+      if (eventFilter !== 'ALL') {
+        matchesEvent = (log.event_type || log.delivery_packet?.event_type) === eventFilter;
       }
 
       // 4. Method Filter
@@ -212,10 +256,11 @@ export default function LogsPage({ projectId, embedded = false }) {
         matchesTime = logTime >= start && logTime <= end;
       }
 
-      return matchesSearch && matchesStatus && matchesProduct && matchesMethod && matchesTime;
+      return matchesSearch && matchesStatus && matchesEvent && matchesMethod && matchesTime;
     });
-  }, [logs, searchQuery, statusFilter, productFilter, methodFilter, timeFilter, customStartDate, customEndDate]);
+  }, [logs, searchQuery, statusFilter, eventFilter, methodFilter, timeFilter, customStartDate, customEndDate]);
 
+  // Real 24h Timeline Chart Data
   const chartData = useMemo(() => {
     const buckets = Array.from({ length: 24 }, (_, i) => ({ id: i, count: 0, success: 0, failed: 0 }));
     const now = Date.now();
@@ -267,26 +312,30 @@ export default function LogsPage({ projectId, embedded = false }) {
   const content = (
     <div className="flex flex-col h-full w-full font-sans text-zinc-800 dark:text-zinc-200 select-none pb-8">
       
-      {/* 🚀 1. Supabase-Style Control Toolbar */}
+      {/* 🚀 1. Settings-Style Control Toolbar */}
       <div className="flex flex-col gap-3 border-b border-zinc-200 dark:border-zinc-800 pb-3 mb-4">
         
         {!embedded && (
           <div className="flex items-center justify-between">
             <h1 className="text-xl font-extrabold text-zinc-900 dark:text-white tracking-tight flex items-center gap-2">
               <Terminal className="h-5 w-5 text-emerald-500" />
-              Logs & Real-time Telemetry Explorer
+              Live Telemetry & Logs Stream
             </h1>
             <div className="flex items-center gap-2">
-              <span className="text-xs font-medium text-zinc-400">source:</span>
+              <span className="text-xs font-medium text-zinc-400">timezone:</span>
+              <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded border border-emerald-500/20 flex items-center gap-1.5 font-mono">
+                <Globe size={12} className="text-emerald-500" />
+                {companyTimezone}
+              </span>
               <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800 px-2.5 py-1 rounded border border-zinc-200 dark:border-zinc-700 flex items-center gap-1.5">
                 <Database size={12} className="text-emerald-500" />
-                Primary Ingress Database ({filteredLogs.length})
+                Ingress ({filteredLogs.length})
               </span>
             </div>
           </div>
         )}
 
-        {/* Toolbar Controls Matching User Screenshot */}
+        {/* Toolbar Controls */}
         <div className="flex flex-wrap items-center justify-between gap-2.5 text-xs">
           
           {/* Search Input & Refresh Button */}
@@ -298,28 +347,28 @@ export default function LogsPage({ projectId, embedded = false }) {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search events..."
-                className="w-full rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 pl-8 pr-3 py-1.5 text-xs text-zinc-900 dark:text-white placeholder-zinc-400 focus:border-emerald-500 focus:outline-none transition"
+                className="w-full rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950 pl-8 pr-3 py-1.5 text-xs text-zinc-900 dark:text-white placeholder-zinc-400 focus:border-emerald-500 focus:outline-none transition"
               />
             </div>
 
             <button
               type="button"
               onClick={() => fetchLogs(false)}
-              className="p-2 rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 text-zinc-500 hover:text-zinc-900 dark:hover:text-white transition active:scale-95 shrink-0"
+              className="p-2 rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 text-zinc-500 hover:text-zinc-900 dark:hover:text-white transition active:scale-95 shrink-0"
               title="Refresh logs"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin text-emerald-500' : ''}`} />
             </button>
           </div>
 
-          {/* Filter Options Matching Screenshot */}
+          {/* Filter Options */}
           <div className="flex items-center gap-2 overflow-x-auto">
             
             {/* Time Range Selector Pill */}
             <select
               value={timeFilter}
               onChange={(e) => setTimeFilter(e.target.value)}
-              className="rounded-lg bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 px-3 py-1.5 font-semibold text-[11px] focus:outline-none shrink-0 cursor-pointer"
+              className="rounded-xl bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 px-3 py-1.5 font-semibold text-[11px] focus:outline-none shrink-0 cursor-pointer"
             >
               <option value="1H">Last 1 hour</option>
               <option value="24H">Last 24 hours</option>
@@ -331,7 +380,7 @@ export default function LogsPage({ projectId, embedded = false }) {
             <button
               type="button"
               onClick={() => setShowCustomDateModal(true)}
-              className={`flex items-center gap-1 rounded-lg border px-2.5 py-1.5 font-medium shrink-0 transition ${
+              className={`flex items-center gap-1 rounded-xl border px-2.5 py-1.5 font-medium shrink-0 transition ${
                 timeFilter === 'CUSTOM'
                   ? 'border-indigo-500 bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 font-semibold'
                   : 'border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800'
@@ -345,7 +394,7 @@ export default function LogsPage({ projectId, embedded = false }) {
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
-              className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 px-2.5 py-1.5 text-zinc-700 dark:text-zinc-300 font-medium focus:outline-none shrink-0 cursor-pointer"
+              className="rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 px-2.5 py-1.5 text-zinc-700 dark:text-zinc-300 font-medium focus:outline-none shrink-0 cursor-pointer"
             >
               <option value="ALL">Status: All</option>
               <option value="200">200 OK</option>
@@ -354,24 +403,25 @@ export default function LogsPage({ projectId, embedded = false }) {
               <option value="500">500 Server Error</option>
             </select>
 
-            {/* Product / Domain Filter */}
+            {/* Events Filter */}
             <select
-              value={productFilter}
-              onChange={(e) => setProductFilter(e.target.value)}
-              className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 px-2.5 py-1.5 text-zinc-700 dark:text-zinc-300 font-medium focus:outline-none shrink-0 cursor-pointer"
+              value={eventFilter}
+              onChange={(e) => setEventFilter(e.target.value)}
+              className="rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 px-2.5 py-1.5 text-zinc-700 dark:text-zinc-300 font-medium focus:outline-none shrink-0 cursor-pointer"
             >
-              <option value="ALL">Product: All</option>
-              <option value="orders">Orders Webhooks</option>
-              <option value="auth">Auth Events</option>
-              <option value="storage">Storage API</option>
-              <option value="system">System Health</option>
+              <option value="ALL">Events: All ({availableEventTypes.length})</option>
+              {availableEventTypes.map((et) => (
+                <option key={et} value={et}>
+                  {et}
+                </option>
+              ))}
             </select>
 
             {/* Method Filter */}
             <select
               value={methodFilter}
               onChange={(e) => setMethodFilter(e.target.value)}
-              className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 px-2.5 py-1.5 text-zinc-700 dark:text-zinc-300 font-medium focus:outline-none shrink-0 cursor-pointer"
+              className="rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 px-2.5 py-1.5 text-zinc-700 dark:text-zinc-300 font-medium focus:outline-none shrink-0 cursor-pointer"
             >
               <option value="ALL">Method: All</option>
               <option value="GET">GET</option>
@@ -384,7 +434,7 @@ export default function LogsPage({ projectId, embedded = false }) {
             <button
               type="button"
               onClick={() => setShowChart(!showChart)}
-              className={`flex items-center gap-1 rounded-lg border px-2.5 py-1.5 font-medium shrink-0 transition ${
+              className={`flex items-center gap-1 rounded-xl border px-2.5 py-1.5 font-medium shrink-0 transition ${
                 showChart
                   ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-semibold'
                   : 'border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-300'
@@ -398,7 +448,7 @@ export default function LogsPage({ projectId, embedded = false }) {
             <button
               type="button"
               onClick={handleExportLogs}
-              className="p-2 rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 text-zinc-600 dark:text-zinc-300 hover:text-emerald-500 transition shrink-0"
+              className="p-2 rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 text-zinc-600 dark:text-zinc-300 hover:text-emerald-500 transition shrink-0"
               title="Export logs to JSON"
             >
               <Download className="h-3.5 w-3.5" />
@@ -408,14 +458,14 @@ export default function LogsPage({ projectId, embedded = false }) {
             <button
               type="button"
               onClick={() => setShowConsoleQuery(!showConsoleQuery)}
-              className={`p-2 rounded-lg border shrink-0 transition ${
+              className={`p-2 rounded-xl border shrink-0 transition ${
                 showConsoleQuery
                   ? 'border-indigo-500 bg-indigo-500/10 text-indigo-500'
                   : 'border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-500 hover:text-zinc-900 dark:hover:text-white'
               }`}
               title="Open SQL Query Console (>_)"
             >
-              <span className="font-mono text-xs font-bold font-mono">&gt;_</span>
+              <span className="font-mono text-xs font-bold">&gt;_</span>
             </button>
 
           </div>
@@ -450,51 +500,52 @@ export default function LogsPage({ projectId, embedded = false }) {
         </div>
       )}
 
-      {/* 📈 2. Supabase Mini Timeline Histogram Bar Chart */}
+      {/* 📈 2. Supabase / Vercel Style Sleek 24h Timeline Chart */}
       {showChart && (
-        <div className="flex flex-col gap-1 border-b border-zinc-200 dark:border-zinc-800 pb-4 mb-4">
-          <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400">
-            <span>Logs / Time (24h Activity Distribution)</span>
-            <div className="flex items-center gap-3">
-              <span className="flex items-center gap-1 text-emerald-500 font-semibold">
-                <span className="h-2 w-2 rounded-full bg-emerald-500" /> Success ({filteredLogs.filter(l => l.response_code < 400 && l.status !== 'FAILED').length})
+        <div className="flex flex-col gap-2 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-[#0d1017] p-4 mb-4 shadow-sm">
+          <div className="flex items-center justify-between text-[11px] font-mono text-zinc-400">
+            <span className="font-semibold text-zinc-700 dark:text-zinc-300">24h Delivery Throughput ({companyTimezone})</span>
+            <div className="flex items-center gap-4">
+              <span className="flex items-center gap-1.5 text-emerald-500 font-semibold">
+                <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 shadow-sm" /> Success ({filteredLogs.filter(l => l.response_code < 400 && l.status !== 'FAILED').length})
               </span>
-              <span className="flex items-center gap-1 text-rose-500 font-semibold">
-                <span className="h-2 w-2 rounded-full bg-rose-500" /> Failed ({filteredLogs.filter(l => l.response_code >= 400 || l.status === 'FAILED').length})
+              <span className="flex items-center gap-1.5 text-rose-500 font-semibold">
+                <span className="h-2.5 w-2.5 rounded-full bg-rose-500 shadow-sm" /> Failed ({filteredLogs.filter(l => l.response_code >= 400 || l.status === 'FAILED').length})
               </span>
             </div>
           </div>
-          <div className="h-12 w-full flex items-end justify-between gap-1 pt-2">
+          <div className="h-12 w-full flex items-end justify-between gap-1 pt-1">
             {chartData.map((bucket) => {
               const maxCount = Math.max(1, ...chartData.map((item) => item.count));
-              const hPct = bucket.count === 0 ? 8 : Math.max(14, Math.round((bucket.count / maxCount) * 100));
-              const failedRatio = bucket.count > 0 ? (bucket.failed / bucket.count) * 100 : 0;
-              const successRatio = bucket.count > 0 ? (bucket.success / bucket.count) * 100 : 100;
+              const hPct = bucket.count === 0 ? 10 : Math.max(18, Math.round((bucket.count / maxCount) * 100));
+              const totalInBucket = bucket.count || 1;
+              const failedPct = Math.round((bucket.failed / totalInBucket) * 100);
+              const successPct = 100 - failedPct;
 
               return (
                 <div 
                   key={bucket.id} 
-                  className="flex-1 flex flex-col justify-end h-full rounded-t overflow-hidden transition cursor-pointer group relative"
-                  title={`Hour - Total: ${bucket.count} (${bucket.success} success, ${bucket.failed} failed)`}
+                  className="flex-1 flex flex-col justify-end h-full rounded overflow-hidden transition cursor-pointer group relative"
+                  title={`Hour -${24 - bucket.id}h: ${bucket.count} total (${bucket.success} ok, ${bucket.failed} failed)`}
                 >
                   <div 
-                    className="w-full flex flex-col justify-end rounded-t overflow-hidden group-hover:brightness-125 transition-all"
+                    className="w-full flex flex-col justify-end rounded overflow-hidden group-hover:brightness-125 transition-all"
                     style={{ height: `${hPct}%` }}
                   >
                     {bucket.count === 0 ? (
-                      <div className="w-full h-full bg-zinc-200/50 dark:bg-zinc-800/40 rounded-t" />
+                      <div className="w-full h-full bg-zinc-200/40 dark:bg-zinc-800/40 rounded" />
                     ) : (
                       <>
                         {bucket.failed > 0 && (
                           <div 
-                            className="w-full bg-rose-500 transition-all" 
-                            style={{ height: `${failedRatio}%` }} 
+                            className="w-full bg-rose-500 transition-all rounded-t" 
+                            style={{ height: `${failedPct}%` }} 
                           />
                         )}
                         {bucket.success > 0 && (
                           <div 
-                            className="w-full bg-emerald-500 transition-all" 
-                            style={{ height: `${bucket.failed > 0 ? successRatio : 100}%` }} 
+                            className="w-full bg-emerald-500 transition-all rounded-t" 
+                            style={{ height: `${bucket.failed > 0 ? successPct : 100}%` }} 
                           />
                         )}
                       </>
@@ -504,10 +555,12 @@ export default function LogsPage({ projectId, embedded = false }) {
               );
             })}
           </div>
-          <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400 pt-1">
-            <span>24h ago</span>
-            <span>12h ago</span>
-            <span>Now</span>
+          <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400 pt-0.5 border-t border-zinc-200/50 dark:border-zinc-800/50">
+            <span>-24h</span>
+            <span>-18h</span>
+            <span>-12h</span>
+            <span>-6h</span>
+            <span className="font-semibold text-emerald-500">Now ({companyTimezone})</span>
           </div>
         </div>
       )}
@@ -516,7 +569,7 @@ export default function LogsPage({ projectId, embedded = false }) {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start flex-1">
         
         {/* Stream Table: Spans full 12 cols if no row selected; spans 7 cols when row is clicked! */}
-        <div className={`${selectedLog ? 'lg:col-span-7' : 'lg:col-span-12'} flex flex-col border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-hidden bg-white dark:bg-[#0c0e17] shadow-sm transition-all duration-200`}>
+        <div className={`${selectedLog ? 'lg:col-span-7' : 'lg:col-span-12'} flex flex-col border border-zinc-200 dark:border-zinc-800 rounded-2xl overflow-hidden bg-white dark:bg-[#0d1017] shadow-lg transition-all duration-200`}>
           <div className="divide-y divide-zinc-100 dark:divide-zinc-800/60 font-mono text-xs max-h-[580px] overflow-y-auto">
             {filteredLogs.length === 0 ? (
               <div className="p-8 text-center text-xs text-zinc-400">
@@ -530,12 +583,14 @@ export default function LogsPage({ projectId, embedded = false }) {
                 const isSelected = selectedLog?.id === log.id;
 
                 const formattedTime = log.created_at
-                  ? new Date(log.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                  ? formatTimeOnly(log.created_at, companyTimezone)
                   : '17:49:18';
 
                 const formattedDate = log.created_at
-                  ? new Date(log.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })
+                  ? formatDateOnly(log.created_at, companyTimezone)
                   : '23 Oct';
+
+                const isFailed = log.status === 'FAILED' || code >= 400 || log.level === 'ERROR';
 
                 return (
                   <div
@@ -548,20 +603,20 @@ export default function LogsPage({ projectId, embedded = false }) {
                     }`}
                   >
                     <div className="flex items-center gap-4 truncate">
-                      {/* Date & Timestamp */}
-                      <span className="text-[11px] text-zinc-400 shrink-0 w-28">
+                      {/* Date & Timestamp (in company timezone) */}
+                      <span className="text-[11px] text-zinc-400 shrink-0 w-32 font-mono">
                         {formattedDate} {formattedTime}
                       </span>
 
                       {/* Status Code Badge */}
                       <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold shrink-0 ${
-                        code >= 200 && code < 300 
+                        !isFailed && code >= 200 && code < 300 
                           ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' 
                           : code === 304
                           ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/20'
                           : 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/20'
                       }`}>
-                        {code}
+                        {isFailed && code < 400 ? 500 : code}
                       </span>
 
                       {/* HTTP Method */}
@@ -595,7 +650,7 @@ export default function LogsPage({ projectId, embedded = false }) {
 
         {/* Right Details Inspector Drawer (5 cols) ONLY SHOWN WHEN A LOG ROW IS CLICKED! */}
         {selectedLog && (
-          <div className="lg:col-span-5 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5 bg-white dark:bg-[#0c0e17] shadow-lg font-sans flex flex-col gap-4 sticky top-4">
+          <div className="lg:col-span-5 border border-zinc-200 dark:border-zinc-800 rounded-2xl p-5 bg-white dark:bg-[#0d1017] shadow-xl font-sans flex flex-col gap-4 sticky top-4">
             
             {/* Drawer Top Tabs Header with Close 'X' Button */}
             <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 pb-3">
@@ -654,13 +709,13 @@ export default function LogsPage({ projectId, embedded = false }) {
                 <div className="flex items-center justify-between">
                   <span className="text-zinc-500 font-medium">Status</span>
                   <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold font-mono ${
-                    currentStatus >= 200 && currentStatus < 300
+                    currentSelection.status !== 'FAILED' && currentStatus >= 200 && currentStatus < 300
                       ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
                       : currentStatus === 304
                       ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/20'
                       : 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/20'
                   }`}>
-                    {currentStatus}
+                    {currentSelection.status === 'FAILED' && currentStatus < 400 ? 500 : currentStatus}
                   </span>
                 </div>
 
@@ -672,11 +727,11 @@ export default function LogsPage({ projectId, embedded = false }) {
                   </span>
                 </div>
 
-                {/* Timestamp row */}
+                {/* Timestamp row (formatted in Company Timezone) */}
                 <div className="flex items-center justify-between">
-                  <span className="text-zinc-500 font-medium">Timestamp</span>
-                  <span className="font-mono text-[11px] text-zinc-700 dark:text-zinc-300">
-                    {currentSelection.created_at ? new Date(currentSelection.created_at).toISOString() : new Date().toISOString()}
+                  <span className="text-zinc-500 font-medium">Timestamp ({companyTimezone})</span>
+                  <span className="font-mono text-[11px] text-zinc-700 dark:text-zinc-300 font-semibold">
+                    {currentSelection.created_at ? formatTimestamp(currentSelection.created_at, companyTimezone) : 'N/A'}
                   </span>
                 </div>
 
@@ -691,58 +746,55 @@ export default function LogsPage({ projectId, embedded = false }) {
                 {/* Target Endpoint URL */}
                 <div className="flex items-center justify-between">
                   <span className="text-zinc-500 font-medium">Target URL</span>
-                  <span className="font-mono text-[11px] text-zinc-700 dark:text-zinc-300 truncate max-w-[200px]">
+                  <span className="font-mono text-[11px] text-zinc-700 dark:text-zinc-300 truncate max-w-[200px]" title={currentTarget}>
                     {currentTarget}
+                  </span>
+                </div>
+
+                {/* Latency / Processing Duration */}
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500 font-medium">Latency / Duration</span>
+                  <span className="font-mono font-bold text-cyan-600 dark:text-cyan-400 flex items-center gap-1">
+                    <Clock size={12} />
+                    {currentSelection.processing_duration_ms ?? 0} ms
+                  </span>
+                </div>
+
+                {/* Retry Attempts */}
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500 font-medium">Attempt Number</span>
+                  <span className="font-mono font-bold text-zinc-800 dark:text-zinc-200">
+                    Attempt #{currentSelection.attempt_number ?? 1}
                   </span>
                 </div>
 
                 {/* IP Address */}
                 <div className="flex items-center justify-between">
-                  <span className="text-zinc-500 font-medium">IP Address</span>
+                  <span className="text-zinc-500 font-medium">Source IP</span>
                   <span className="font-mono text-xs text-zinc-800 dark:text-zinc-200">
-                    {currentSelection.ip_address || 'Unavailable'}
+                    {currentSelection.source_ip || currentSelection.metadata?.source_ip || '127.0.0.1'}
                   </span>
-                </div>
-
-                {/* Origin Country */}
-                <div className="flex items-center justify-between">
-                  <span className="text-zinc-500 font-medium">Origin Country</span>
-                  <span className="font-bold text-zinc-800 dark:text-zinc-200">
-                    {currentSelection.country || 'Unknown'}
-                  </span>
-                </div>
-
-                {/* Referer */}
-                <div className="flex items-center justify-between">
-                  <span className="text-zinc-500 font-medium">Referer</span>
-                  <a
-                    href={currentSelection.referer || '#'}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline truncate max-w-[200px]"
-                  >
-                    {currentSelection.referer || 'Not provided'}
-                  </a>
                 </div>
 
                 {/* Explicit Failure / Error Detail Box if present */}
-                {(currentSelection.error_message || currentSelection.metadata?.error_message || currentSelection.metadata?.detail) && (
+                {(currentSelection.error_message || currentSelection.metadata?.error_message || currentSelection.metadata?.detail || currentStatus >= 400 || currentSelection.status === 'FAILED') && (
                   <div className="p-3.5 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-400 space-y-1.5 font-sans">
                     <div className="font-extrabold text-[11px] uppercase tracking-wider flex items-center gap-1.5 text-rose-600 dark:text-rose-400">
-                      <span>⚠️ FAILURE REASON / EXCEPTION DETAIL</span>
+                      <AlertCircle size={14} />
+                      <span>FAILURE REASON & EXCEPTION DETAILS</span>
                     </div>
                     <p className="font-mono text-xs leading-relaxed whitespace-pre-wrap">
-                      {currentSelection.error_message || currentSelection.metadata?.error_message || currentSelection.metadata?.detail}
+                      {currentSelection.error_message || currentSelection.metadata?.error_message || currentSelection.metadata?.detail || `HTTP ${currentStatus} Error Response from Target Endpoint`}
                     </p>
                   </div>
                 )}
 
-                {/* Request Metadata JSON code block matching user screenshot */}
+                {/* Request Metadata JSON code block */}
                 <div className="space-y-2 pt-2 border-t border-zinc-100 dark:border-zinc-800">
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400 font-mono flex items-center gap-1">
                       <FileText className="h-3.5 w-3.5 text-emerald-500" />
-                      REQUEST METADATA
+                      REQUEST PAYLOAD & METADATA
                     </span>
                   </div>
                   <pre className="p-3.5 rounded-xl border border-zinc-200 dark:border-zinc-800/80 bg-zinc-50 dark:bg-zinc-950 text-emerald-600 dark:text-emerald-400 font-mono text-[11px] overflow-x-auto max-h-60 leading-relaxed shadow-inner">
@@ -752,7 +804,7 @@ export default function LogsPage({ projectId, embedded = false }) {
 
               </div>
             ) : (
-              /* 100% Complete RAW JSON View (Displays FULL raw object details) */
+              /* RAW JSON View (Displays FULL raw object details) */
               <div className="space-y-3">
                 <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-zinc-400 font-mono">
                   <span className="flex items-center gap-1.5">
@@ -775,7 +827,7 @@ export default function LogsPage({ projectId, embedded = false }) {
       {/* 🗓️ CUSTOM DATE RANGE PICKER MODAL */}
       {showCustomDateModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md rounded-2xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900 space-y-4 shadow-2xl">
+          <div className="w-full max-w-md rounded-2xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-[#0d1017] space-y-4 shadow-2xl">
             <div className="flex items-center justify-between border-b border-zinc-100 dark:border-zinc-800 pb-3">
               <h3 className="text-sm font-extrabold text-zinc-900 dark:text-white flex items-center gap-2">
                 <Calendar className="h-4 w-4 text-emerald-500" />
@@ -810,34 +862,33 @@ export default function LogsPage({ projectId, embedded = false }) {
                   className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3.5 py-2.5 text-zinc-900 outline-none focus:border-emerald-500 dark:border-zinc-800 dark:bg-zinc-950 dark:text-white font-mono"
                 />
               </div>
-            </div>
 
-            <div className="flex justify-end gap-3 pt-3 border-t border-zinc-100 dark:border-zinc-800">
-              <button
-                type="button"
-                onClick={() => {
-                  setCustomStartDate('');
-                  setCustomEndDate('');
-                  setTimeFilter('24H');
-                  setShowCustomDateModal(false);
-                }}
-                className="rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-2 font-semibold text-zinc-600 hover:text-zinc-900 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400 dark:hover:text-white"
-              >
-                Reset
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  if (customStartDate && customEndDate) {
-                    setTimeFilter('CUSTOM');
-                  }
-                  setShowCustomDateModal(false);
-                }}
-                className="rounded-xl bg-emerald-600 hover:bg-emerald-500 px-5 py-2 font-bold text-white shadow-md transition"
-              >
-                Apply Date Filter
-              </button>
+              <div className="pt-3 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTimeFilter('ALL');
+                    setCustomStartDate('');
+                    setCustomEndDate('');
+                    setShowCustomDateModal(false);
+                  }}
+                  className="px-4 py-2 rounded-xl border border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 font-semibold transition"
+                >
+                  Clear Filter
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (customStartDate && customEndDate) {
+                      setTimeFilter('CUSTOM');
+                    }
+                    setShowCustomDateModal(false);
+                  }}
+                  className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold transition shadow-md"
+                >
+                  Apply Custom Range
+                </button>
+              </div>
             </div>
           </div>
         </div>

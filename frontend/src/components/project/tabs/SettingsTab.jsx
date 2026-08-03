@@ -180,7 +180,7 @@ export default function SettingsTab({ project, form, setForm, onSave, onToggleAc
       )}
 
       {/* Header Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md">
+      <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-zinc-200 bg-white p-6 shadow-xl dark:border-zinc-800 dark:bg-[#0d1017]">
         <div>
           <h3 className="text-base font-extrabold text-zinc-900 dark:text-white flex items-center gap-2">
             <ShieldCheck className="h-5 w-5 text-emerald-500" />
@@ -202,7 +202,7 @@ export default function SettingsTab({ project, form, setForm, onSave, onToggleAc
       </div>
 
       {/* 🔑 DEDICATED PROJECT API KEYS & HMAC SECRET KEY CARD (EXPLICIT 1 MINUTE AUTO-HIDE) */}
-      <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800/80 dark:bg-zinc-900/80 backdrop-blur-md space-y-4">
+      <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-xl dark:border-zinc-800 dark:bg-[#0d1017] space-y-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-100 dark:border-zinc-800/80 pb-4">
           <div>
             <div className="flex items-center gap-2.5">

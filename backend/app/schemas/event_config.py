@@ -9,8 +9,6 @@ class EventConfigBase(BaseModel):
     target_urls: Optional[List[str]] = None
     metadata_json: Optional[Dict[str, Any]] = None
     is_active: Optional[bool] = True
-    retention_days: Optional[int] = None
-    delete_time: Optional[str] = None
     payload_key: Optional[str] = None
     payload_type: Optional[str] = None
     payload_keys: Optional[List[str]] = None
@@ -23,12 +21,6 @@ class EventConfigBase(BaseModel):
 
         if "isActive" in values and "is_active" not in values:
             values["is_active"] = values.pop("isActive")
-
-        if "retentionDays" in values and "retention_days" not in values:
-            values["retention_days"] = values.pop("retentionDays")
-
-        if "deleteTime" in values and "delete_time" not in values:
-            values["delete_time"] = values.pop("deleteTime")
 
         if "payloadKey" in values and "payload_key" not in values:
             values["payload_key"] = values.pop("payloadKey")

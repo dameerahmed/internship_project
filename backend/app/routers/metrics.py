@@ -74,11 +74,16 @@ async def get_company_aggregated_metrics(
             "throughput_series": []
         }
 
-    # 2. Get event config IDs under these projects
+    # 2. Get event config IDs and event IDs under these projects
     ec_res = await db.execute(
         select(EventConfig.id).where(EventConfig.project_id.in_(project_ids))
     )
     event_config_ids = [row[0] for row in ec_res.fetchall()]
+
+    evt_res = await db.execute(
+        select(WebhookEvent.event_id).where(WebhookEvent.project_id.in_(project_ids))
+    )
+    project_event_ids = [row[0] for row in evt_res.fetchall() if row[0]]
 
     now = datetime.utcnow()
     twenty_four_hours_ago = now - timedelta(hours=24)
@@ -90,7 +95,15 @@ async def get_company_aggregated_metrics(
     avg_latency_ms = 0.0
     latencies_list = []
 
+    log_conds = []
     if event_config_ids:
+        log_conds.append(WebhookLog.event_config_id.in_(event_config_ids))
+    if project_event_ids:
+        log_conds.append(WebhookLog.event_id.in_(project_event_ids))
+
+    if log_conds:
+        where_filter = and_(or_(*log_conds), WebhookLog.created_at >= twenty_four_hours_ago)
+
         agg_stmt = (
             select(
                 func.count(WebhookLog.id).label("total"),
@@ -98,10 +111,7 @@ async def get_company_aggregated_metrics(
                 func.sum(case((WebhookLog.status == WebhookStatus.FAILED, 1), else_=0)).label("failures"),
                 func.avg(WebhookLog.processing_duration_ms).label("avg_latency")
             )
-            .where(
-                WebhookLog.event_config_id.in_(event_config_ids),
-                WebhookLog.created_at >= twenty_four_hours_ago
-            )
+            .where(where_filter)
         )
         agg_res = await db.execute(agg_stmt)
         agg_row = agg_res.fetchone()
@@ -115,11 +125,7 @@ async def get_company_aggregated_metrics(
         # Real latency values for percentile calculation
         lat_stmt = (
             select(WebhookLog.processing_duration_ms)
-            .where(
-                WebhookLog.event_config_id.in_(event_config_ids),
-                WebhookLog.created_at >= twenty_four_hours_ago,
-                WebhookLog.processing_duration_ms.isnot(None)
-            )
+            .where(where_filter, WebhookLog.processing_duration_ms.isnot(None))
         )
         lat_res = await db.execute(lat_stmt)
         latencies_list = [row[0] for row in lat_res.fetchall() if row[0] is not None]
@@ -134,11 +140,11 @@ async def get_company_aggregated_metrics(
         raw_dlq = await rabbitmq_manager.peek_dlq_messages(limit=250)
         proj_id_set = set(project_ids)
         
-        evt_res = await db.execute(
+        evt_res_dlq = await db.execute(
             select(WebhookEvent.event_id, WebhookEvent.project_id)
             .where(WebhookEvent.project_id.in_(project_ids))
         )
-        evt_map = {row[0]: row[1] for row in evt_res.fetchall()}
+        evt_map = {row[0]: row[1] for row in evt_res_dlq.fetchall()}
 
         for msg in raw_dlq:
             pid = msg.get("project_id")
@@ -153,7 +159,8 @@ async def get_company_aggregated_metrics(
 
     # 5. Build 24h Hourly Throughput Series
     throughput_series = []
-    if event_config_ids:
+    if log_conds:
+        where_filter = and_(or_(*log_conds), WebhookLog.created_at >= twenty_four_hours_ago)
         series_stmt = (
             select(
                 func.date_trunc('hour', WebhookLog.created_at).label("hour_bucket"),
@@ -161,10 +168,7 @@ async def get_company_aggregated_metrics(
                 func.sum(case((WebhookLog.status == WebhookStatus.SUCCESS, 1), else_=0)).label("successes"),
                 func.sum(case((WebhookLog.status == WebhookStatus.FAILED, 1), else_=0)).label("failures")
             )
-            .where(
-                WebhookLog.event_config_id.in_(event_config_ids),
-                WebhookLog.created_at >= twenty_four_hours_ago
-            )
+            .where(where_filter)
             .group_by("hour_bucket")
             .order_by("hour_bucket")
         )
@@ -194,6 +198,8 @@ async def get_company_aggregated_metrics(
 
     return {
         "total_webhooks_24h": total_webhooks_24h,
+        "success_count_24h": success_count_24h,
+        "failed_count_24h": failed_count_24h,
         "success_rate_pct": success_rate_pct,
         "failure_rate_pct": failure_rate_pct,
         "avg_latency_ms": avg_latency_ms,

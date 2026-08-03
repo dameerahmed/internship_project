@@ -22,6 +22,9 @@ class Project(Base):
     secret_key = Column(String(255), nullable=False)  # For HMAC Security Verification
     is_active = Column(Boolean, default=True, nullable=False, index=True)
     retention_days = Column(Integer, default=30, nullable=False, index=True)
+    retention_mode = Column(String(32), default="rolling_days", nullable=True)
+    delete_date = Column(String(32), nullable=True)
+    delete_time = Column(String(32), default="02:00:00", nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

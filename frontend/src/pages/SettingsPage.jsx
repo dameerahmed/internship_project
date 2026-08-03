@@ -94,6 +94,7 @@ export default function SettingsPage() {
             ...prev,
             companyName: data.company_name || data.name || prev.companyName,
             supportEmail: data.support_email || data.email || prev.supportEmail,
+            timezone: data.timezone || prev.timezone || 'UTC',
           }));
         }
       } catch (err) {
@@ -162,7 +163,16 @@ export default function SettingsPage() {
         description: profileForm.description,
         timezone: profileForm.timezone,
       });
-      setFeedback({ type: 'success', message: '✓ Company profile updated successfully!' });
+
+      // Update localStorage user object and broadcast timezone change live
+      try {
+        const storedUser = JSON.parse(localStorage.getItem('user') || '{}');
+        storedUser.timezone = profileForm.timezone;
+        localStorage.setItem('user', JSON.stringify(storedUser));
+      } catch (e) {}
+
+      window.dispatchEvent(new CustomEvent('timezone_changed', { detail: { timezone: profileForm.timezone } }));
+      setFeedback({ type: 'success', message: '✓ Company profile updated successfully! System timezone updated to ' + profileForm.timezone });
     } catch (err) {
       setFeedback({ type: 'error', message: err.message || 'Failed to update company profile.' });
     } finally {

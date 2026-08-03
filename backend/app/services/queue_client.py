@@ -368,9 +368,6 @@ class RabbitMQManager:
                             if tid in raw_id or tid in raw_body:
                                 should_requeue = True
                                 break
-                    # If single item or target selection wasn't matched by raw string, fallback to true if target_ids present
-                    if not should_requeue and target_ids and len(target_ids) > 0:
-                        should_requeue = True
 
                 if should_requeue:
                     # 1. Acknowledge and remove from DLQ
@@ -447,8 +444,6 @@ class RabbitMQManager:
                             if tid in raw_id or tid in raw_body:
                                 should_discard = True
                                 break
-                    if not should_discard and target_ids and len(target_ids) > 0:
-                        should_discard = True
 
                 if should_discard:
                     # Ack to permanently delete from RabbitMQ DLQ
