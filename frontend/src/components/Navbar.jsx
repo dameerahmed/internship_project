@@ -1,93 +1,197 @@
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { LogOut, ChevronRight, Search, Bell, LayoutGrid } from 'lucide-react';
-import ThemeToggle from './ThemeToggle';
-import { useAuth } from '../context/AuthContext';
+import {
+  ChevronRight,
+  Search,
+  Bell,
+  Menu,
+  CheckCircle2,
+  Info,
+  X
+} from 'lucide-react';
 
-export default function Navbar() {
-  const { user, logout } = useAuth();
+export default function Navbar({ onMobileMenuToggle }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const [notifOpen, setNotifOpen] = useState(false);
+  const notifRef = useRef(null);
 
-  const handleLogout = async () => {
-    await logout();
-    navigate('/login');
-  };
+  // Close notification popover on outside click
+  useEffect(() => {
+    const handler = (e) => {
+      if (notifRef.current && !notifRef.current.contains(e.target)) {
+        setNotifOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
   const getPageTitle = () => {
     const p = location.pathname;
-    if (p.includes('/dashboard/projects/')) return 'Project Workspace';
+    if (p.includes('/dashboard/projects/') && p !== '/dashboard/projects') return 'Project Workspace';
     if (p.includes('/dashboard/projects') || p === '/projects') return 'Project Management';
     if (p.includes('/settings')) return 'Settings & Governance';
-    if (p.includes('/logs')) return 'Live Logs Explorer';
-    if (p.includes('/dlq')) return 'Dead Letter Queue';
+    if (p.includes('/logs') || p.includes('/activity')) return 'Live Logs Explorer';
+    if (p.includes('/dlq') || p.includes('/tasks')) return 'Dead Letter Queue';
+    if (p.includes('/simulate') || p.includes('/sandbox')) return 'Webhook Simulator';
     return 'Company Dashboard';
   };
 
   const pageTitle = getPageTitle();
 
   return (
-    <header className="sticky top-0 z-20 w-full border-b border-zinc-200 bg-white/95 backdrop-blur dark:border-zinc-800/80 dark:bg-[#0d1017]/95 transition-colors font-sans select-none shrink-0">
-      <div className="w-full flex h-14 items-center justify-between px-6">
-        
-        {/* Left Side: Clean Search Input & Title */}
-        <div className="flex items-center gap-4 font-sans">
-          <div className="relative hidden md:block w-64">
-            <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-zinc-400" />
-            <input
-              type="text"
-              placeholder="Search..."
-              className="w-full rounded-xl border border-zinc-200 bg-zinc-50 pl-8 pr-3 py-1.5 text-xs text-zinc-900 outline-none focus:border-indigo-500 dark:border-zinc-800 dark:bg-zinc-950 dark:text-white"
-            />
-          </div>
+    <header
+      className="sticky top-0 z-20 w-full shrink-0 select-none"
+      style={{
+        borderBottom: '1px solid var(--eds-border)',
+        background: 'rgba(9,11,18,0.85)',
+        backdropFilter: 'blur(16px)',
+        WebkitBackdropFilter: 'blur(16px)',
+      }}
+    >
+      <div className="flex h-14 w-full items-center justify-between px-5 gap-4">
 
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-zinc-400 font-medium hidden sm:inline">EDS Engine</span>
-            <ChevronRight size={14} className="text-zinc-400 hidden sm:inline" />
-            <h1 className="text-sm font-extrabold text-zinc-900 dark:text-white tracking-tight">{pageTitle}</h1>
-          </div>
-        </div>
-
-        {/* Right Side: Action Icons, Theme Toggle, User Profile & Exit */}
+        {/* ── Left: Mobile burger + Breadcrumb ──────────────────────── */}
         <div className="flex items-center gap-3">
-          <button type="button" className="p-1.5 text-zinc-400 hover:text-zinc-700 dark:hover:text-white transition" title="Grid View">
-            <LayoutGrid size={16} />
-          </button>
-
-          <button type="button" className="relative p-1.5 text-zinc-400 hover:text-zinc-700 dark:hover:text-white transition" title="Notifications">
-            <Bell size={16} />
-            <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-indigo-500" />
-          </button>
-
-          <ThemeToggle />
-
-          {/* User Profile Badge */}
-          <div className="flex items-center gap-2 border-l border-zinc-200 dark:border-zinc-800/80 pl-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-indigo-600 text-white font-bold text-xs shadow-sm font-mono">
-              {user?.email ? user.email.substring(0, 2).toUpperCase() : 'US'}
-            </div>
-            <div className="hidden sm:flex flex-col text-left">
-              <span className="text-xs font-bold text-zinc-800 dark:text-white truncate max-w-[120px]">
-                {user?.company_name || 'Organization'}
-              </span>
-              <span className="text-[10px] text-zinc-400 truncate max-w-[120px] font-mono">
-                {user?.email}
-              </span>
-            </div>
-          </div>
-
-          {/* Exit Button */}
+          {/* Mobile hamburger */}
           <button
             type="button"
-            onClick={handleLogout}
-            title="Exit / Logout"
-            className="flex items-center gap-1.5 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-xs font-bold text-rose-500 hover:bg-rose-500/10 dark:border-zinc-800 dark:bg-zinc-950 transition"
+            onClick={onMobileMenuToggle}
+            className="md:hidden rounded-eds p-2 transition-colors"
+            style={{ color: 'var(--eds-muted)' }}
+            aria-label="Open navigation"
           >
-            <LogOut className="h-3.5 w-3.5" />
-            <span className="hidden md:inline">Exit</span>
+            <Menu size={18} />
           </button>
+
+          {/* Breadcrumb */}
+          <nav className="flex items-center gap-1.5 text-xs">
+            <span
+              className="hidden sm:inline font-medium transition-colors cursor-default"
+              style={{ color: 'var(--eds-muted)' }}
+            >
+              EDS Engine
+            </span>
+            <ChevronRight
+              size={13}
+              className="hidden sm:inline shrink-0"
+              style={{ color: 'var(--eds-faint)' }}
+            />
+            <span className="font-bold tracking-tight" style={{ color: 'var(--eds-text)' }}>
+              {pageTitle}
+            </span>
+          </nav>
         </div>
 
+        {/* ── Center: Global Search (md+) ───────────────────────────── */}
+        <div className="hidden md:flex flex-1 max-w-xs mx-4">
+          <div className="relative w-full">
+            <Search
+              className="absolute left-3 top-1/2 -translate-y-1/2 shrink-0"
+              size={13}
+              style={{ color: 'var(--eds-muted)' }}
+            />
+            <input
+              type="text"
+              placeholder="Search projects, events, logs…"
+              className="w-full rounded-eds py-1.5 pl-8 pr-3 text-xs outline-none transition-all duration-150 font-mono"
+              style={{
+                background: 'var(--eds-surface-2)',
+                border: '1px solid var(--eds-border-2)',
+                color: 'var(--eds-text)',
+              }}
+              onFocus={(e) => {
+                e.target.style.borderColor = 'var(--eds-accent)';
+                e.target.style.boxShadow = '0 0 0 1px var(--eds-accent-ring)';
+              }}
+              onBlur={(e) => {
+                e.target.style.borderColor = 'var(--eds-border-2)';
+                e.target.style.boxShadow = 'none';
+              }}
+            />
+          </div>
+        </div>
+
+        {/* ── Right: System Status + Notifications ──────────────────── */}
+        <div className="flex items-center gap-2 shrink-0">
+
+          {/* System Status Pill */}
+          <div
+            className="hidden sm:flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold font-mono"
+            style={{
+              background: 'var(--eds-success-dim)',
+              border: '1px solid rgba(16,185,129,0.25)',
+              color: 'var(--eds-success)',
+            }}
+          >
+            <span className="eds-dot-success inline-flex h-1.5 w-1.5" />
+            <CheckCircle2 size={11} />
+            <span className="hidden lg:inline">Operational</span>
+          </div>
+
+          {/* Notification Bell */}
+          <div className="relative" ref={notifRef}>
+            <button
+              type="button"
+              onClick={() => setNotifOpen((v) => !v)}
+              className="relative rounded-eds p-2 transition-colors"
+              style={{ color: 'var(--eds-muted)' }}
+              aria-label="Notifications"
+            >
+              <Bell size={16} />
+            </button>
+
+            {/* Notification Popover */}
+            {notifOpen && (
+              <div
+                className="absolute right-0 top-full mt-2 w-72 rounded-eds-md shadow-eds-lg z-50 animate-pop-in"
+                style={{
+                  background: 'var(--eds-panel-2)',
+                  border: '1px solid var(--eds-border-2)',
+                }}
+              >
+                {/* Header */}
+                <div
+                  className="flex items-center justify-between px-4 py-3"
+                  style={{ borderBottom: '1px solid var(--eds-border)' }}
+                >
+                  <span
+                    className="text-xs font-bold"
+                    style={{ color: 'var(--eds-text)' }}
+                  >
+                    Notifications
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setNotifOpen(false)}
+                    className="rounded p-0.5 transition-colors"
+                    style={{ color: 'var(--eds-muted)' }}
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+
+                {/* Empty state */}
+                <div className="flex flex-col items-center justify-center gap-2 py-8 px-4 text-center">
+                  <div
+                    className="flex h-10 w-10 items-center justify-center rounded-full"
+                    style={{ background: 'var(--eds-elevated)' }}
+                  >
+                    <Info size={18} style={{ color: 'var(--eds-muted)' }} />
+                  </div>
+                  <p className="text-xs font-semibold" style={{ color: 'var(--eds-text-2)' }}>
+                    No new notifications
+                  </p>
+                  <p className="text-[11px]" style={{ color: 'var(--eds-muted)' }}>
+                    Webhook alerts and system events will appear here.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
+        </div>
       </div>
     </header>
   );

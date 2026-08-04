@@ -1,6 +1,6 @@
 import time
 import logging
-from sqlalchemy import select, func, case, or_
+from sqlalchemy import select, func, case, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.redis_client import get_redis_client
 from app.models.project import Project
@@ -14,7 +14,9 @@ from typing import Optional
 
 class MetricsService:
     def __init__(self):
-        self.ttl = 86400 * 30  # 30 days expiry to keep Redis clean
+        self.counter_ttl = 86400 * 30  # 30 days for counters (they're additive, safe to keep)
+        self.hydrated_ttl = 86400       # 24h for the hydrated flag — forces daily DB re-sync
+        self.ttl = self.counter_ttl     # backwards-compat alias
 
     def _keys(self, company_id: int, project_id: Optional[int] = None):
         if project_id:
@@ -28,6 +30,12 @@ class MetricsService:
             "failed": f"{base}:failed",
             "latency_sum": f"{base}:latency_sum",
             "throughput": f"{base}:throughput",
+            "ingress_total": f"{base}:ingress_total",
+            "ingress_success": f"{base}:ingress_success",
+            "ingress_failed": f"{base}:ingress_failed",
+            "replay_total": f"{base}:replay_total",
+            "replay_success": f"{base}:replay_success",
+            "replay_failed": f"{base}:replay_failed",
         }
 
     async def increment_gateway_throughput(self, company_id: int, project_id: Optional[int] = None):
@@ -57,11 +65,12 @@ class MetricsService:
         except Exception as e:
             logger.error(f"Redis throughput INCR failed: {e}")
         finally:
-            await redis.aclose()
+            await redis.close()
 
-    async def record_delivery_result(self, company_id: int, is_success: bool, latency_ms: float, project_id: Optional[int] = None):
+    async def record_delivery_result(self, company_id: int, is_success: bool, latency_ms: float, project_id: Optional[int] = None, is_replay: bool = False):
         """
         Increment absolute lifetime counters when a webhook delivery finishes.
+        Separates primary ingress vs DLQ replay metrics.
         """
         redis = await get_redis_client()
         try:
@@ -76,31 +85,48 @@ class MetricsService:
                         pipe.incr(keys["success"])
                     else:
                         pipe.incr(keys["failed"])
+
+                    if is_replay:
+                        pipe.incr(keys["replay_total"])
+                        if is_success:
+                            pipe.incr(keys["replay_success"])
+                        else:
+                            pipe.incr(keys["replay_failed"])
+                    else:
+                        pipe.incr(keys["ingress_total"])
+                        if is_success:
+                            pipe.incr(keys["ingress_success"])
+                        else:
+                            pipe.incr(keys["ingress_failed"])
                     
                     if latency_ms:
                         pipe.incrbyfloat(keys["latency_sum"], latency_ms)
                     
-                    for k in ["total", "success", "failed", "latency_sum"]:
-                        pipe.expire(keys[k], self.ttl)
+                    for k in ["total", "success", "failed", "latency_sum", "ingress_total", "ingress_success", "ingress_failed", "replay_total", "replay_success", "replay_failed"]:
+                        pipe.expire(keys[k], self.counter_ttl)
                         
                     await pipe.execute()
         except Exception as e:
             logger.error(f"Redis delivery INCR failed: {e}")
         finally:
-            await redis.aclose()
+            await redis.close()
 
-    async def get_or_hydrate_metrics(self, company_id: int, db: AsyncSession, project_id: Optional[int] = None) -> dict:
+    async def get_or_hydrate_metrics(self, company_id: int, db: AsyncSession, project_id: Optional[int] = None, force_refresh: bool = False) -> dict:
         """
         Strict Read-Through cache pattern.
-        Returns live metrics from Redis. If completely empty, hydrates from PostgreSQL.
+        Returns live metrics from Redis. If completely empty or force_refresh=True,
+        hydrates from PostgreSQL.
         Supports filtering by specific project_id or overall company.
+
+        force_refresh=True: bypasses the hydrated check and re-syncs from DB.
+        This is used by the dashboard REST endpoint to ensure data accuracy.
         """
         keys = self._keys(company_id, project_id)
         redis = await get_redis_client()
         try:
             is_hydrated = await redis.get(keys["hydrated"])
-            
-            if not is_hydrated:
+
+            if not is_hydrated or force_refresh:
                 logger.info(f"Hydrating metrics for company {company_id} (project {project_id}) from DB to Redis...")
                 await self._hydrate_from_db(company_id, project_id, redis, db, keys)
             
@@ -117,6 +143,12 @@ class MetricsService:
                 pipe.get(f"{keys['total']}:p90")
                 pipe.get(f"{keys['total']}:p95")
                 pipe.get(f"{keys['total']}:p99")
+                pipe.get(keys["ingress_total"])
+                pipe.get(keys["ingress_success"])
+                pipe.get(keys["ingress_failed"])
+                pipe.get(keys["replay_total"])
+                pipe.get(keys["replay_success"])
+                pipe.get(keys["replay_failed"])
                 results = await pipe.execute()
 
             total = int(results[0] or 0)
@@ -128,16 +160,22 @@ class MetricsService:
             p90 = float(results[6] or 0.0)
             p95 = float(results[7] or 0.0)
             p99 = float(results[8] or 0.0)
+            ingress_total = int(results[9] or 0)
+            ingress_success = int(results[10] or 0)
+            ingress_failed = int(results[11] or 0)
+            replay_total = int(results[12] or 0)
+            replay_success = int(results[13] or 0)
+            replay_failed = int(results[14] or 0)
 
             throughput_rps = round(throughput_rpm / 60.0, 2) if throughput_rpm > 0 else 0.0
 
             completed_attempts = success + failed
-            if completed_attempts == 0:
-                success_rate = None  # Rendered as "N/A"
-            else:
-                success_rate = round((success / completed_attempts) * 100, 2)
-
+            success_rate = round((success / completed_attempts) * 100, 2) if completed_attempts > 0 else None
             avg_latency = round(latency_sum / completed_attempts, 1) if completed_attempts > 0 else 0.0
+
+            ingress_rate = round((ingress_success / ingress_total) * 100, 2) if ingress_total > 0 else None
+            replay_recovery_rate = round((replay_success / replay_total) * 100, 2) if replay_total > 0 else None
+            retry_efficiency = round(((ingress_success + replay_success) / max(1, ingress_total + replay_total)) * 100, 2) if total > 0 else 100.0
 
             return {
                 "total_webhooks": total,
@@ -151,6 +189,15 @@ class MetricsService:
                 "p99_latency_ms": p99,
                 "throughput_rpm": throughput_rpm,
                 "throughput_rps": throughput_rps,
+                "ingress_total": ingress_total,
+                "ingress_success": ingress_success,
+                "ingress_failed": ingress_failed,
+                "ingress_success_rate": ingress_rate,
+                "replay_total": replay_total,
+                "replay_success": replay_success,
+                "replay_failed": replay_failed,
+                "replay_recovery_rate": replay_recovery_rate,
+                "retry_efficiency": retry_efficiency,
             }
         except Exception as e:
             logger.error(f"Metrics Read-Through Failed: {e}")
@@ -160,9 +207,12 @@ class MetricsService:
                 "p50_latency_ms": 0.0, "p90_latency_ms": 0.0,
                 "p95_latency_ms": 0.0, "p99_latency_ms": 0.0,
                 "throughput_rpm": 0, "throughput_rps": 0.0,
+                "ingress_total": 0, "ingress_success": 0, "ingress_failed": 0, "ingress_success_rate": None,
+                "replay_total": 0, "replay_success": 0, "replay_failed": 0, "replay_recovery_rate": None,
+                "retry_efficiency": 100.0,
             }
         finally:
-            await redis.aclose()
+            await redis.close()
 
     async def _hydrate_from_db(self, company_id: int, project_id: Optional[int], redis, db: AsyncSession, keys: dict):
         if project_id:
@@ -172,12 +222,12 @@ class MetricsService:
             project_ids = [row[0] for row in proj_res.fetchall()]
         
         if not project_ids:
-            await redis.set(keys["hydrated"], "1", ex=self.ttl)
+            await redis.set(keys["hydrated"], "1", ex=self.hydrated_ttl)
             return
 
-        total = 0
-        success = 0
-        failed = 0
+        total = success = failed = 0
+        ingress_tot = ingress_suc = ingress_fai = 0
+        replay_tot = replay_suc = replay_fai = 0
         lat_sum = 0.0
         p50 = p90 = p95 = p99 = 0.0
 
@@ -198,7 +248,13 @@ class MetricsService:
                 func.count(WebhookLog.id),
                 func.sum(case((WebhookLog.status == WebhookStatus.SUCCESS, 1), else_=0)),
                 func.sum(case((WebhookLog.status == WebhookStatus.FAILED, 1), else_=0)),
-                func.sum(WebhookLog.processing_duration_ms)
+                func.sum(WebhookLog.processing_duration_ms),
+                func.sum(case((WebhookLog.attempt_number <= 5, 1), else_=0)),
+                func.sum(case((and_(WebhookLog.attempt_number <= 5, WebhookLog.status == WebhookStatus.SUCCESS), 1), else_=0)),
+                func.sum(case((and_(WebhookLog.attempt_number <= 5, WebhookLog.status == WebhookStatus.FAILED), 1), else_=0)),
+                func.sum(case((WebhookLog.attempt_number > 5, 1), else_=0)),
+                func.sum(case((and_(WebhookLog.attempt_number > 5, WebhookLog.status == WebhookStatus.SUCCESS), 1), else_=0)),
+                func.sum(case((and_(WebhookLog.attempt_number > 5, WebhookLog.status == WebhookStatus.FAILED), 1), else_=0)),
             ).where(or_(*where_clause))
             
             res = await db.execute(stmt)
@@ -208,6 +264,12 @@ class MetricsService:
                 success = row[1] or 0
                 failed = row[2] or 0
                 lat_sum = float(row[3] or 0.0)
+                ingress_tot = row[4] or 0
+                ingress_suc = row[5] or 0
+                ingress_fai = row[6] or 0
+                replay_tot = row[7] or 0
+                replay_suc = row[8] or 0
+                replay_fai = row[9] or 0
 
             # Compute percentiles
             dur_stmt = select(WebhookLog.processing_duration_ms).where(
@@ -228,15 +290,21 @@ class MetricsService:
             pipe.set(keys["success"], success)
             pipe.set(keys["failed"], failed)
             pipe.set(keys["latency_sum"], lat_sum)
+            pipe.set(keys["ingress_total"], ingress_tot)
+            pipe.set(keys["ingress_success"], ingress_suc)
+            pipe.set(keys["ingress_failed"], ingress_fai)
+            pipe.set(keys["replay_total"], replay_tot)
+            pipe.set(keys["replay_success"], replay_suc)
+            pipe.set(keys["replay_failed"], replay_fai)
             pipe.set(f"{keys['total']}:p50", p50)
             pipe.set(f"{keys['total']}:p90", p90)
             pipe.set(f"{keys['total']}:p95", p95)
             pipe.set(f"{keys['total']}:p99", p99)
-            pipe.set(keys["hydrated"], "1", ex=self.ttl)
-            
-            for k in ["total", "success", "failed", "latency_sum"]:
-                pipe.expire(keys[k], self.ttl)
-                
+            pipe.set(keys["hydrated"], "1", ex=self.hydrated_ttl)
+
+            for k in ["total", "success", "failed", "latency_sum", "ingress_total", "ingress_success", "ingress_failed", "replay_total", "replay_success", "replay_failed"]:
+                pipe.expire(keys[k], self.counter_ttl)
+
             await pipe.execute()
 
 metrics_service = MetricsService()

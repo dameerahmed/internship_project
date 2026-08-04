@@ -1,11 +1,15 @@
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 from urllib.parse import unquote
+
+# Signal to database.py that this process is a Celery worker so it uses NullPool.
+os.environ.setdefault("IS_CELERY_WORKER", "true")
 
 import httpx
 from celery import Celery, Task
@@ -45,11 +49,17 @@ celery_app.conf.update(
                 "x-dead-letter-routing-key": "webhook.failed"
             }
         ),
+        Queue("celery", routing_key="celery"),
     ),
     task_default_queue="webhook_delivery_queue",
     task_default_exchange="webhook_delivery_queue",
     task_default_routing_key="webhook_delivery_queue",
-    task_create_missing_queues=False  
+    task_routes={
+        "app.services.celery_worker.cleanup_old_webhook_logs": {"queue": "celery"},
+        "webhook_workers.cleanup_old_webhook_logs": {"queue": "celery"},
+        "cleanup_old_webhook_logs": {"queue": "celery"},
+    },
+    task_create_missing_queues=True  
 )
 
 # Periodic cleanup: check for old webhook logs matching per-project retention (runs every minute)
@@ -142,13 +152,18 @@ async def _persist_webhook_log(**kwargs):
                     logger.warning("Pub/Sub log publish failed: %s", pub_exc)
 
             # ── Redis Pub/Sub: publish webhook_telemetry event ──
+            attempt_num = kwargs.get("attempt_number", 1)
+            is_replay_msg = bool(attempt_num > 5 or kwargs.get("is_replay", False))
+            delivery_type_str = f"DLQ Replay (Attempt #{attempt_num})" if is_replay_msg else "New Webhook Ingress"
             try:
                 telemetry_payload = {
                     "event_id": event_id,
                     "project_id": project_id,
                     "company_id": company_id,
                     "status": status_val.name if hasattr(status_val, "name") else str(status_val),
-                    "attempt": kwargs.get("attempt_number", 1),
+                    "attempt": attempt_num,
+                    "is_replay": is_replay_msg,
+                    "delivery_type": delivery_type_str,
                     "response_code": kwargs.get("response_code"),
                     "error_message": kwargs.get("error_message"),
                     "processing_duration_ms": kwargs.get("processing_duration_ms"),
@@ -164,11 +179,18 @@ async def _persist_webhook_log(**kwargs):
                 if company_id:
                     is_success = (status_val == WebhookStatus.SUCCESS)
                     latency = kwargs.get("processing_duration_ms") or 0.0
-                    await metrics_service.record_delivery_result(company_id, is_success, latency, project_id=project_id)
+                    await metrics_service.record_delivery_result(
+                        company_id,
+                        is_success,
+                        latency,
+                        project_id=project_id,
+                        is_replay=is_replay_msg
+                    )
 
                     # Publish updated metrics snapshot to company and project dashboard subscribers
                     try:
-                        snapshot = await metrics_service.get_or_hydrate_metrics(company_id, db_session, project_id=project_id)
+                        from app.routers.logs import _build_dashboard_snapshot
+                        snapshot = await _build_dashboard_snapshot(company_id, project_id)
                         await pubsub_service.publish_metrics_snapshot(company_id, snapshot, project_id=project_id)
                     except Exception as snap_exc:
                         logger.warning("Metrics snapshot publish failed: %s", snap_exc)
@@ -189,21 +211,78 @@ def dispatch_webhook_task(self: Task, delivery_packet: dict = None, *args, **kwa
     Main entry point for Celery execution. 
     Handles variable argument capturing to completely avoid positional tracking bugs during retries.
     """
-    # 🚀 FIX: Keyword extraction logic if positional index shifts during retry execution
+    # 🚀 FIX: Robust payload extraction across all Kombu/Celery protocol versions and argument wrapping
     if delivery_packet is None:
         delivery_packet = kwargs.get("delivery_packet")
 
-    if not delivery_packet:
-        raise ValueError("Critical Error: Missing delivery packet context payload inside task lifecycle invocation.")
+    if isinstance(delivery_packet, list) and len(delivery_packet) > 0:
+        if isinstance(delivery_packet[0], dict):
+            delivery_packet = delivery_packet[0]
+        elif isinstance(delivery_packet[0], list) and len(delivery_packet[0]) > 0 and isinstance(delivery_packet[0][0], dict):
+            delivery_packet = delivery_packet[0][0]
+
+    if not isinstance(delivery_packet, dict) and args:
+        for arg in args:
+            if isinstance(arg, dict):
+                delivery_packet = arg
+                break
+            elif isinstance(arg, list) and len(arg) > 0 and isinstance(arg[0], dict):
+                delivery_packet = arg[0]
+                break
+
+    if not isinstance(delivery_packet, dict):
+        delivery_packet = kwargs.get("delivery_packet") or {}
+        if isinstance(delivery_packet, list) and len(delivery_packet) > 0 and isinstance(delivery_packet[0], dict):
+            delivery_packet = delivery_packet[0]
+
+    if not isinstance(delivery_packet, dict):
+        delivery_packet = {}
 
     try:
         return asyncio.run(orchestrate_webhook_lifecycle(self, delivery_packet))
     except Exception as general_err:
-        # Pass structural signals cleanly back to Celery (Retry/Reject commands should never be suppressed)
-        if "Retry" in type(general_err).__name__ or "Reject" in type(general_err).__name__:
+        err_name = type(general_err).__name__
+        if "Retry" in err_name or "Reject" in err_name or "Ignore" in err_name:
             raise general_err
-        logger.exception("Unexpected crash in worker engine")
-        raise general_err
+
+        logger.warning("Worker task execution attempt %s crashed with error: %s", self.request.retries + 1, general_err)
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=general_err)
+        else:
+            logger.error("All 5 retries exhausted after worker engine crash: %s", general_err)
+            event_id = delivery_packet.get("event_id") if isinstance(delivery_packet, dict) else f"evt_err_{int(time.time()*1000)}"
+            project_id = delivery_packet.get("project_id") if isinstance(delivery_packet, dict) else None
+            company_id = delivery_packet.get("company_id") if isinstance(delivery_packet, dict) else None
+
+            dlq_packet = {
+                "event_id": event_id,
+                "project_id": project_id,
+                "company_id": company_id,
+                "event_type": delivery_packet.get("event_type") if isinstance(delivery_packet, dict) else "webhook.failed",
+                "data_payload": delivery_packet.get("data_payload") if isinstance(delivery_packet, dict) else delivery_packet,
+                "target_url": delivery_packet.get("target_url") if isinstance(delivery_packet, dict) else "/v1/gateway",
+                "retry_count": 5,
+                "attempt_number": 5,
+                "error_message": f"Worker crashed (5 retries exhausted): {general_err}",
+            }
+            try:
+                with celery_app.producer_pool.acquire(block=True) as producer:
+                    producer.publish(
+                        {
+                            "event_id": event_id,
+                            "delivery_packet": dlq_packet,
+                            "reason": str(general_err)
+                        },
+                        exchange="webhook_dlx",
+                        routing_key="webhook.failed",
+                        serializer="json",
+                        retry=True
+                    )
+                if company_id:
+                    asyncio.run(pubsub_service.publish_dlq_event(company_id, "ADDED", dlq_packet))
+            except Exception as dlq_pub_err:
+                logger.error("Failed to publish crashed task to DLQ: %s", dlq_pub_err)
+            return {"status": "failed_and_routed_to_dlq", "reason": str(general_err)}
 
 
 async def orchestrate_webhook_lifecycle(task_instance: Task, delivery_packet: dict):
@@ -267,42 +346,55 @@ async def orchestrate_webhook_lifecycle(task_instance: Task, delivery_packet: di
         delivery_packet["event_id"] = event_id
 
     manual_attempt = delivery_packet.get("manual_attempt_number") or delivery_packet.get("attempt_number")
-    effective_retry_count = (manual_attempt - 1) if (manual_attempt and manual_attempt > 5) else task_instance.request.retries
+    # FIX: Clean attempt lifecycle.
+    # - Normal Celery retries: use request.retries (0-indexed) + 1
+    # - DLQ replay: manual_attempt_number is set explicitly (typically 6+) by the replay handler
+    # Use the manual value ONLY if explicitly set by the DLQ replay path; otherwise use Celery's counter.
+    if manual_attempt and isinstance(manual_attempt, int) and manual_attempt > task_instance.max_retries:
+        effective_retry_count = manual_attempt - 1  # Convert to 0-based for _process_webhook_delivery
+    else:
+        effective_retry_count = task_instance.request.retries  # Standard Celery 0-indexed retry count
 
-    try:
-        result = await _process_webhook_delivery(
-            event_id=event_id,
-            project_id=project_id,
-            company_id=company_id,
-            event_type=event_type,
-            data_payload=data_payload,
-            target_url=target_url,
-            url_index=url_index,
-            retry_count=effective_retry_count,
-            request_headers=delivery_packet.get("request_headers"),
-            started_at=delivery_packet.get("started_at", time.time()),
-        )
-    finally:
-        # Drop connection pool instances to avoid database bleeding
-        await engine.dispose()
+    result = await _process_webhook_delivery(
+        event_id=event_id,
+        project_id=project_id,
+        company_id=company_id,
+        event_type=event_type,
+        data_payload=data_payload,
+        target_url=target_url,
+        url_index=url_index,
+        retry_count=effective_retry_count,
+        request_headers=delivery_packet.get("request_headers"),
+        started_at=delivery_packet.get("started_at", time.time()),
+    )
+
+    is_replay = bool(delivery_packet.get("is_replay") or (manual_attempt and isinstance(manual_attempt, int) and manual_attempt > task_instance.max_retries))
 
     # Evaluation retry phase
     if result.get("captured_exception"):
-        if task_instance.request.retries < task_instance.max_retries:
+        # Replayed messages from DLQ (attempt > 5) should NOT perform 5 automatic retries;
+        # if the single replay attempt fails, route it directly back to DLQ with incremented attempt_number!
+        if not is_replay and task_instance.request.retries < task_instance.max_retries:
             logger.warning("Attempt %s failed for event %s; triggering Celery retry", task_instance.request.retries + 1, event_id)
             
-            # For retry, pass the lightweight payload structure to preserve reference
-            retry_packet = {
-                "event_id": event_id,
-                "url_index": url_index
-            }
+            retry_packet = dict(delivery_packet) if isinstance(delivery_packet, dict) else {}
+            retry_packet["event_id"] = event_id
+            retry_packet["url_index"] = url_index
+            retry_packet["project_id"] = project_id
+            retry_packet["company_id"] = company_id
+            retry_packet["event_type"] = event_type
+            retry_packet["data_payload"] = data_payload
+            retry_packet["target_url"] = target_url
+            retry_packet["attempt_number"] = task_instance.request.retries + 2
+
             raise task_instance.retry(
                 args=[], 
                 kwargs={"delivery_packet": retry_packet}, 
                 exc=result["captured_exception"]
             )
 
-        logger.warning("Retries exhausted for project %s; routing packet to DLQ", project_id)
+        final_attempt_num = int(manual_attempt) if (is_replay and manual_attempt) else 5
+        logger.warning("Delivery failed for event %s (attempt %s, is_replay=%s); routing packet to DLQ", event_id, final_attempt_num, is_replay)
         
         # Route FULL payload to DLQ so the UI can render it and requeues work correctly
         dlq_packet = {
@@ -313,9 +405,10 @@ async def orchestrate_webhook_lifecycle(task_instance: Task, delivery_packet: di
             "data_payload": data_payload,
             "target_url": result.get("target_url") or target_url,
             "url_index": url_index,
-            "retry_count": 5,
-            "attempt_number": 5,
-            "request_headers": delivery_packet.get("request_headers"),
+            "retry_count": final_attempt_num,
+            "attempt_number": final_attempt_num,
+            "is_replay": True,
+            "request_headers": delivery_packet.get("request_headers") if isinstance(delivery_packet, dict) else None,
         }
         try:
             with celery_app.producer_pool.acquire(block=True) as producer:
@@ -330,13 +423,13 @@ async def orchestrate_webhook_lifecycle(task_instance: Task, delivery_packet: di
                     serializer="json",
                     retry=True
                 )
-            logger.info("Event %s routed to DLQ successfully", event_id)
+            logger.info("Event %s routed to DLQ successfully (attempt %s)", event_id, final_attempt_num)
             if company_id:
                 await pubsub_service.publish_dlq_event(company_id, "ADDED", dlq_packet)
         except Exception as dlq_err:
             logger.exception("Celery native transport failed to route to DLQ")
 
-        return {"status": "failed_and_routed_to_dlq", "reason": str(result["captured_exception"]) }
+        return {"status": "failed_and_routed_to_dlq", "reason": str(result["captured_exception"])}
 
     logger.info("Worker delivered event %s with status %s", event_id, result["response_code"])
     return sanitize_response_payload({"status": "delivered", "http_status": result["response_code"]})
@@ -467,11 +560,11 @@ async def _process_webhook_delivery(
         "X-GATEWAY-SIGNATURE": WebhookSecurity.sign_payload(payload_bytes, settings.SYSTEM_PRIVATE_KEY or "gateway-secret"),
     }
 
-    # Step 3: Outbound Transport Network Handling
+    # Step 3: Outbound Transport Network Handling (async — non-blocking)
     try:
-        with httpx.Client(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=5.0) as client:
             logger.info("Sending webhook %s to %s (attempt %s)", event_id, target_url, retry_count + 1)
-            response = client.post(
+            response = await client.post(
                 target_url,
                 content=payload_bytes,
                 headers=request_headers,
@@ -489,6 +582,8 @@ async def _process_webhook_delivery(
     result = await _persist_webhook_log(
         event_id=event_id,
         event_config_id=event_config_id,
+        project_id=project_id,
+        company_id=company_id,
         response_code=response_code,
         attempt_number=retry_count + 1,
         status=WebhookStatus.SUCCESS if response_code < 300 else WebhookStatus.FAILED,
@@ -496,6 +591,7 @@ async def _process_webhook_delivery(
         processing_duration_ms=int((time.time() - (started_at or time.time())) * 1000),
         source_ip=None,
         http_method="POST",
+        target_url=target_url,
     )
 
     return {

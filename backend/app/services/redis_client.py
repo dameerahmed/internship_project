@@ -5,60 +5,68 @@ import redis.asyncio as aioredis
 from redis.exceptions import RedisError, ConnectionError
 from  config import settings
 
-# Setup standard logger to print errors to console
-logger = logging.getLogger("app.redis")
-
 import weakref
+
+logger = logging.getLogger("app.redis")
 
 # Safety Check: Stop the server immediately if the URL is missing
 if not settings.REDIS_URL:
     logger.critical("CRITICAL: REDIS_URL environment variable is totally missing!")
     raise RuntimeError("System cannot start without REDIS_URL configuration.")
 
-# Loop-specific Connection Pools map using WeakKeyDictionary to avoid memory/reference leaks
-_redis_pools = weakref.WeakKeyDictionary()
+# ─────────────────────────── Connection Pool Registry ────────────────────────
+# Loop-specific Connection Pools map using WeakKeyDictionary to avoid
+# memory/reference leaks when event loops are recycled (e.g., in tests or Celery).
+_redis_pools: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
-async def get_redis_client() -> aioredis.Redis:
-    """
-    Return a Redis client from the event-loop-specific connection pool.
-    This guarantees compatibility with Celery's fork concurrency model.
-    """
-    loop = asyncio.get_running_loop()
+
+def _get_or_create_pool(loop: asyncio.AbstractEventLoop) -> aioredis.ConnectionPool:
+    """Return the pool bound to this event loop, creating it if needed."""
     if loop not in _redis_pools:
         try:
             _redis_pools[loop] = aioredis.ConnectionPool.from_url(
                 settings.REDIS_URL,
                 max_connections=50,       # Maximum connections allowed in the pool
-                retry_on_timeout=True,    # Automatically retry if a temporary network blip happens
-                decode_responses=True,    # Automatically convert raw binary data into clean Python strings
+                retry_on_timeout=True,    # Automatically retry on temporary network blips
+                decode_responses=True,    # Return clean Python strings, not bytes
                 protocol=2,               # Force RESP2 protocol
             )
+            logger.debug("Created new Redis connection pool for event loop %s", id(loop))
         except Exception as init_error:
             logger.critical(f"CRITICAL: Failed to initialize Redis Connection Pool: {str(init_error)}")
             raise RuntimeError(f"Redis initialization aborted: {init_error}")
-            
-    return aioredis.Redis(connection_pool=_redis_pools[loop])
+    return _redis_pools[loop]
+
+
+async def get_redis_client() -> aioredis.Redis:
+    """
+    Return a Redis client from the event-loop-specific connection pool.
+
+    IMPORTANT: Call `.close()` (not `.aclose()`) when finished to return
+    the connection back to the pool without disconnecting the socket.
+    `aclose()` terminates the underlying socket — only use it when you
+    explicitly want to remove the connection from the pool.
+    """
+    loop = asyncio.get_running_loop()
+    pool = _get_or_create_pool(loop)
+    return aioredis.Redis(connection_pool=pool)
 
 
 async def get_redis() -> AsyncGenerator[aioredis.Redis, None]:
     """
-    Asynchronous Context Dependency for Redis.
-    Safely opens a connection from the pool and guarantees its return/cleanup.
+    FastAPI Dependency: yields a Redis client from the pool and
+    safely returns the connection on exit.
     """
-    # Grab an open, active client connection from our managed pool
     client = await get_redis_client()
     try:
-        # Give the connection to the calling function to read/write data
         yield client
     except ConnectionError as conn_err:
-        # Explicitly log if the Redis server goes offline during use
-        logger.error(f"DATABASE ERROR: Redis server connection was lost: {str(conn_err)}")
+        logger.error(f"Redis server connection was lost: {str(conn_err)}")
         raise
     except RedisError as redis_err:
-        # Catch any general faulty query execution or command errors
-        logger.error(f"EXECUTION ERROR: Redis command failed to process: {str(redis_err)}")
+        logger.error(f"Redis command failed: {str(redis_err)}")
         raise
     finally:
-        # CRITICAL PROTECTION: Always close the client session to return it to the pool.
-        # This completely prevents system resource leaks.
+        # .close() returns the connection to the pool — it does NOT close the socket.
+        # This is the correct pattern for pooled connections.
         await client.close()

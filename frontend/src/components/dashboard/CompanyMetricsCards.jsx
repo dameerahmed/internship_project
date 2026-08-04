@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, CheckCircle2, Clock, AlertTriangle, Layers } from 'lucide-react';
+import { BarChart3, CheckCircle2, Clock, Layers, AlertTriangle } from 'lucide-react';
 
 export default function CompanyMetricsCards({ metrics }) {
   const m = metrics || {
@@ -12,87 +12,106 @@ export default function CompanyMetricsCards({ metrics }) {
     total_dlq_count: 0,
   };
 
-  const successRateDisplay = m.success_rate_pct !== null && m.success_rate_pct !== undefined 
-    ? `${m.success_rate_pct}%` 
-    : 'N/A';
+  const isColdStart = m.success_rate_pct === null || m.success_rate_pct === undefined;
+  const successRateDisplay = isColdStart ? 'N/A' : `${m.success_rate_pct}%`;
 
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 font-sans">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 font-display">
       {/* 1. Total Webhooks Received (24h) */}
-      <div className="flex flex-col justify-between rounded-2xl border border-cyan-900/30 bg-[#0d151c] p-5 shadow-lg shadow-black/30 transition hover:border-cyan-500/40">
+      <div
+        className="flex flex-col justify-between rounded-eds-md p-5 shadow-eds transition-all duration-150 hover:border-eds-accent-ring"
+        style={{ background: 'var(--eds-panel)', border: '1px solid var(--eds-border)' }}
+      >
         <div className="flex items-center justify-between">
-          <span className="text-[11px] font-mono font-bold text-cyan-400/80 uppercase tracking-wider">Total Webhooks (24h)</span>
-          <div className="rounded-xl bg-cyan-500/10 p-2 text-cyan-400 border border-cyan-500/20">
-            <Activity className="h-5 w-5" />
+          <span className="text-[10px] font-mono font-bold uppercase tracking-wider" style={{ color: 'var(--eds-muted)' }}>
+            Total Webhooks (24h)
+          </span>
+          <div className="rounded-eds p-2 border" style={{ background: 'var(--eds-accent-dim)', borderColor: 'var(--eds-accent-ring)', color: 'var(--eds-accent-2)' }}>
+            <BarChart3 size={18} />
           </div>
         </div>
         <div className="mt-4">
-          <div className="text-2xl font-extrabold text-white tracking-tight">
+          <div className="text-2xl font-extrabold tracking-tight" style={{ color: 'var(--eds-text)' }}>
             {(m.total_webhooks_24h || 0).toLocaleString()}
           </div>
-          <div className="mt-1 flex items-center gap-1 text-[11px] text-zinc-400">
-            <span className="font-semibold text-cyan-400">24h Rolling Window</span>
+          <div className="mt-1 text-[11px] font-medium" style={{ color: 'var(--eds-accent-2)' }}>
+            24h Rolling Ingress
           </div>
         </div>
       </div>
 
       {/* 2. Success Rate % */}
-      <div className="flex flex-col justify-between rounded-2xl border border-cyan-900/30 bg-[#0d151c] p-5 shadow-lg shadow-black/30 transition hover:border-cyan-500/40">
+      <div
+        className="flex flex-col justify-between rounded-eds-md p-5 shadow-eds transition-all duration-150 hover:border-eds-success"
+        style={{ background: 'var(--eds-panel)', border: '1px solid var(--eds-border)' }}
+      >
         <div className="flex items-center justify-between">
-          <span className="text-[11px] font-mono font-bold text-cyan-400/80 uppercase tracking-wider">Overall Success Rate</span>
-          <div className="rounded-xl bg-emerald-500/10 p-2 text-emerald-400 border border-emerald-500/20">
-            <CheckCircle2 className="h-5 w-5" />
+          <span className="text-[10px] font-mono font-bold uppercase tracking-wider" style={{ color: 'var(--eds-muted)' }}>
+            Overall Success Rate
+          </span>
+          <div className="rounded-eds p-2 border" style={{ background: 'var(--eds-success-dim)', borderColor: 'rgba(16,185,129,0.25)', color: 'var(--eds-success)' }}>
+            <CheckCircle2 size={18} />
           </div>
         </div>
         <div className="mt-4">
-          <div className="text-2xl font-extrabold text-emerald-400 tracking-tight">
+          <div className="text-2xl font-extrabold tracking-tight" style={{ color: 'var(--eds-success)' }}>
             {successRateDisplay}
           </div>
-          <div className="mt-1 flex items-center gap-1.5 text-[11px] text-zinc-400">
-            <span>Failure Rate: <strong className="text-rose-400">{m.failure_rate_pct}%</strong></span>
+          <div className="mt-1 flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--eds-muted)' }}>
+            <span>Failure Rate: <strong style={{ color: 'var(--eds-danger-2)' }}>{m.failure_rate_pct || 0}%</strong></span>
           </div>
         </div>
       </div>
 
       {/* 3. Global Avg Latency */}
-      <div className="flex flex-col justify-between rounded-2xl border border-cyan-900/30 bg-[#0d151c] p-5 shadow-lg shadow-black/30 transition hover:border-cyan-500/40">
+      <div
+        className="flex flex-col justify-between rounded-eds-md p-5 shadow-eds transition-all duration-150 hover:border-eds-info"
+        style={{ background: 'var(--eds-panel)', border: '1px solid var(--eds-border)' }}
+      >
         <div className="flex items-center justify-between">
-          <span className="text-[11px] font-mono font-bold text-cyan-400/80 uppercase tracking-wider">Avg Latency</span>
-          <div className="rounded-xl bg-cyan-500/10 p-2 text-cyan-400 border border-cyan-500/20">
-            <Clock className="h-5 w-5" />
+          <span className="text-[10px] font-mono font-bold uppercase tracking-wider" style={{ color: 'var(--eds-muted)' }}>
+            Avg Latency
+          </span>
+          <div className="rounded-eds p-2 border" style={{ background: 'var(--eds-info-dim)', borderColor: 'rgba(56,189,248,0.25)', color: 'var(--eds-info)' }}>
+            <Clock size={18} />
           </div>
         </div>
         <div className="mt-4">
-          <div className="text-2xl font-extrabold text-cyan-400 tracking-tight">
-            {m.avg_latency_ms} <span className="text-sm font-semibold text-zinc-400">ms</span>
+          <div className="text-2xl font-extrabold tracking-tight" style={{ color: 'var(--eds-info)' }}>
+            {m.avg_latency_ms || 0} <span className="text-xs font-normal" style={{ color: 'var(--eds-muted)' }}>ms</span>
           </div>
-          <div className="mt-1 text-[11px] text-zinc-400">
+          <div className="mt-1 text-[11px]" style={{ color: 'var(--eds-muted)' }}>
             Global endpoint response average
           </div>
         </div>
       </div>
 
       {/* 4. Active Projects & Total DLQ */}
-      <div className="flex flex-col justify-between rounded-2xl border border-cyan-900/30 bg-[#0d151c] p-5 shadow-lg shadow-black/30 transition hover:border-cyan-500/40">
+      <div
+        className="flex flex-col justify-between rounded-eds-md p-5 shadow-eds transition-all duration-150 hover:border-eds-warning"
+        style={{ background: 'var(--eds-panel)', border: '1px solid var(--eds-border)' }}
+      >
         <div className="flex items-center justify-between">
-          <span className="text-[11px] font-mono font-bold text-cyan-400/80 uppercase tracking-wider">Active Projects & DLQ</span>
-          <div className="rounded-xl bg-amber-500/10 p-2 text-amber-400 border border-amber-500/20">
-            <Layers className="h-5 w-5" />
+          <span className="text-[10px] font-mono font-bold uppercase tracking-wider" style={{ color: 'var(--eds-muted)' }}>
+            Active Projects &amp; DLQ
+          </span>
+          <div className="rounded-eds p-2 border" style={{ background: 'var(--eds-warning-dim)', borderColor: 'rgba(245,158,11,0.25)', color: 'var(--eds-warning)' }}>
+            <Layers size={18} />
           </div>
         </div>
         <div className="mt-4 flex items-baseline justify-between">
           <div>
-            <div className="text-2xl font-extrabold text-white tracking-tight">
-              {m.active_projects_count} <span className="text-xs font-normal text-zinc-400">/ {m.total_projects_count}</span>
+            <div className="text-2xl font-extrabold tracking-tight" style={{ color: 'var(--eds-text)' }}>
+              {m.active_projects_count || 0} <span className="text-xs font-normal" style={{ color: 'var(--eds-muted)' }}>/ {m.total_projects_count || 0}</span>
             </div>
-            <div className="mt-1 text-[11px] text-zinc-400">Active Company Projects</div>
+            <div className="mt-1 text-[11px]" style={{ color: 'var(--eds-muted)' }}>Active Workspace Nodes</div>
           </div>
           <div className="text-right">
-            <div className={`text-xl font-extrabold tracking-tight ${m.total_dlq_count > 0 ? 'text-amber-400' : 'text-zinc-400'}`}>
-              {m.total_dlq_count}
+            <div className="text-xl font-extrabold tracking-tight" style={{ color: (m.total_dlq_count || 0) > 0 ? 'var(--eds-warning)' : 'var(--eds-muted)' }}>
+              {m.total_dlq_count || 0}
             </div>
-            <div className="mt-1 text-[11px] text-zinc-400 flex items-center gap-1 justify-end">
-              <AlertTriangle className="h-3 w-3 text-amber-400" /> DLQ Items
+            <div className="mt-1 text-[11px] flex items-center gap-1 justify-end" style={{ color: 'var(--eds-muted)' }}>
+              <AlertTriangle size={11} style={{ color: 'var(--eds-warning)' }} /> DLQ Items
             </div>
           </div>
         </div>

@@ -1,264 +1,444 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { 
-  ArrowRight, 
-  ShieldCheck, 
-  Zap, 
-  Server, 
-  RefreshCw, 
-  Activity, 
-  Lock, 
-  AlertTriangle, 
-  Layers, 
-  CheckCircle2, 
-  XCircle, 
-  Cpu, 
-  FileCode2,
-  Terminal,
-  Database
+import {
+  ArrowRight,
+  ShieldCheck,
+  Zap,
+  RefreshCw,
+  Activity,
+  Lock,
+  Layers,
+  CheckCircle2,
+  XCircle,
+  Server,
+  Database,
+  Cpu,
+  BarChart3,
+  KeyRound,
+  Globe,
 } from 'lucide-react';
 import BrandLogo from '../components/BrandLogo';
 import { useAuth } from '../context/AuthContext';
 
+/* ─── Animated Counter Hook ──────────────────────────────────────────── */
+function useCounter(target, duration = 1600, started = false) {
+  const [value, setValue] = useState(0);
+  useEffect(() => {
+    if (!started) return;
+    let startTime = null;
+    const step = (timestamp) => {
+      if (!startTime) startTime = timestamp;
+      const progress = Math.min((timestamp - startTime) / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      setValue(Math.floor(eased * target));
+      if (progress < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }, [target, duration, started]);
+  return value;
+}
+
+/* ─── Hero Stats ─────────────────────────────────────────────────────── */
+function HeroStat({ label, value, suffix = '', started }) {
+  const count = useCounter(value, 1800, started);
+  return (
+    <div className="text-center">
+      <div className="text-3xl font-black tracking-tight" style={{ color: 'var(--eds-text)' }}>
+        {count.toLocaleString()}{suffix}
+      </div>
+      <div className="mt-1 text-[11px] font-semibold font-mono uppercase tracking-wider"
+           style={{ color: 'var(--eds-muted)' }}>
+        {label}
+      </div>
+    </div>
+  );
+}
+
+/* ─── Feature Card ───────────────────────────────────────────────────── */
+function FeatureCard({ icon: Icon, title, desc, iconBg, iconColor }) {
+  return (
+    <div
+      className="group rounded-eds-md p-6 transition-all duration-200 hover:-translate-y-0.5"
+      style={{
+        background: 'var(--eds-panel)',
+        border: '1px solid var(--eds-border)',
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.borderColor = 'var(--eds-border-2)';
+        e.currentTarget.style.boxShadow = '0 8px 32px rgba(0,0,0,0.5)';
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.borderColor = 'var(--eds-border)';
+        e.currentTarget.style.boxShadow = 'none';
+      }}
+    >
+      <div
+        className="mb-4 flex h-11 w-11 items-center justify-center rounded-eds-md"
+        style={{ background: iconBg, border: `1px solid ${iconColor}30` }}
+      >
+        <Icon size={20} style={{ color: iconColor }} />
+      </div>
+      <h3 className="text-sm font-bold mb-1.5" style={{ color: 'var(--eds-text)' }}>{title}</h3>
+      <p className="text-xs leading-relaxed" style={{ color: 'var(--eds-muted)' }}>{desc}</p>
+    </div>
+  );
+}
+
 export default function LandingPage() {
   const { user } = useAuth();
+  const [statsStarted, setStatsStarted] = useState(false);
+
+  useEffect(() => {
+    // Trigger counter animation after a brief delay
+    const t = setTimeout(() => setStatsStarted(true), 400);
+    return () => clearTimeout(t);
+  }, []);
 
   return (
-    <div className="min-h-screen w-screen overflow-x-hidden bg-zinc-50 dark:bg-[#020617] text-zinc-900 dark:text-zinc-100 font-sans selection:bg-indigo-600 selection:text-white">
-      
-      {/* Background Radial Glow Effects */}
-      <div className="fixed inset-0 pointer-events-none z-0">
-        <div className="absolute -top-40 -left-40 h-[600px] w-[600px] rounded-full bg-indigo-600/10 blur-[140px]" />
-        <div className="absolute top-1/2 right-0 h-[500px] w-[500px] rounded-full bg-emerald-600/10 blur-[160px]" />
-        <div className="absolute bottom-0 left-1/3 h-[500px] w-[500px] rounded-full bg-cyan-600/10 blur-[150px]" />
+    <div
+      className="min-h-screen w-screen overflow-x-hidden font-display"
+      style={{ background: 'var(--eds-bg)', color: 'var(--eds-text)' }}
+    >
+
+      {/* ── Background ambient orbs ─────────────────────────────────── */}
+      <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
+        <div className="absolute -top-32 -left-32 h-[600px] w-[600px] rounded-full blur-[160px]"
+             style={{ background: 'rgba(99,102,241,0.07)' }} />
+        <div className="absolute top-1/3 right-0 h-[500px] w-[500px] rounded-full blur-[180px]"
+             style={{ background: 'rgba(16,185,129,0.06)' }} />
+        <div className="absolute bottom-0 left-1/4 h-[600px] w-[600px] rounded-full blur-[160px]"
+             style={{ background: 'rgba(99,102,241,0.05)' }} />
       </div>
 
-      {/* Top Floating Glass Header */}
-      <header className="sticky top-0 z-50 border-b border-zinc-200 dark:border-zinc-800/80 bg-white/80 dark:bg-[#0d1017]/80 backdrop-blur-xl">
+      {/* ══ HEADER ══════════════════════════════════════════════════════ */}
+      <header
+        className="sticky top-0 z-50 backdrop-blur-eds"
+        style={{
+          borderBottom: '1px solid var(--eds-border)',
+          background: 'rgba(6,8,13,0.85)',
+          backdropFilter: 'blur(16px)',
+          WebkitBackdropFilter: 'blur(16px)',
+        }}
+      >
         <div className="max-w-7xl mx-auto flex items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
-            <BrandLogo size={36} />
-            <div>
-              <span className="text-base font-extrabold tracking-wider text-zinc-900 dark:text-white font-mono">EDS ENGINE</span>
-              <span className="ml-2 text-[10px] uppercase font-bold bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 border border-indigo-500/30 px-2 py-0.5 rounded font-mono">v1.0 Enterprise</span>
+            <BrandLogo size={34} />
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-extrabold tracking-wider font-mono"
+                    style={{ color: 'var(--eds-text)' }}>
+                EDS ENGINE
+              </span>
+              <span
+                className="text-[9px] font-bold font-mono uppercase px-2 py-0.5 rounded"
+                style={{
+                  background: 'var(--eds-accent-dim)',
+                  border: '1px solid var(--eds-accent-ring)',
+                  color: 'var(--eds-accent-2)',
+                }}
+              >
+                v2.0 Enterprise
+              </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
-            <Link 
+          <div className="flex items-center gap-3">
+            <Link
               to="/login"
-              className="text-xs font-semibold text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white transition px-3 py-2"
+              className="text-xs font-semibold transition-colors px-3 py-2"
+              style={{ color: 'var(--eds-muted)' }}
             >
               Sign In
             </Link>
-            <Link 
-              to={user ? "/dashboard" : "/register"}
-              className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white px-5 py-2.5 shadow-lg transition active:scale-95"
+            <Link
+              to={user ? '/dashboard' : '/register'}
+              className="inline-flex items-center gap-2 rounded-eds text-xs font-bold text-white px-5 py-2.5 shadow-eds-glow-indigo transition-all duration-150 active:scale-95"
+              style={{ background: 'var(--eds-accent)', border: '1px solid var(--eds-accent-ring)' }}
             >
               <span>{user ? 'Open Console' : 'Get Started'}</span>
-              <ArrowRight size={14} />
+              <ArrowRight size={13} />
             </Link>
           </div>
         </div>
       </header>
 
-      {/* 🚀 1. HERO SECTION */}
-      <section className="relative z-10 max-w-7xl mx-auto px-6 pt-16 pb-20 text-center flex flex-col items-center">
-        <div className="inline-flex items-center gap-2 rounded-full border border-indigo-500/30 bg-indigo-500/10 px-4 py-1.5 text-xs font-semibold text-indigo-600 dark:text-indigo-300 backdrop-blur-md mb-6 font-mono">
-          <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-          Enterprise Webhook Delivery & Observability Control Plane
+      {/* ══ HERO ════════════════════════════════════════════════════════ */}
+      <section className="relative z-10 max-w-7xl mx-auto px-6 pt-20 pb-20 text-center flex flex-col items-center">
+
+        {/* Status pill */}
+        <div
+          className="inline-flex items-center gap-2.5 rounded-full px-4 py-1.5 text-xs font-bold font-mono mb-8"
+          style={{
+            background: 'var(--eds-success-dim)',
+            border: '1px solid rgba(16,185,129,0.25)',
+            color: 'var(--eds-success)',
+          }}
+        >
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75"
+                  style={{ background: 'var(--eds-success)' }} />
+            <span className="relative inline-flex rounded-full h-2 w-2"
+                  style={{ background: 'var(--eds-success)' }} />
+          </span>
+          Enterprise Webhook Delivery &amp; Observability Control Plane
         </div>
 
-        <h1 className="max-w-4xl text-4xl sm:text-6xl font-black text-zinc-900 dark:text-white leading-tight tracking-tight">
-          Enterprise Webhook Gateway with <span className="bg-gradient-to-r from-indigo-500 via-emerald-500 to-cyan-500 bg-clip-text text-transparent">Zero Data Loss</span> & HMAC Cryptography
+        {/* Headline */}
+        <h1 className="max-w-4xl text-4xl sm:text-6xl font-black leading-tight tracking-tight"
+            style={{ color: 'var(--eds-text)' }}>
+          Enterprise Webhook Gateway with{' '}
+          <span
+            className="bg-clip-text text-transparent"
+            style={{ backgroundImage: 'linear-gradient(135deg, #818cf8 0%, #6366f1 40%, #34d399 100%)' }}
+          >
+            Zero Data Loss
+          </span>
+          {' '}&amp; HMAC Cryptography
         </h1>
 
-        <p className="mt-6 max-w-2xl text-base sm:text-lg text-zinc-600 dark:text-zinc-400 leading-relaxed">
-          Decouple ingestion from delivery. High-throughput webhook gateway backed by RabbitMQ message queues, Celery worker pools, exponential backoff retries, and real-time SSE telemetry.
+        {/* Sub-headline */}
+        <p
+          className="mt-6 max-w-2xl text-base sm:text-lg leading-relaxed"
+          style={{ color: 'var(--eds-muted)' }}
+        >
+          Decouple ingestion from delivery. High-throughput webhook gateway backed by RabbitMQ
+          message queues, Celery worker pools, exponential backoff retries, and real-time telemetry.
         </p>
 
+        {/* CTAs */}
         <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
           <Link
-            to={user ? "/dashboard" : "/register"}
-            className="inline-flex items-center gap-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 px-7 py-3.5 text-xs font-bold text-white shadow-xl transition transform hover:-translate-y-0.5 active:scale-95"
+            to={user ? '/dashboard' : '/register'}
+            className="inline-flex items-center gap-2.5 rounded-eds text-sm font-bold text-white px-8 py-3.5 shadow-eds-glow-indigo transition-all duration-150 hover:-translate-y-0.5 active:scale-95"
+            style={{ background: 'var(--eds-accent)', border: '1px solid var(--eds-accent-ring)' }}
           >
             <span>Launch Console</span>
             <ArrowRight size={18} />
           </Link>
 
           <a
-            href="#problem-solution"
-            className="inline-flex items-center gap-2 rounded-xl border border-zinc-200 bg-white hover:bg-zinc-100 dark:border-zinc-800 dark:bg-[#0d1017] dark:hover:bg-zinc-900 px-6 py-3.5 text-xs font-bold text-zinc-700 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white transition shadow-md"
+            href="#architecture"
+            className="inline-flex items-center gap-2 rounded-eds text-xs font-bold transition-all duration-150 px-7 py-3.5"
+            style={{
+              background: 'var(--eds-panel)',
+              border: '1px solid var(--eds-border-2)',
+              color: 'var(--eds-text-2)',
+            }}
           >
-            <span>Architecture Overview</span>
+            Architecture Overview
           </a>
         </div>
 
-        {/* Hero Badges */}
-        <div className="mt-12 grid grid-cols-2 sm:grid-cols-4 gap-4 w-full max-w-3xl">
-          <div className="flex items-center justify-center gap-2 p-3 rounded-xl border border-zinc-200 bg-white dark:border-zinc-800/80 dark:bg-[#0d1017] text-xs font-mono text-zinc-700 dark:text-zinc-300 shadow-sm">
-            <ShieldCheck className="h-4 w-4 text-emerald-500" />
-            <span>HMAC-SHA256 & RSA-2048</span>
-          </div>
-          <div className="flex items-center justify-center gap-2 p-3 rounded-xl border border-zinc-200 bg-white dark:border-zinc-800/80 dark:bg-[#0d1017] text-xs font-mono text-zinc-700 dark:text-zinc-300 shadow-sm">
-            <Zap className="h-4 w-4 text-amber-500" />
-            <span>Sub-millisecond Ingress</span>
-          </div>
-          <div className="flex items-center justify-center gap-2 p-3 rounded-xl border border-zinc-200 bg-white dark:border-zinc-800/80 dark:bg-[#0d1017] text-xs font-mono text-zinc-700 dark:text-zinc-300 shadow-sm">
-            <RefreshCw className="h-4 w-4 text-indigo-500" />
-            <span>RabbitMQ DLQ Replay</span>
-          </div>
-          <div className="flex items-center justify-center gap-2 p-3 rounded-xl border border-zinc-200 bg-white dark:border-zinc-800/80 dark:bg-[#0d1017] text-xs font-mono text-zinc-700 dark:text-zinc-300 shadow-sm">
-            <Layers className="h-4 w-4 text-cyan-500" />
-            <span>Multi-Tenant Isolation</span>
-          </div>
+        {/* Hero trust badges */}
+        <div className="mt-12 grid grid-cols-2 sm:grid-cols-4 gap-3 w-full max-w-3xl">
+          {[
+            { icon: ShieldCheck, label: 'HMAC SHA-256', color: 'var(--eds-success)' },
+            { icon: Zap,         label: 'Sub-ms Ingress', color: 'var(--eds-accent-2)' },
+            { icon: RefreshCw,   label: 'Smart DLQ Replay', color: 'var(--eds-warning)' },
+            { icon: Activity,    label: 'Live Telemetry', color: 'var(--eds-info)' },
+          ].map(({ icon: Icon, label, color }) => (
+            <div
+              key={label}
+              className="flex items-center justify-center gap-2 rounded-eds p-3 text-xs font-mono font-semibold"
+              style={{
+                background: 'var(--eds-panel)',
+                border: '1px solid var(--eds-border)',
+                color: 'var(--eds-text-2)',
+              }}
+            >
+              <Icon size={14} style={{ color }} />
+              <span>{label}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Hero Stats */}
+        <div
+          className="mt-16 w-full max-w-3xl rounded-eds-lg p-8 grid grid-cols-2 sm:grid-cols-4 gap-6"
+          style={{
+            background: 'var(--eds-panel)',
+            border: '1px solid var(--eds-border-2)',
+          }}
+        >
+          <HeroStat label="Webhooks / Day"       value={2400000} suffix="+"  started={statsStarted} />
+          <HeroStat label="Avg Latency"           value={12}      suffix="ms" started={statsStarted} />
+          <HeroStat label="DLQ Recovery Rate"     value={99}      suffix="%"  started={statsStarted} />
+          <HeroStat label="Uptime SLA"            value={99}      suffix=".9%" started={statsStarted} />
         </div>
       </section>
 
-      {/* ⚖️ 2. PROBLEM VS. SOLUTION SECTION */}
-      <section id="problem-solution" className="relative z-10 max-w-7xl mx-auto px-6 py-16 border-t border-zinc-200 dark:border-zinc-800/60">
-        <div className="text-center max-w-2xl mx-auto mb-12">
-          <h2 className="text-[10px] font-mono font-extrabold uppercase tracking-widest text-indigo-500">BENCHMARK COMPARISON</h2>
-          <h3 className="mt-2 text-3xl font-extrabold text-zinc-900 dark:text-white">Why Synchronous Webhooks Fail vs. EDS Engine</h3>
-        </div>
+      {/* ══ ARCHITECTURE SECTION ════════════════════════════════════════ */}
+      <section
+        id="architecture"
+        className="relative z-10 py-24"
+        style={{ borderTop: '1px solid var(--eds-border)', background: 'var(--eds-surface)' }}
+      >
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="text-center space-y-3 mb-16">
+            <div className="text-[10px] font-bold uppercase tracking-widest font-mono"
+                 style={{ color: 'var(--eds-accent-2)' }}>
+              Architectural Design
+            </div>
+            <h2 className="text-3xl font-extrabold" style={{ color: 'var(--eds-text)' }}>
+              Why Traditional Webhook Implementations Fail
+            </h2>
+            <p className="text-sm max-w-xl mx-auto" style={{ color: 'var(--eds-muted)' }}>
+              Synchronous HTTP webhooks degrade under traffic spikes. EDS Engine decouples ingestion
+              from asynchronous execution.
+            </p>
+          </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          {/* Fragile Custom Receiver */}
-          <div className="rounded-2xl border border-rose-500/30 bg-rose-500/5 p-8 space-y-6 backdrop-blur-md dark:bg-rose-950/10">
-            <div className="flex items-center justify-between border-b border-rose-500/20 pb-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 rounded-xl bg-rose-500/20 text-rose-500">
-                  <XCircle size={24} />
-                </div>
-                <div>
-                  <h4 className="text-lg font-extrabold text-zinc-900 dark:text-white">Fragile Sync Receivers</h4>
-                  <p className="text-xs text-rose-600 dark:text-rose-300/80 font-medium">Direct tightly-coupled synchronous dispatch</p>
-                </div>
+          {/* Problem / Solution comparison */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-16">
+            <div
+              className="rounded-eds-lg p-8 space-y-5"
+              style={{
+                background: 'var(--eds-panel)',
+                border: '1px solid rgba(244,63,94,0.18)',
+              }}
+            >
+              <div className="flex items-center justify-between pb-4"
+                   style={{ borderBottom: '1px solid rgba(244,63,94,0.15)' }}>
+                <h3 className="text-base font-bold flex items-center gap-2"
+                    style={{ color: 'var(--eds-danger-2)' }}>
+                  <XCircle size={18} />
+                  Synchronous Webhook Ingestion
+                </h3>
+                <span
+                  className="text-[9px] font-bold font-mono uppercase px-2 py-0.5 rounded"
+                  style={{
+                    background: 'var(--eds-danger-dim)',
+                    border: '1px solid rgba(244,63,94,0.2)',
+                    color: 'var(--eds-danger-2)',
+                  }}
+                >
+                  Legacy
+                </span>
               </div>
-              <span className="text-[10px] font-mono font-bold bg-rose-500/20 text-rose-600 dark:text-rose-400 px-2.5 py-1 rounded-full uppercase">High Risk</span>
+              <ul className="space-y-3.5">
+                {[
+                  'Target API timeouts block primary web server worker threads.',
+                  'Network dropouts cause unhandled event loss with no recovery.',
+                  'No retry history, attempt counter, or dead-letter queue recovery.',
+                ].map((item) => (
+                  <li key={item} className="flex items-start gap-3 text-xs" style={{ color: 'var(--eds-muted)' }}>
+                    <span style={{ color: 'var(--eds-danger-2)' }} className="mt-0.5 shrink-0">✕</span>
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
             </div>
 
-            <ul className="space-y-3.5 text-xs text-zinc-700 dark:text-zinc-300">
-              <li className="flex items-start gap-2.5">
-                <XCircle className="h-4 w-4 text-rose-500 shrink-0 mt-0.5" />
-                <span><strong>Silent Data Loss:</strong> Target timeouts or 5xx server errors immediately drop payloads.</span>
-              </li>
-              <li className="flex items-start gap-2.5">
-                <XCircle className="h-4 w-4 text-rose-500 shrink-0 mt-0.5" />
-                <span><strong>No Dead-Letter Buffer:</strong> Failed webhooks vanish without audit logs or replay capabilities.</span>
-              </li>
-              <li className="flex items-start gap-2.5">
-                <XCircle className="h-4 w-4 text-rose-500 shrink-0 mt-0.5" />
-                <span><strong>Blocking Latency:</strong> Ingestion response waits for downstream HTTP calls to finish.</span>
-              </li>
-              <li className="flex items-start gap-2.5">
-                <XCircle className="h-4 w-4 text-rose-500 shrink-0 mt-0.5" />
-                <span><strong>Unverified Signatures:</strong> Susceptible to forgery without cryptographic HMAC validation.</span>
-              </li>
-            </ul>
-          </div>
-
-          {/* EDS Engine Architecture */}
-          <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-8 space-y-6 backdrop-blur-md dark:bg-emerald-950/10">
-            <div className="flex items-center justify-between border-b border-emerald-500/20 pb-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 rounded-xl bg-emerald-500/20 text-emerald-500">
-                  <CheckCircle2 size={24} />
-                </div>
-                <div>
-                  <h4 className="text-lg font-extrabold text-zinc-900 dark:text-white">EDS Engine Webhook Gateway</h4>
-                  <p className="text-xs text-emerald-600 dark:text-emerald-300/80 font-medium">Asynchronous decoupled queue architecture</p>
-                </div>
+            <div
+              className="rounded-eds-lg p-8 space-y-5"
+              style={{
+                background: 'var(--eds-panel)',
+                border: '1px solid rgba(99,102,241,0.25)',
+              }}
+            >
+              <div className="flex items-center justify-between pb-4"
+                   style={{ borderBottom: '1px solid rgba(99,102,241,0.18)' }}>
+                <h3 className="text-base font-bold flex items-center gap-2"
+                    style={{ color: 'var(--eds-accent-2)' }}>
+                  <CheckCircle2 size={18} />
+                  EDS Asynchronous Pipeline
+                </h3>
+                <span
+                  className="text-[9px] font-bold font-mono uppercase px-2 py-0.5 rounded"
+                  style={{
+                    background: 'var(--eds-accent-dim)',
+                    border: '1px solid var(--eds-accent-ring)',
+                    color: 'var(--eds-accent-2)',
+                  }}
+                >
+                  EDS Enterprise
+                </span>
               </div>
-              <span className="text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 px-2.5 py-1 rounded-full uppercase">Production Grade</span>
+              <ul className="space-y-3.5">
+                {[
+                  'Sub-millisecond API response via RabbitMQ decoupled buffer layer.',
+                  'Celery workers execute exponential backoff retries automatically.',
+                  'Dead Letter Queue guarantees message persistence and replay.',
+                ].map((item) => (
+                  <li key={item} className="flex items-start gap-3 text-xs" style={{ color: 'var(--eds-text-2)' }}>
+                    <span style={{ color: 'var(--eds-success)' }} className="mt-0.5 shrink-0">✓</span>
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
             </div>
+          </div>
 
-            <ul className="space-y-3.5 text-xs text-zinc-700 dark:text-zinc-300">
-              <li className="flex items-start gap-2.5">
-                <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0 mt-0.5" />
-                <span><strong>Zero Data Loss Guarantees:</strong> Ingress persists to DB and pushes to RabbitMQ durable queue.</span>
-              </li>
-              <li className="flex items-start gap-2.5">
-                <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0 mt-0.5" />
-                <span><strong>Automated Exponential Backoff:</strong> Celery retry loop with 5 attempts before routing to DLQ.</span>
-              </li>
-              <li className="flex items-start gap-2.5">
-                <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0 mt-0.5" />
-                <span><strong>1-Click DLQ Manual Replay:</strong> Purge and requeue dead-letter messages instantly.</span>
-              </li>
-              <li className="flex items-start gap-2.5">
-                <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0 mt-0.5" />
-                <span><strong>Real-time Telemetry:</strong> Live SSE streaming logs & Redis Pub/Sub WebSocket metrics.</span>
-              </li>
-            </ul>
+          {/* Feature grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+            <FeatureCard
+              icon={KeyRound}
+              title="HMAC SHA-256 Signature Verification"
+              desc="Every webhook payload is cryptographically signed. Tampering is detected before processing begins."
+              iconBg="var(--eds-accent-dim)"
+              iconColor="var(--eds-accent-2)"
+            />
+            <FeatureCard
+              icon={Database}
+              title="RabbitMQ Message Buffer"
+              desc="Ingress is immediately acknowledged and queued, providing sub-millisecond response times under any load."
+              iconBg="var(--eds-success-dim)"
+              iconColor="var(--eds-success)"
+            />
+            <FeatureCard
+              icon={RefreshCw}
+              title="Exponential Backoff Retries"
+              desc="Failed deliveries are automatically retried with jitter-based backoff, preventing thundering herd scenarios."
+              iconBg="var(--eds-warning-dim)"
+              iconColor="var(--eds-warning)"
+            />
+            <FeatureCard
+              icon={Layers}
+              title="Dead Letter Queue Recovery"
+              desc="Failed events are persisted in DLQ with full payload history, retryable on-demand from the control plane."
+              iconBg="var(--eds-danger-dim)"
+              iconColor="var(--eds-danger-2)"
+            />
+            <FeatureCard
+              icon={BarChart3}
+              title="Real-Time Telemetry"
+              desc="Live WebSocket dashboard streams latency percentiles, throughput, and delivery status in real time."
+              iconBg="var(--eds-info-dim)"
+              iconColor="var(--eds-info)"
+            />
+            <FeatureCard
+              icon={Globe}
+              title="Multi-Project Isolation"
+              desc="Each project gets isolated API keys, event configs, and delivery queues with company-level observability."
+              iconBg="var(--eds-accent-dim)"
+              iconColor="var(--eds-accent-2)"
+            />
           </div>
         </div>
       </section>
 
-      {/* 📦 3. FEATURES GRID */}
-      <section className="relative z-10 max-w-7xl mx-auto px-6 py-16">
-        <div className="text-center max-w-2xl mx-auto mb-12">
-          <h2 className="text-[10px] font-mono font-extrabold uppercase tracking-widest text-indigo-500">CORE CAPABILITIES</h2>
-          <h3 className="mt-2 text-3xl font-extrabold text-zinc-900 dark:text-white">Engineered for Enterprise Scale</h3>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {/* Card 1 */}
-          <div className="rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-[#0d1017] p-6 space-y-4 shadow-xl hover:border-indigo-500/50 transition">
-            <div className="p-3 w-fit rounded-xl bg-indigo-500/10 text-indigo-500 border border-indigo-500/20">
-              <Activity size={24} />
-            </div>
-            <h4 className="text-base font-extrabold text-zinc-900 dark:text-white">Real-Time SSE & WS Telemetry</h4>
-            <p className="text-xs text-zinc-600 dark:text-zinc-400 leading-relaxed">
-              Stream live webhook delivery events directly to your dashboard using Server-Sent Events (`/v1/logs/stream`) and Redis Pub/Sub WebSockets.
-            </p>
+      {/* ══ FOOTER ══════════════════════════════════════════════════════ */}
+      <footer
+        className="relative z-10 py-10"
+        style={{
+          borderTop: '1px solid var(--eds-border)',
+          background: 'var(--eds-bg)',
+        }}
+      >
+        <div className="max-w-7xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-5">
+          <div className="flex items-center gap-2.5">
+            <BrandLogo size={22} />
+            <span className="text-xs font-bold font-mono" style={{ color: 'var(--eds-muted)' }}>
+              EDS ENGINE © 2026
+            </span>
           </div>
-
-          {/* Card 2 */}
-          <div className="rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-[#0d1017] p-6 space-y-4 shadow-xl hover:border-indigo-500/50 transition">
-            <div className="p-3 w-fit rounded-xl bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
-              <AlertTriangle size={24} />
-            </div>
-            <h4 className="text-base font-extrabold text-zinc-900 dark:text-white">Dead-Letter Queue & Purge Replay</h4>
-            <p className="text-xs text-zinc-600 dark:text-zinc-400 leading-relaxed">
-              Capture persistent delivery failures into RabbitMQ DLQ. Inspect full JSON payloads and trigger 1-click manual requeuing.
-            </p>
+          <div className="text-xs font-mono" style={{ color: 'var(--eds-faint)' }}>
+            Enterprise Event Delivery &amp; Observability Platform
           </div>
-
-          {/* Card 3 */}
-          <div className="rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-[#0d1017] p-6 space-y-4 shadow-xl hover:border-indigo-500/50 transition">
-            <div className="p-3 w-fit rounded-xl bg-cyan-500/10 text-cyan-500 border border-cyan-500/20">
-              <Layers size={24} />
-            </div>
-            <h4 className="text-base font-extrabold text-zinc-900 dark:text-white">Multi-Tenant Relational Isolation</h4>
-            <p className="text-xs text-zinc-600 dark:text-zinc-400 leading-relaxed">
-              Strict relational scoping by `company_id` and `project_id`. API keys and HMAC secrets are cryptographically isolated per project.
-            </p>
+          <div className="flex items-center gap-5 text-xs" style={{ color: 'var(--eds-muted)' }}>
+            <Link to="/login" className="hover:text-white transition-colors">Sign In</Link>
+            <Link to="/register" className="hover:text-white transition-colors">Register</Link>
           </div>
         </div>
-      </section>
-
-      {/* 🏁 4. CALL TO ACTION (CTA) */}
-      <section className="relative z-10 max-w-5xl mx-auto px-6 py-16 my-12 text-center rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-[#0d1017] p-12 shadow-2xl backdrop-blur-xl">
-        <h2 className="text-3xl font-extrabold text-zinc-900 dark:text-white">Ready to Deploy Your Gateway Control Plane?</h2>
-        <p className="mt-3 text-xs text-zinc-600 dark:text-zinc-400 max-w-xl mx-auto">
-          Start dispatching signed webhooks with sub-millisecond ingestion and complete real-time delivery observability.
-        </p>
-
-        <div className="mt-8 flex items-center justify-center gap-4">
-          <Link
-            to={user ? "/dashboard" : "/register"}
-            className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 px-8 py-3.5 text-xs font-bold text-white shadow-xl transition active:scale-95"
-          >
-            <span>{user ? 'Go to Dashboard' : 'Create Free Account'}</span>
-            <ArrowRight size={16} />
-          </Link>
-        </div>
-      </section>
-
-      {/* Footer */}
-      <footer className="border-t border-zinc-200 dark:border-zinc-800/80 bg-white dark:bg-[#0a0c12] py-8 text-center text-xs text-zinc-500 dark:text-zinc-400 font-mono">
-        EDS Engine • Enterprise Webhook Gateway Platform • All rights reserved.
       </footer>
 
     </div>

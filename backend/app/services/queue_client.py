@@ -17,6 +17,70 @@ if not settings.RABBITMQ_URL:
     logger.critical("CRITICAL: RABBITMQ_URL environment variable is totally missing!")
     raise RuntimeError("System cannot start without RABBITMQ_URL configuration.")
 
+def _unwrap_celery_payload(raw_body_or_parsed: any) -> tuple:
+    """
+    Unwraps Celery / Kombu payload structures across all versions, protocols, and wrappers.
+    Returns (packet, delivery_packet).
+    """
+    import json
+    import base64
+
+    parsed_body = raw_body_or_parsed
+    if isinstance(raw_body_or_parsed, (bytes, bytearray)):
+        try:
+            parsed_body = raw_body_or_parsed.decode("utf-8")
+        except Exception:
+            parsed_body = str(raw_body_or_parsed)
+
+    if isinstance(parsed_body, str):
+        try:
+            parsed_body = json.loads(parsed_body)
+        except Exception:
+            return {"raw_content": parsed_body}, {"raw_content": parsed_body}
+
+    packet = parsed_body
+
+    if isinstance(parsed_body, dict):
+        # Base64 encoded Kombu body
+        if "body" in parsed_body and isinstance(parsed_body["body"], str):
+            try:
+                decoded = base64.b64decode(parsed_body["body"]).decode("utf-8")
+                return _unwrap_celery_payload(decoded)
+            except Exception:
+                pass
+
+        # Celery protocol v2 args/kwargs
+        args = parsed_body.get("args")
+        if isinstance(args, list) and len(args) > 0:
+            first_arg = args[0]
+            if isinstance(first_arg, dict):
+                packet = first_arg
+            elif isinstance(first_arg, list) and len(first_arg) > 0 and isinstance(first_arg[0], dict):
+                packet = first_arg[0]
+
+        kwargs = parsed_body.get("kwargs")
+        if isinstance(kwargs, dict) and "delivery_packet" in kwargs:
+            packet = kwargs["delivery_packet"]
+
+    elif isinstance(parsed_body, list) and len(parsed_body) > 0:
+        first_elem = parsed_body[0]
+        if isinstance(first_elem, list) and len(first_elem) > 0 and isinstance(first_elem[0], dict):
+            packet = first_elem[0]
+        elif isinstance(first_elem, dict):
+            packet = first_elem
+
+    delivery_packet = packet
+    if isinstance(packet, dict):
+        delivery_packet = packet.get("delivery_packet") or packet
+
+    if not isinstance(packet, dict):
+        packet = {"raw_content": str(packet)}
+    if not isinstance(delivery_packet, dict):
+        delivery_packet = packet
+
+    return packet, delivery_packet
+
+
 class RabbitMQManager:
     def __init__(self, amqp_url: str):
         self.url = amqp_url
@@ -221,42 +285,42 @@ class RabbitMQManager:
                 for i, msg in enumerate(raw_messages):
                     try:
                         raw_body = msg.body.decode("utf-8") if isinstance(msg.body, (bytes, bytearray)) else str(msg.body)
-                        parsed_body = {}
-                        try:
-                            parsed_body = json.loads(raw_body)
-                        except Exception:
-                            parsed_body = {"raw_content": raw_body}
-
-                        # Celery payload unpacking helper if Kombu wrapped
-                        packet = parsed_body
-                        if isinstance(parsed_body, list) and len(parsed_body) > 0:
-                            first_elem = parsed_body[0]
-                            if isinstance(first_elem, list) and len(first_elem) > 0 and isinstance(first_elem[0], dict):
-                                packet = first_elem[0]
-                            elif isinstance(first_elem, dict):
-                                packet = first_elem
+                        packet, delivery_packet = _unwrap_celery_payload(raw_body)
 
                         # Extract x-death headers provided by RabbitMQ DLX
                         headers = dict(msg.headers or {})
+                        task_name = headers.get("task") or (packet.get("task") if isinstance(packet, dict) else None)
+                        if task_name and ("cleanup" in str(task_name) or "webhook_workers" in str(task_name)):
+                            # Internal background maintenance task — automatically discard from DLQ so user DLQ stays clean
+                            try:
+                                await msg.ack()
+                            except Exception:
+                                pass
+                            continue
+
                         x_death = headers.get("x-death") or []
                         death_info = x_death[0] if isinstance(x_death, list) and len(x_death) > 0 else {}
 
-                        attempt_count = death_info.get("count", 1)
+                        attempt_count = (
+                            (delivery_packet.get("attempt_number") if isinstance(delivery_packet, dict) else None)
+                            or (delivery_packet.get("manual_attempt_number") if isinstance(delivery_packet, dict) else None)
+                            or (delivery_packet.get("retry_count") if isinstance(delivery_packet, dict) else None)
+                            or (packet.get("attempt_number") if isinstance(packet, dict) else None)
+                            or (packet.get("manual_attempt_number") if isinstance(packet, dict) else None)
+                            or (packet.get("retry_count") if isinstance(packet, dict) else None)
+                            or death_info.get("count")
+                            or 5
+                        )
                         death_reason = death_info.get("reason", "rejected")
                         source_queue = death_info.get("queue", self.main_queue_name)
 
-                        # Handle nested delivery_packet structure from updated Celery worker
-                        delivery_packet = packet
-                        if isinstance(packet, dict):
-                            delivery_packet = packet.get("delivery_packet") or packet
-
+                        # Extract metadata
                         event_id = None
                         project_id = None
                         event_type = "webhook.failed"
                         target_url = "/v1/gateway"
                         error_msg = None
-                        payload_data = packet
-
+                        
                         if isinstance(packet, dict):
                             event_id = packet.get("event_id")
                             error_msg = packet.get("reason")
@@ -266,7 +330,8 @@ class RabbitMQManager:
                             project_id = delivery_packet.get("project_id")
                             event_type = delivery_packet.get("event_type") or event_type
                             target_url = delivery_packet.get("target_url") or target_url
-                            payload_data = delivery_packet.get("data_payload") or delivery_packet.get("payload") or packet
+
+                        payload_data = delivery_packet.get("data_payload") or delivery_packet.get("payload") or packet if isinstance(delivery_packet, dict) else packet
 
                         event_id = (
                             event_id
@@ -374,13 +439,8 @@ class RabbitMQManager:
                     await msg.ack()
                     
                     # 2. Parse payload to get the delivery packet
-                    try:
-                        import json
-                        parsed_body = json.loads(raw_body)
-                        delivery_packet = parsed_body.get("delivery_packet") or parsed_body
-                        if not isinstance(delivery_packet, dict):
-                            delivery_packet = {"raw_content": str(delivery_packet)}
-                    except Exception:
+                    _, delivery_packet = _unwrap_celery_payload(raw_body)
+                    if not isinstance(delivery_packet, dict):
                         delivery_packet = {"raw_content": raw_body}
 
                     # Extract current attempts (default 5 for exhausted DLQ item) and increment to 6+
@@ -390,11 +450,15 @@ class RabbitMQManager:
                     delivery_packet["attempt_number"] = new_attempt_number
 
                     # 3. Publish back into main queue AS A PROPER CELERY TASK
-                    celery_app.send_task(
-                        "app.services.celery_worker.dispatch_webhook_task",
-                        kwargs={"delivery_packet": delivery_packet},
-                        queue="webhook_delivery_queue"
-                    )
+                    try:
+                        from app.services.celery_worker import celery_app
+                        celery_app.send_task(
+                            "app.services.celery_worker.dispatch_webhook_task",
+                            kwargs={"delivery_packet": delivery_packet},
+                            queue="webhook_delivery_queue"
+                        )
+                    except Exception as cel_err:
+                        logger.warning("Celery send_task failed during DLQ replay: %s", cel_err)
                     requeued_ids.append(raw_id or f"msg_{len(requeued_ids)+1}")
                 else:
                     # Return unmatched message to DLQ

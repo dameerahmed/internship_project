@@ -1,17 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { 
-  Activity, 
-  Terminal, 
-  AlertTriangle, 
-  Sliders, 
-  Zap, 
-  Settings, 
+import {
+  BarChart3,
+  Terminal,
+  AlertTriangle,
+  SlidersHorizontal,
+  Send,
   ArrowLeft,
   RefreshCw,
   X,
   CheckCircle2,
-  KeyRound
+  KeyRound,
+  Inbox,
+  ShieldCheck,
 } from 'lucide-react';
 import ProtectedLayout from '../components/ProtectedLayout';
 import OverviewTab from '../components/project/tabs/OverviewTab';
@@ -39,7 +40,6 @@ export default function ProjectDetailPage() {
   const [feedback, setFeedback] = useState({ type: '', message: '' });
   const resolvedActiveTab = activeTab === 'security' ? 'settings' : activeTab;
 
-  // Settings form state
   const [form, setForm] = useState({
     name: '',
     description: '',
@@ -72,7 +72,7 @@ export default function ProjectDetailPage() {
         return JSON.stringify(prev) === JSON.stringify(nextForm) ? prev : nextForm;
       });
     } catch (err) {
-      setFeedback({ type: 'error', message: err.message || 'Failed to load project node details' });
+      setFeedback({ type: 'error', message: err.message || 'Failed to load project details' });
     } finally {
       if (!silent && isDifferentProject) {
         setProjectLoading(false);
@@ -158,9 +158,9 @@ export default function ProjectDetailPage() {
   if (projectLoading) {
     return (
       <ProtectedLayout title="Loading Project Workspace..." eyebrow="Project Workspace">
-        <div className="flex h-80 items-center justify-center text-sm font-medium text-zinc-400">
-          <RefreshCw className="mr-3 h-5 w-5 animate-spin text-emerald-500" />
-          Initializing project workspace node...
+        <div className="flex h-80 flex-col items-center justify-center gap-3 text-xs font-semibold" style={{ color: 'var(--eds-muted)' }}>
+          <RefreshCw size={22} className="animate-spin" style={{ color: 'var(--eds-accent-2)' }} />
+          <span>Initializing workspace telemetry...</span>
         </div>
       </ProtectedLayout>
     );
@@ -169,42 +169,77 @@ export default function ProjectDetailPage() {
   if (!activeProject) {
     return (
       <ProtectedLayout title="Project Workspace" eyebrow="Project Deep-Dive">
-        <div className="flex h-80 flex-col items-center justify-center text-center text-zinc-400">
-          <AlertTriangle className="h-10 w-10 text-amber-500 mb-3" />
-          <h2 className="text-lg font-bold text-zinc-900 dark:text-white">Project Not Found or Access Forbidden</h2>
-          <p className="text-xs text-zinc-500 mt-1 max-w-sm">
+        <div className="flex h-80 flex-col items-center justify-center text-center">
+          <AlertTriangle size={32} className="mb-3" style={{ color: 'var(--eds-warning)' }} />
+          <h2 className="text-base font-bold" style={{ color: 'var(--eds-text)' }}>Project Not Found or Access Forbidden</h2>
+          <p className="text-xs mt-1 max-w-sm" style={{ color: 'var(--eds-muted)' }}>
             This project node does not exist or does not belong to your organization.
           </p>
           <button
             type="button"
             onClick={() => navigate('/dashboard/projects')}
-            className="mt-4 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-lg"
+            className="eds-btn-primary mt-4"
           >
-            Return to Project Management
+            Return to Project Directory
           </button>
         </div>
       </ProtectedLayout>
     );
   }
 
+  const tabs = [
+    { id: 'overview',  label: 'Overview',      icon: BarChart3 },
+    { id: 'events',    label: 'Event Config',  icon: SlidersHorizontal },
+    { id: 'simulator', label: 'Simulator',     icon: Send, iconColor: 'var(--eds-warning)' },
+    { id: 'logs',      label: 'Live Logs',     icon: Terminal },
+    { id: 'dlq',       label: 'DLQ',           icon: Inbox, iconColor: 'var(--eds-danger-2)' },
+    { id: 'settings',  label: 'Settings',      icon: ShieldCheck, iconColor: 'var(--eds-accent-2)' },
+  ];
+
   return (
     <ProtectedLayout>
-      <div className="flex flex-col bg-white dark:bg-zinc-950/90 min-h-full text-zinc-900 dark:text-zinc-100 border border-zinc-200 dark:border-zinc-800/80 rounded-3xl shadow-sm overflow-hidden backdrop-blur-xl transition-colors font-sans w-full">
-        
+      <div
+        className="flex flex-col min-h-full rounded-eds-xl shadow-eds-lg overflow-hidden font-display w-full"
+        style={{
+          background: 'var(--eds-panel)',
+          border: '1px solid var(--eds-border-2)',
+        }}
+      >
         {/* Workspace Top Header */}
-        <div className="px-6 lg:px-8 py-5 border-b border-zinc-200 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-900/50 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div
+          className="px-6 py-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
+          style={{
+            background: 'var(--eds-surface)',
+            borderBottom: '1px solid var(--eds-border)',
+          }}
+        >
           <div className="space-y-1">
             <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-extrabold tracking-tight text-zinc-900 dark:text-white">
+              <h1 className="text-xl font-extrabold tracking-tight" style={{ color: 'var(--eds-text)' }}>
                 {activeProject.name}
               </h1>
-              <span className="font-mono text-xs px-2.5 py-0.5 rounded-full border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 text-emerald-500 font-bold">
+              <span
+                className="font-mono text-[10px] font-bold px-2 py-0.5 rounded"
+                style={{
+                  background: 'var(--eds-accent-dim)',
+                  border: '1px solid var(--eds-accent-ring)',
+                  color: 'var(--eds-accent-2)',
+                }}
+              >
                 Node #{activeProject.id}
               </span>
-              <span className={`inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full border ${
-                activeProject.is_active ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20' : 'bg-zinc-200 text-zinc-600 border-zinc-300 dark:bg-zinc-800 dark:text-zinc-400 dark:border-zinc-700'
-              }`}>
-                <span className={`h-2 w-2 rounded-full ${activeProject.is_active ? 'bg-emerald-500' : 'bg-zinc-400'}`} />
+              <span
+                className="inline-flex items-center gap-1.5 text-[10px] font-bold font-mono px-2.5 py-0.5 rounded-full"
+                style={
+                  activeProject.is_active
+                    ? { background: 'var(--eds-success-dim)', color: 'var(--eds-success)', border: '1px solid rgba(16,185,129,0.25)' }
+                    : { background: 'var(--eds-elevated)', color: 'var(--eds-muted)', border: '1px solid var(--eds-border-2)' }
+                }
+              >
+                <span
+                  className="h-1.5 w-1.5 rounded-full"
+                  style={{ background: activeProject.is_active ? 'var(--eds-success)' : 'var(--eds-muted)' }}
+                />
                 {activeProject.is_active ? 'Active' : 'Paused'}
               </span>
             </div>
@@ -214,39 +249,78 @@ export default function ProjectDetailPage() {
             <button
               type="button"
               onClick={() => setActiveTab('settings')}
-              className="inline-flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 px-4 py-2 text-xs font-extrabold text-emerald-700 dark:text-emerald-300 transition shadow-sm active:scale-95 shrink-0"
+              className="eds-btn-outline text-xs py-1.5 px-3"
             >
-              <KeyRound className="h-4 w-4" />
-              <span>Settings & Keys</span>
+              <KeyRound size={14} />
+              <span>Settings &amp; Keys</span>
             </button>
 
             <button
               type="button"
               onClick={() => setActiveTab('simulator')}
-              className="inline-flex items-center gap-2 rounded-xl bg-amber-500 hover:bg-amber-400 px-4 py-2 text-xs font-extrabold text-zinc-950 transition shadow-md active:scale-95 shrink-0"
+              className="eds-btn-primary text-xs py-1.5 px-3"
             >
-              <Zap className="h-4 w-4 fill-current" />
+              <Send size={14} />
               <span>Simulate Webhook</span>
             </button>
           </div>
         </div>
 
+        {/* Workspace Tab Strip Navigation */}
+        <div
+          className="flex items-center gap-1 px-6 pt-2 border-b overflow-x-auto"
+          style={{ background: 'var(--eds-surface)', borderBottomColor: 'var(--eds-border)' }}
+        >
+          {tabs.map((t) => {
+            const Icon = t.icon;
+            const isActive = resolvedActiveTab === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setActiveTab(t.id)}
+                className="flex items-center gap-2 px-4 py-2.5 text-xs font-semibold border-b-2 transition-all duration-150 whitespace-nowrap"
+                style={
+                  isActive
+                    ? {
+                        borderBottomColor: 'var(--eds-accent)',
+                        color: 'var(--eds-accent-2)',
+                        background: 'var(--eds-accent-dim)',
+                      }
+                    : {
+                        borderBottomColor: 'transparent',
+                        color: 'var(--eds-muted)',
+                      }
+                }
+              >
+                <Icon size={14} style={{ color: isActive ? 'var(--eds-accent-2)' : t.iconColor || 'var(--eds-muted)' }} />
+                <span>{t.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
         {/* Toast Feedback */}
         {feedback.message && (
-          <div className={`mx-6 mt-4 rounded-2xl p-4 text-xs font-semibold flex items-center justify-between border ${
-            feedback.type === 'error' ? 'bg-rose-500/10 text-rose-300 border-rose-500/30' : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
-          }`}>
+          <div
+            className="mx-6 mt-4 rounded-eds p-4 text-xs font-semibold flex items-center justify-between"
+            style={{
+              background: feedback.type === 'error' ? 'var(--eds-danger-dim)' : 'var(--eds-success-dim)',
+              border: `1px solid ${feedback.type === 'error' ? 'rgba(244,63,94,0.25)' : 'rgba(16,185,129,0.25)'}`,
+              color: feedback.type === 'error' ? 'var(--eds-danger-2)' : 'var(--eds-success)',
+            }}
+          >
             <div className="flex items-center gap-2">
-              {feedback.type === 'error' ? <AlertTriangle className="h-4 w-4 text-rose-500" /> : <CheckCircle2 className="h-4 w-4 text-emerald-500" />}
+              {feedback.type === 'error' ? <AlertTriangle size={15} /> : <CheckCircle2 size={15} />}
               <span>{feedback.message}</span>
             </div>
-            <button type="button" onClick={() => setFeedback({ type: '', message: '' })} className="hover:opacity-75">
-              <X className="h-4 w-4" />
+            <button type="button" onClick={() => setFeedback({ type: '', message: '' })}>
+              <X size={15} />
             </button>
           </div>
         )}
 
-        {/* Workspace Active Tab Body */}
+        {/* Tab Body */}
         <div className="p-6 lg:p-8 flex-1">
           {resolvedActiveTab === 'overview' && (
             <OverviewTab project={activeProject} onNavigateTab={setActiveTab} />
@@ -280,7 +354,6 @@ export default function ProjectDetailPage() {
             />
           )}
         </div>
-
       </div>
     </ProtectedLayout>
   );

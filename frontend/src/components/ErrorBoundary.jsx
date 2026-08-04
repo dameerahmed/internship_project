@@ -24,15 +24,33 @@ export class ErrorBoundary extends React.Component {
   render() {
     if (this.state.hasError) {
       return (
-        <div className="flex min-h-screen w-screen items-center justify-center bg-[#090d16] p-6 text-gray-100 font-sans">
-          <div className="flex max-w-md flex-col items-center text-center gap-5 rounded-3xl border border-gray-800 bg-gray-900/90 p-8 shadow-2xl backdrop-blur-xl">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-rose-500/30 bg-rose-500/10 text-rose-400">
+        <div
+          className="flex min-h-screen w-screen items-center justify-center p-6 font-display"
+          style={{ background: 'var(--eds-bg)', color: 'var(--eds-text)' }}
+        >
+          <div
+            className="flex max-w-md flex-col items-center text-center gap-5 rounded-eds-xl p-8 shadow-eds-xl animate-fade-up"
+            style={{
+              background: 'var(--eds-panel)',
+              border: '1px solid var(--eds-border-2)',
+            }}
+          >
+            <div
+              className="flex h-14 w-14 items-center justify-center rounded-eds-md"
+              style={{
+                background: 'var(--eds-danger-dim)',
+                border: '1px solid rgba(244,63,94,0.3)',
+                color: 'var(--eds-danger-2)',
+              }}
+            >
               <ShieldAlert size={28} />
             </div>
-            
+
             <div>
-              <h2 className="text-lg font-bold text-gray-100">Application State Reset Required</h2>
-              <p className="mt-1.5 text-xs text-gray-400">
+              <h2 className="text-base font-extrabold" style={{ color: 'var(--eds-text)' }}>
+                Application State Reset Required
+              </h2>
+              <p className="mt-1.5 text-xs" style={{ color: 'var(--eds-muted)' }}>
                 {this.state.error?.message || 'An unexpected client-side error occurred. Clear session data and restart console.'}
               </p>
             </div>
@@ -41,7 +59,7 @@ export class ErrorBoundary extends React.Component {
               <button
                 type="button"
                 onClick={() => window.location.reload()}
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 px-5 py-2.5 text-xs font-bold text-gray-950 transition active:scale-95 shadow-md"
+                className="eds-btn-primary w-full"
               >
                 <RefreshCw size={14} />
                 <span>Reload Page</span>
@@ -50,10 +68,10 @@ export class ErrorBoundary extends React.Component {
               <button
                 type="button"
                 onClick={this.handleReset}
-                className="inline-flex items-center justify-center gap-2 rounded-xl border border-gray-800 bg-gray-950 hover:bg-gray-800 px-5 py-2.5 text-xs font-semibold text-gray-300 transition active:scale-95"
+                className="eds-btn-ghost w-full"
               >
                 <LogOut size={14} />
-                <span>Clear Cache & Re-login</span>
+                <span>Clear Cache &amp; Re-login</span>
               </button>
             </div>
           </div>

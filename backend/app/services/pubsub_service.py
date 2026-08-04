@@ -7,6 +7,14 @@ Channels:
     dlq:{company_id}        → emitted when a message enters or leaves the DLQ
 
 WebSocket handlers subscribe to these channels instead of polling the DB/AMQP.
+
+Performance notes:
+- Publishers use get_redis_client() and call .close() to return the connection
+  to the pool (not .aclose() which would terminate the socket).
+- For high-frequency publishing (every webhook delivery), the connection is
+  borrowed, used, and returned — no socket teardown overhead.
+- Subscribers open a dedicated connection (pubsub requires its own channel)
+  and clean it up in __aexit__.
 """
 
 import json
@@ -39,26 +47,32 @@ def dlq_channel(company_id: int) -> str:
 
 async def publish_log_event(project_id: int, log_entry: dict) -> None:
     """
-    Publish a serialized log entry to the project-scoped channel and global webhook_telemetry channel.
-    Called by the Celery worker after persisting a WebhookLog.
+    Publish a serialized log entry to the project-scoped channel and global
+    webhook_telemetry channel. Called by the Celery worker after persisting.
+
+    Uses .close() to return the connection to the pool without socket teardown.
     """
     redis = None
     try:
         redis = await get_redis_client()
         payload_str = json.dumps(log_entry)
-        await redis.publish(logs_channel(project_id), payload_str)
-        await redis.publish("webhook_telemetry", payload_str)
+        # Use a pipeline so both publishes happen in one round-trip
+        async with redis.pipeline(transaction=False) as pipe:
+            pipe.publish(logs_channel(project_id), payload_str)
+            pipe.publish("webhook_telemetry", payload_str)
+            await pipe.execute()
     except Exception as exc:
         logger.warning("Failed to publish log event for project %s: %s", project_id, exc)
     finally:
         if redis:
-            await redis.aclose()
+            # .close() returns connection to pool; does NOT kill the socket.
+            await redis.close()
 
 
 async def publish_telemetry_event(payload: dict) -> None:
     """
-    Publish a telemetry JSON payload directly to the 'webhook_telemetry' Redis Pub/Sub channel.
-    Called whenever a Celery worker completes a webhook delivery task (success or failure).
+    Publish a telemetry JSON payload to the 'webhook_telemetry' channel.
+    Called when a Celery worker completes a webhook delivery task.
     """
     redis = None
     try:
@@ -68,13 +82,13 @@ async def publish_telemetry_event(payload: dict) -> None:
         logger.warning("Failed to publish webhook_telemetry event: %s", exc)
     finally:
         if redis:
-            await redis.aclose()
+            await redis.close()
 
 
 async def publish_metrics_snapshot(company_id: int, snapshot: dict, project_id: Optional[int] = None) -> None:
     """
-    Publish a full metrics snapshot to the company-scoped channel and optionally project-scoped channel.
-    Called by the Celery worker and Gateway after metrics update.
+    Publish a full metrics snapshot to the company-scoped channel and
+    optionally the project-scoped channel. Uses a pipeline for efficiency.
     """
     redis = None
     try:
@@ -83,15 +97,20 @@ async def publish_metrics_snapshot(company_id: int, snapshot: dict, project_id: 
         if project_id:
             payload["project_id"] = project_id
         serialized = json.dumps(payload)
-        
-        await redis.publish(metrics_channel(company_id), serialized)
-        if project_id:
-            await redis.publish(project_metrics_channel(project_id), serialized)
+
+        async with redis.pipeline(transaction=False) as pipe:
+            pipe.publish(metrics_channel(company_id), serialized)
+            if project_id:
+                pipe.publish(project_metrics_channel(project_id), serialized)
+            await pipe.execute()
     except Exception as exc:
-        logger.warning("Failed to publish metrics snapshot for company %s (project %s): %s", company_id, project_id, exc)
+        logger.warning(
+            "Failed to publish metrics snapshot for company %s (project %s): %s",
+            company_id, project_id, exc
+        )
     finally:
         if redis:
-            await redis.aclose()
+            await redis.close()
 
 
 async def publish_dlq_event(company_id: int, event_type: str, item: Optional[dict] = None) -> None:
@@ -108,7 +127,7 @@ async def publish_dlq_event(company_id: int, event_type: str, item: Optional[dic
         logger.warning("Failed to publish DLQ event for company %s: %s", company_id, exc)
     finally:
         if redis:
-            await redis.aclose()
+            await redis.close()
 
 
 # ─────────────────────────────── subscriber ──────────────────────────────────
@@ -117,6 +136,10 @@ class RedisPubSubSubscriber:
     """
     Async context manager that subscribes to one or more Redis Pub/Sub channels
     and yields decoded messages.
+
+    A Pub/Sub connection requires a DEDICATED connection (it cannot be shared
+    with regular commands). We therefore open a fresh connection here and close
+    it in __aexit__ using aclose() to fully disconnect.
 
     Usage inside a WebSocket handler:
         async with RedisPubSubSubscriber(["logs:42"]) as sub:
@@ -144,12 +167,14 @@ class RedisPubSubSubscriber:
             pass
         finally:
             if self._redis:
+                # aclose() is correct here — the pub/sub connection is dedicated
+                # and must be fully disconnected, not returned to the generic pool.
                 await self._redis.aclose()
 
     async def listen(self):
         """
-        Async generator that yields raw JSON strings from the subscribed channels.
-        Only yields actual message data (skips subscribe/unsubscribe ACK frames).
+        Async generator that yields raw JSON strings from subscribed channels.
+        Skips subscribe/unsubscribe ACK frames (type != 'message').
         """
         async for raw in self._pubsub.listen():
             if raw and raw.get("type") == "message":

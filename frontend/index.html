@@ -1,9 +1,26 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Dameer App</title>
+    <title>EDS Engine — Enterprise Webhook Gateway</title>
+    <meta name="description" content="EDS Engine is a high-throughput webhook gateway with HMAC cryptography, dead letter queues, exponential backoff retries, and real-time telemetry." />
+    <meta name="theme-color" content="#090b10" />
+    <meta property="og:title" content="EDS Engine — Enterprise Webhook Gateway" />
+    <meta property="og:description" content="Decouple ingestion from delivery. Enterprise-grade webhook pipeline backed by RabbitMQ, Celery, and real-time observability." />
+
+    <!-- Anti-FOUC: Apply dark class before React hydrates -->
+    <script>
+      (function () {
+        try {
+          var theme = window.localStorage.getItem('weds-theme') || 'dark';
+          document.documentElement.classList.toggle('dark', theme !== 'light');
+          document.documentElement.style.colorScheme = theme;
+        } catch (e) {
+          document.documentElement.classList.add('dark');
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

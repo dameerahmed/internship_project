@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { 
   Search, 
   RefreshCw, 
@@ -20,19 +20,42 @@ import {
   Layers,
   ChevronRight,
   AlertCircle,
-  Zap
+  Zap,
+  ArrowDown,
+  PauseCircle
 } from 'lucide-react';
 import ProtectedLayout from '../components/ProtectedLayout';
 import apiClient from '@/api/client';
 import { useAuth } from '../context/AuthContext';
-import { WS_ENDPOINTS, withToken } from '@/utils/constants';
+import { WS_ENDPOINTS, withToken, API_BASE_URL } from '@/utils/constants';
 import { formatTimeOnly, formatDateOnly, formatTimestamp, getStoredCompanyTimezone } from '@/utils/dateUtils';
+
+// FIX: Derive WS_BASE_URL from API_BASE_URL to eliminate the ReferenceError.
+// Previously `WS_BASE_URL` was referenced without being imported or defined, causing
+// a silent ReferenceError that prevented company-wide (non-project-id) WS connections.
+const WS_BASE_URL = (() => {
+  try {
+    const url = (API_BASE_URL || window.location.origin).replace(/^http/, 'ws').replace(/\/api.*$/, '');
+    return url;
+  } catch {
+    return `ws://${window.location.host}`;
+  }
+})();
+
+const LOG_CAP    = 500;   // Maximum log entries to keep in memory
+const WINDOW_SIZE = 60;   // Maximum DOM rows rendered at once (virtualization)
 
 export default function LogsPage({ projectId, embedded = false }) {
   const { user } = useAuth();
-  const [logs, setLogs] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [logs, setLogs]         = useState([]);
+  const [loading, setLoading]   = useState(true);
   const [companyTimezone, setCompanyTimezone] = useState(() => getStoredCompanyTimezone());
+  
+  // Auto-scroll state
+  const [autoScroll, setAutoScroll]   = useState(true);
+  const [newLogCount, setNewLogCount] = useState(0);  // unread new logs when auto-scroll is paused
+  const listRef = useRef(null);
+  const bottomRef = useRef(null);
   
   // Drawer state: ONLY open when a log is explicitly clicked by user!
   const [selectedLog, setSelectedLog] = useState(null);
@@ -109,10 +132,14 @@ export default function LogsPage({ projectId, embedded = false }) {
     const durationMs = log?.processing_duration_ms ?? metadata?.processing_duration_ms ?? 0;
     const attemptNum = log?.attempt ?? log?.attempt_number ?? metadata?.attempt ?? 1;
 
+    // Pre-parse timestamp once here so filter/sort memos don't call new Date() on every render
+    const createdAtMs = createdAt ? new Date(createdAt).getTime() : Date.now();
+
     return {
       ...log,
       status: isFailedStatus ? 'FAILED' : (rawStatus || 'SUCCESS'),
       created_at: createdAt,
+      _createdAtMs: createdAtMs,  // cached parsed timestamp — avoids re-parsing in filters
       response_code: Number(responseCode),
       status_code: Number(responseCode),
       event_type: eventType,
@@ -146,8 +173,6 @@ export default function LogsPage({ projectId, embedded = false }) {
   useEffect(() => {
     fetchLogs(false);
 
-    if (!projectId) return;
-
     let socket = null;
     let reconnectTimer = null;
     let retryCount = 0;
@@ -156,20 +181,27 @@ export default function LogsPage({ projectId, embedded = false }) {
       const token = user?.access_token || (localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user'))?.access_token : null);
       if (!token) return;
 
-      const wsUrl = withToken(WS_ENDPOINTS.LOGS(projectId), token);
+      const endpointUrl = projectId ? WS_ENDPOINTS.LOGS(projectId) : `${WS_BASE_URL}/ws/logs`;
+      const wsUrl = withToken(endpointUrl, token);
       try {
         socket = new WebSocket(wsUrl);
 
         socket.onmessage = (event) => {
           try {
             const payload = JSON.parse(event.data);
+            // Skip heartbeat frames — they carry no log data
+            if (payload?.type === 'heartbeat') return;
             if (payload && payload.id) {
               const normalizedPayload = normalizeLog(payload);
               setLogs((prevLogs) => {
                 const exists = prevLogs.some((l) => l.id === normalizedPayload.id);
                 if (exists) return prevLogs;
-                return [normalizedPayload, ...prevLogs].slice(0, 500);
+                // FIX: Use LOG_CAP constant and splice oldest entries to prevent unbounded growth
+                const next = [normalizedPayload, ...prevLogs].slice(0, LOG_CAP);
+                return next;
               });
+              // Track unread count when auto-scroll is paused
+              setNewLogCount(prev => autoScroll ? 0 : prev + 1);
             }
           } catch (err) {
             console.warn('Log WS message parse error:', err);
@@ -177,9 +209,10 @@ export default function LogsPage({ projectId, embedded = false }) {
         };
 
         socket.onclose = () => {
-          const delay = Math.min(1000 * Math.pow(2, retryCount), 15000);
+          const baseDelay = Math.min(1000 * Math.pow(2, retryCount), 15000);
+          const jitter = Math.random() * 1000;
           retryCount++;
-          reconnectTimer = setTimeout(connectWs, delay);
+          reconnectTimer = setTimeout(connectWs, baseDelay + jitter);
         };
 
         socket.onerror = () => {
@@ -192,11 +225,38 @@ export default function LogsPage({ projectId, embedded = false }) {
 
     connectWs();
 
+    // A silent refresh every 30s as a fallback for missed WS events.
+    const interval = setInterval(() => fetchLogs(true), 30000);
+
     return () => {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (socket) socket.close();
+      clearInterval(interval);
     };
   }, [projectId, user]);
+
+  // Auto-scroll: when autoScroll=true, scroll list to bottom on new log
+  useEffect(() => {
+    if (autoScroll && bottomRef.current) {
+      bottomRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      setNewLogCount(0);
+    }
+  }, [logs.length, autoScroll]);
+
+  // Detect manual scroll-up by user → disable auto-scroll
+  const handleListScroll = useCallback((e) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+    const isNearBottom = scrollHeight - scrollTop - clientHeight < 80;
+    if (!isNearBottom && autoScroll) {
+      setAutoScroll(false);
+    }
+  }, [autoScroll]);
+
+  const scrollToBottom = useCallback(() => {
+    setAutoScroll(true);
+    setNewLogCount(0);
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, []);
 
   // Dynamically extract unique Event Types from logs
   const availableEventTypes = useMemo(() => {
@@ -209,8 +269,9 @@ export default function LogsPage({ projectId, embedded = false }) {
   }, [logs]);
 
   // Multi-Filter Calculation
+  // Uses pre-parsed _createdAtMs from normalizeLog to avoid O(n) Date construction per filter change.
   const filteredLogs = useMemo(() => {
-    const now = new Date().getTime();
+    const now = Date.now();
 
     return logs.filter((log) => {
       const q = searchQuery.toLowerCase().trim();
@@ -218,7 +279,8 @@ export default function LogsPage({ projectId, embedded = false }) {
       const path = (log.path || log.target_url || log.delivery_packet?.target_url || '').toLowerCase();
       const eventType = (log.event_type || log.delivery_packet?.event_type || '').toLowerCase();
       const method = (log.http_method || log.delivery_packet?.http_method || 'POST').toUpperCase();
-      const logTime = log.created_at ? new Date(log.created_at).getTime() : now;
+      // Use the pre-cached parsed timestamp; fall back to now only if missing
+      const logTime = log._createdAtMs ?? (log.created_at ? new Date(log.created_at).getTime() : now);
 
       // 1. Search Query Filter
       const matchesSearch =
@@ -570,13 +632,61 @@ export default function LogsPage({ projectId, embedded = false }) {
         
         {/* Stream Table: Spans full 12 cols if no row selected; spans 7 cols when row is clicked! */}
         <div className={`${selectedLog ? 'lg:col-span-7' : 'lg:col-span-12'} flex flex-col border border-zinc-200 dark:border-zinc-800 rounded-2xl overflow-hidden bg-white dark:bg-[#0d1017] shadow-lg transition-all duration-200`}>
-          <div className="divide-y divide-zinc-100 dark:divide-zinc-800/60 font-mono text-xs max-h-[580px] overflow-y-auto">
+          {/* Auto-scroll control bar */}
+          <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-100 dark:border-zinc-800/60 text-[11px]">
+            <span className="font-mono text-zinc-400">
+              {filteredLogs.length.toLocaleString()} events
+              {filteredLogs.length >= LOG_CAP && (
+                <span className="ml-2 text-amber-500 font-semibold">(cap: {LOG_CAP})</span>
+              )}
+            </span>
+            <div className="flex items-center gap-2">
+              {!autoScroll && newLogCount > 0 && (
+                <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 animate-pulse">
+                  +{newLogCount} new
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={scrollToBottom}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold transition ${
+                  autoScroll
+                    ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
+                    : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 border border-zinc-200 dark:border-zinc-700 hover:text-emerald-500'
+                }`}
+                title={autoScroll ? 'Auto-scroll ON' : 'Click to resume auto-scroll'}
+              >
+                {autoScroll ? <Zap className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />}
+                {autoScroll ? 'Auto-scroll ON' : 'Jump to latest'}
+              </button>
+              {autoScroll && (
+                <button
+                  type="button"
+                  onClick={() => setAutoScroll(false)}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] text-zinc-400 hover:text-zinc-200 border border-zinc-700 bg-zinc-900 transition"
+                  title="Pause auto-scroll"
+                >
+                  <PauseCircle className="h-3 w-3" />
+                  Pause
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div
+            ref={listRef}
+            onScroll={handleListScroll}
+            className="divide-y divide-zinc-100 dark:divide-zinc-800/60 font-mono text-xs overflow-y-auto"
+            style={{ maxHeight: 520 }}
+          >
             {filteredLogs.length === 0 ? (
               <div className="p-8 text-center text-xs text-zinc-400">
                 No matching log records found for the selected filters.
               </div>
             ) : (
-              filteredLogs.map((log, idx) => {
+              // FIX: DOM Windowing — render only WINDOW_SIZE rows at a time instead of all 500.
+              // Newest events (index 0) are first; we slice the top WINDOW_SIZE for display.
+              filteredLogs.slice(0, WINDOW_SIZE).map((log, idx) => {
                 const code = log.response_code || log.status_code || 200;
                 const method = log.http_method || log.delivery_packet?.http_method || 'POST';
                 const path = log.path || log.target_url || log.delivery_packet?.target_url || '/v1/webhooks';
@@ -584,13 +694,16 @@ export default function LogsPage({ projectId, embedded = false }) {
 
                 const formattedTime = log.created_at
                   ? formatTimeOnly(log.created_at, companyTimezone)
-                  : '17:49:18';
+                  : '—';
 
                 const formattedDate = log.created_at
                   ? formatDateOnly(log.created_at, companyTimezone)
-                  : '23 Oct';
+                  : '—';
 
                 const isFailed = log.status === 'FAILED' || code >= 400 || log.level === 'ERROR';
+                const attemptNum = log.attempt_number || log.attempt || 1;
+                const isReplay = log.is_replay || attemptNum > 5;
+                const deliveryType = log.delivery_type || (isReplay ? `DLQ Replay (Attempt #${attemptNum})` : 'New Webhook Ingress');
 
                 return (
                   <div
@@ -601,11 +714,21 @@ export default function LogsPage({ projectId, embedded = false }) {
                         ? 'bg-zinc-100 dark:bg-zinc-800/90 text-zinc-900 dark:text-white font-semibold border-l-4 border-emerald-500 shadow-sm'
                         : 'hover:bg-zinc-50 dark:hover:bg-zinc-900/50 text-zinc-600 dark:text-zinc-300'
                     }`}
+                    style={{ animation: idx === 0 ? 'slideInRow 0.18s ease' : undefined }}
                   >
                     <div className="flex items-center gap-4 truncate">
                       {/* Date & Timestamp (in company timezone) */}
                       <span className="text-[11px] text-zinc-400 shrink-0 w-32 font-mono">
                         {formattedDate} {formattedTime}
+                      </span>
+
+                      {/* Delivery Provenance Badge */}
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded text-[9px] font-extrabold uppercase shrink-0 ${
+                        isReplay
+                          ? 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-500/25'
+                          : 'bg-sky-500/15 text-sky-600 dark:text-sky-400 border border-sky-500/25'
+                      }`} title={deliveryType}>
+                        {isReplay ? `REPLAY #${attemptNum}` : 'INGRESS'}
                       </span>
 
                       {/* Status Code Badge */}
@@ -635,15 +758,24 @@ export default function LogsPage({ projectId, embedded = false }) {
                 );
               })
             )}
+            {/* Sentinel element for auto-scroll anchor */}
+            <div ref={bottomRef} className="h-px" />
           </div>
 
-          <div className="p-3 border-t border-zinc-100 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 text-center">
+          <div className="p-3 border-t border-zinc-100 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 flex items-center justify-between">
+            <span className="text-xs text-zinc-400">
+              {filteredLogs.length > WINDOW_SIZE ? (
+                <span>Showing latest <strong>{WINDOW_SIZE}</strong> of <strong>{filteredLogs.length}</strong> — use filters to narrow results</span>
+              ) : (
+                <span>{filteredLogs.length} log{filteredLogs.length !== 1 ? 's' : ''} shown</span>
+              )}
+            </span>
             <button
               type="button"
               onClick={() => fetchLogs(false)}
               className="text-xs font-semibold text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 transition"
             >
-              Load older log entries
+              Refresh logs
             </button>
           </div>
         </div>
@@ -716,6 +848,18 @@ export default function LogsPage({ projectId, embedded = false }) {
                       : 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/20'
                   }`}>
                     {currentSelection.status === 'FAILED' && currentStatus < 400 ? 500 : currentStatus}
+                  </span>
+                </div>
+
+                {/* Delivery Provenance row */}
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500 font-medium">Delivery Type</span>
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-extrabold uppercase font-mono ${
+                    (currentSelection.is_replay || (currentSelection.attempt_number || currentSelection.attempt || 1) > 5)
+                      ? 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-500/25'
+                      : 'bg-sky-500/15 text-sky-600 dark:text-sky-400 border border-sky-500/25'
+                  }`}>
+                    {currentSelection.delivery_type || ((currentSelection.is_replay || (currentSelection.attempt_number || currentSelection.attempt || 1) > 5) ? `DLQ Replay (Attempt #${currentSelection.attempt_number || currentSelection.attempt})` : 'New Webhook Ingress')}
                   </span>
                 </div>
 

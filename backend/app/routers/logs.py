@@ -91,11 +91,17 @@ def _serialize_log_entry(log: WebhookLog) -> dict:
     level = "SUCCESS" if status_name == "SUCCESS" else "ERROR" if status_name == "FAILED" else "INFO"
     effective_code = log.response_code if log.response_code is not None else (500 if status_name == "FAILED" else 200)
 
+    is_replay = bool(log.attempt_number > 5 or event_metadata.get("is_replay"))
+    delivery_type = f"DLQ Replay (Attempt #{log.attempt_number})" if is_replay else "New Webhook Ingress"
+
     metadata = {
         "event_type": event_type,
         "status": status_name,
         "response_code": effective_code,
         "attempt": log.attempt_number,
+        "attempt_number": log.attempt_number,
+        "is_replay": is_replay,
+        "delivery_type": delivery_type,
         "http_method": log.http_method or "POST",
         "source_ip": log.source_ip or "127.0.0.1",
         "processing_duration_ms": log.processing_duration_ms,
@@ -131,6 +137,9 @@ def _serialize_log_entry(log: WebhookLog) -> dict:
         "target_url": target_url,
         "path": target_url,
         "attempt": log.attempt_number,
+        "attempt_number": log.attempt_number,
+        "is_replay": is_replay,
+        "delivery_type": delivery_type,
         "processing_duration_ms": log.processing_duration_ms,
         "source_ip": log.source_ip or "127.0.0.1",
         "error_message": log.error_message,
@@ -390,7 +399,7 @@ async def stream_logs_sse(
                     break
                 try:
                     raw_message = await asyncio.wait_for(anext(message_iter), timeout=15.0)
-                except TimeoutError:
+                except (asyncio.TimeoutError, TimeoutError):  # FIX: asyncio.TimeoutError is the correct class in Python 3.11+
                     heartbeat_data = json.dumps({"type": "heartbeat", "timestamp": datetime.utcnow().isoformat()})
                     yield f"event: heartbeat\ndata: {heartbeat_data}\n\n"
                     continue
@@ -405,25 +414,29 @@ async def stream_logs_sse(
                     payload = raw_message
                 yield f"event: log\ndata: {payload}\n\n"
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(event_generator(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    })
 
 
 # ─────────────────────── WebSocket: Live Logs ────────────────────────────────
 
+@router.websocket("/ws/logs")
+@router.websocket("/ws/logs/company")
 @router.websocket("/ws/logs/{project_id}")
-async def websocket_logs(websocket: WebSocket, project_id: str):
+async def websocket_logs(websocket: WebSocket, project_id: Optional[str] = None):
     """
-    Authenticated WebSocket stream for a specific project's webhook logs.
+    Authenticated WebSocket stream for webhook logs (project-scoped or company-wide).
 
     Security:
     - JWT token MUST be passed as ?token= query parameter.
-    - The company_id from the JWT must own the requested project_id.
-    - No token or wrong ownership → immediate close with 4403.
+    - company_id is verified from the token.
+    - If project_id is provided, verifies project belongs to authenticated company.
 
     Architecture:
-    - Sends the last 25 log entries as initial snapshot on connection.
-    - Then subscribes to Redis channel `logs:{project_id}` for zero-latency,
-      zero-DB-polling real-time updates pushed by the Celery worker.
+    - Sends initial snapshot of recent logs on connection.
+    - Subscribes to Redis Pub/Sub channels for zero-latency, push-based log streaming.
     """
     await websocket.accept()
 
@@ -433,23 +446,38 @@ async def websocket_logs(websocket: WebSocket, project_id: str):
         await websocket.close(code=4401, reason="Authentication required: pass ?token=<access_token>")
         return
 
-    # ── 2. Verify project ownership ─────────────────────────────────────────
-    try:
-        pid = int(project_id)
-    except (ValueError, TypeError):
-        await websocket.close(code=4400, reason="Invalid project_id")
-        return
-
-    async for db_session in get_db():
-        ownership = await db_session.execute(
-            select(Project.id).where(Project.id == pid, Project.company_id == auth_company_id)
-        )
-        if not ownership.scalars().first():
-            await websocket.close(code=4403, reason="Forbidden: project does not belong to your company")
+    # ── 2. Determine target projects ─────────────────────────────────────────
+    target_pids = []
+    pid = None
+    if project_id and project_id.lower() not in {"all", "company"}:
+        try:
+            pid = int(project_id)
+        except (ValueError, TypeError):
+            await websocket.close(code=4400, reason="Invalid project_id")
             return
 
-        # ── 3. Send initial snapshot (last 25 logs) ──────────────────────────
-        ec_result = await db_session.execute(select(EventConfig.id).where(EventConfig.project_id == pid))
+    async for db_session in get_db():
+        if pid is not None:
+            ownership = await db_session.execute(
+                select(Project.id).where(Project.id == pid, Project.company_id == auth_company_id)
+            )
+            if not ownership.scalars().first():
+                await websocket.close(code=4403, reason="Forbidden: project does not belong to your company")
+                return
+            target_pids = [pid]
+        else:
+            proj_res = await db_session.execute(
+                select(Project.id).where(Project.company_id == auth_company_id)
+            )
+            target_pids = [row[0] for row in proj_res.fetchall()]
+
+        if not target_pids:
+            break
+
+        # ── 3. Send initial snapshot ──────────────────────────────────────────
+        ec_result = await db_session.execute(
+            select(EventConfig.id).where(EventConfig.project_id.in_(target_pids))
+        )
         ec_ids = [row[0] for row in ec_result.fetchall()]
         if ec_ids:
             logs_result = await db_session.execute(
@@ -457,7 +485,7 @@ async def websocket_logs(websocket: WebSocket, project_id: str):
                 .options(selectinload(WebhookLog.event))
                 .where(WebhookLog.event_config_id.in_(ec_ids))
                 .order_by(WebhookLog.created_at.desc())
-                .limit(25)
+                .limit(50)
             )
             recent_logs = logs_result.scalars().all()
             for log in reversed(recent_logs):
@@ -467,9 +495,13 @@ async def websocket_logs(websocket: WebSocket, project_id: str):
                     return
         break
 
-    # ── 4. Subscribe to Redis Pub/Sub — zero polling ─────────────────────────
+    if not target_pids:
+        return
+
+    # ── 4. Subscribe to Redis Pub/Sub for all target project channels ───────
+    channels = [logs_channel(p) for p in target_pids]
     try:
-        async with RedisPubSubSubscriber([logs_channel(pid)]) as sub:
+        async with RedisPubSubSubscriber(channels) as sub:
             async for raw_message in sub.listen():
                 if websocket.client_state != WebSocketState.CONNECTED:
                     break
@@ -481,9 +513,9 @@ async def websocket_logs(websocket: WebSocket, project_id: str):
                 except Exception:
                     break
     except WebSocketDisconnect:
-        logger.info("Client disconnected from log stream for project %s", project_id)
+        logger.info("Client disconnected from log stream")
     except Exception as exc:
-        logger.warning("Log WebSocket exception for project %s: %s", project_id, exc)
+        logger.warning("Log WebSocket stream exception: %s", exc)
 
 
 # ─────────────────────── WebSocket: DLQ Stream ───────────────────────────────
@@ -673,13 +705,33 @@ async def _build_dashboard_snapshot(auth_company_id: int, target_project_id: Opt
 
         company_dlq_count = 0
         try:
-            raw_dlq_items = await rabbitmq_manager.peek_dlq_messages(limit=500)
-            for item in raw_dlq_items:
-                p_id = item.get("project_id")
-                if p_id and int(p_id) in project_ids:
-                    company_dlq_count += 1
-        except Exception:
-            pass
+            rmq_total_dlq = await rabbitmq_manager.get_dlq_message_count()
+            total_sys_proj_res = await db_session.execute(select(func.count(Project.id)))
+            total_sys_proj = total_sys_proj_res.scalar() or 0
+            default_project_id = project_ids[0] if len(project_ids) == 1 else None
+
+            if not target_project_id and (total_sys_proj == len(project_ids) or rmq_total_dlq == 0):
+                company_dlq_count = rmq_total_dlq
+            else:
+                raw_dlq_items = await rabbitmq_manager.peek_dlq_messages(limit=2000)
+                evt_stmt = select(WebhookEvent.event_id, WebhookEvent.project_id).where(WebhookEvent.project_id.in_(project_ids))
+                evt_res = await db_session.execute(evt_stmt)
+                evt_project_map = {row[0]: row[1] for row in evt_res.fetchall()}
+
+                for item in raw_dlq_items:
+                    p_id = item.get("project_id")
+                    if not p_id:
+                        eid = item.get("event_id")
+                        if eid and eid in evt_project_map:
+                            p_id = evt_project_map[eid]
+                        elif default_project_id:
+                            p_id = default_project_id
+
+                    if p_id and int(p_id) in project_ids:
+                        if not target_project_id or int(p_id) == target_project_id:
+                            company_dlq_count += 1
+        except Exception as dlq_err:
+            logger.warning("Error calculating DLQ count in snapshot: %s", dlq_err)
 
         if target_project_id:
             company = await db_session.get(Company, auth_company_id)
@@ -719,6 +771,10 @@ async def _build_dashboard_snapshot(auth_company_id: int, target_project_id: Opt
         "failure_rate": failure_rate_pct,
         "failure_rate_pct": failure_rate_pct,
         "avg_latency_ms": metrics.get("avg_latency_ms", 0.0),
+        "p50_latency_ms": metrics.get("p50_latency_ms", 0.0),
+        "p90_latency_ms": metrics.get("p90_latency_ms", 0.0),
+        "p95_latency_ms": metrics.get("p95_latency_ms", 0.0),
+        "p99_latency_ms": metrics.get("p99_latency_ms", 0.0),
         "dlq_count": company_dlq_count,
         "total_dlq_count": company_dlq_count,
         "main_queue_count": pending_count,
@@ -726,12 +782,31 @@ async def _build_dashboard_snapshot(auth_company_id: int, target_project_id: Opt
         "redis_latency_ms": redis_latency_ms,
         "rabbitmq_status": rabbitmq_status,
         "throughput_series": metrics.get("throughput_series", []),
+        "ingress_total_24h": metrics.get("ingress_total_24h", 0),
+        "ingress_success_24h": metrics.get("ingress_success_24h", 0),
+        "ingress_failed_24h": metrics.get("ingress_failed_24h", 0),
+        "ingress_success_rate_pct": metrics.get("ingress_success_rate_pct"),
+        "replay_total_24h": metrics.get("replay_total_24h", 0),
+        "replay_success_24h": metrics.get("replay_success_24h", 0),
+        "replay_failed_24h": metrics.get("replay_failed_24h", 0),
+        "replay_recovery_rate_pct": metrics.get("replay_recovery_rate_pct"),
+        "retry_efficiency_pct": metrics.get("retry_efficiency_pct", 100.0),
     }
 
 
 @router.websocket("/ws/dashboard")
 async def websocket_dashboard_stream(websocket: WebSocket):
-    """Authenticated WebSocket stream for dashboard metrics."""
+    """Authenticated WebSocket stream for dashboard metrics.
+    
+    Architecture:
+    - Sends initial metrics snapshot immediately on connect.
+    - Subscribes to Redis `metrics:{company_id}` Pub/Sub channel.
+    - Pushes data ONLY when the Celery worker publishes a new metrics snapshot
+      (i.e., after each webhook delivery succeeds or fails).
+    - Sends a lightweight heartbeat every 30s to keep the connection alive.
+    - This replaces the previous asyncio.sleep(2) polling loop which made
+      full DB queries every 2 seconds per connected client.
+    """
     await websocket.accept()
 
     auth_company_id = await _ws_authenticate(websocket)
@@ -747,27 +822,58 @@ async def websocket_dashboard_stream(websocket: WebSocket):
         except (ValueError, TypeError):
             pass
 
+    # Send initial snapshot immediately on connect
     try:
         snapshot = await _build_dashboard_snapshot(auth_company_id, target_project_id)
         await websocket.send_json(jsonable_encoder(snapshot))
     except Exception as snap_exc:
         logger.warning("Dashboard WS initial snapshot failed: %s", snap_exc)
 
-    while websocket.client_state == WebSocketState.CONNECTED:
-        try:
-            await asyncio.sleep(2)
-            snapshot = await _build_dashboard_snapshot(auth_company_id, target_project_id)
-            await websocket.send_json(jsonable_encoder(snapshot))
-        except WebSocketDisconnect:
-            return
-        except Exception as exc:
-            logger.warning("Dashboard WebSocket stream exception: %s", exc)
-            break
+    # Determine which channel(s) to subscribe to
+    from app.services.pubsub_service import metrics_channel, project_metrics_channel
+    channels = [metrics_channel(auth_company_id)]
+    if target_project_id:
+        channels.append(project_metrics_channel(target_project_id))
+
+    HEARTBEAT_INTERVAL = 30.0  # seconds
+
+    try:
+        async with RedisPubSubSubscriber(channels) as sub:
+            message_iter = sub.listen()
+            while websocket.client_state == WebSocketState.CONNECTED:
+                try:
+                    raw_message = await asyncio.wait_for(
+                        anext(message_iter), timeout=HEARTBEAT_INTERVAL
+                    )
+                    # Relay the metrics snapshot published by the Celery worker
+                    try:
+                        parsed = json.loads(raw_message)
+                        await websocket.send_json(jsonable_encoder(parsed))
+                    except Exception:
+                        pass
+                except (asyncio.TimeoutError, TimeoutError):
+                    # No metrics update in the last 30s — send a lightweight heartbeat
+                    # to keep the WS connection alive through proxies/load balancers
+                    if websocket.client_state == WebSocketState.CONNECTED:
+                        try:
+                            await websocket.send_json({"type": "heartbeat", "timestamp": datetime.utcnow().isoformat()})
+                        except Exception:
+                            break
+                except StopAsyncIteration:
+                    break
+    except WebSocketDisconnect:
+        logger.info("Client disconnected from dashboard stream")
+    except Exception as exc:
+        logger.warning("Dashboard WebSocket stream exception: %s", exc)
 
 
 @router.websocket("/api/ws/metrics")
 async def websocket_metrics_stream(websocket: WebSocket):
-    """Dedicated metrics WebSocket endpoint for company/project analytics cards."""
+    """Dedicated metrics WebSocket for company/project analytics cards.
+
+    Same event-driven architecture as /ws/dashboard — subscribes to the
+    Redis metrics channel and pushes updates only on real data changes.
+    """
     await websocket.accept()
 
     auth_company_id = await _ws_authenticate(websocket)
@@ -783,16 +889,45 @@ async def websocket_metrics_stream(websocket: WebSocket):
         except (ValueError, TypeError):
             pass
 
-    while websocket.client_state == WebSocketState.CONNECTED:
-        try:
-            snapshot = await _build_dashboard_snapshot(auth_company_id, target_project_id)
-            await websocket.send_json(jsonable_encoder(snapshot))
-            await asyncio.sleep(2)
-        except WebSocketDisconnect:
-            return
-        except Exception as exc:
-            logger.warning("Metrics WebSocket stream exception: %s", exc)
-            break
+    # Initial snapshot
+    try:
+        snapshot = await _build_dashboard_snapshot(auth_company_id, target_project_id)
+        await websocket.send_json(jsonable_encoder(snapshot))
+    except Exception as snap_exc:
+        logger.warning("Metrics WS initial snapshot failed: %s", snap_exc)
+
+    from app.services.pubsub_service import metrics_channel, project_metrics_channel
+    channels = [metrics_channel(auth_company_id)]
+    if target_project_id:
+        channels.append(project_metrics_channel(target_project_id))
+
+    HEARTBEAT_INTERVAL = 30.0
+
+    try:
+        async with RedisPubSubSubscriber(channels) as sub:
+            message_iter = sub.listen()
+            while websocket.client_state == WebSocketState.CONNECTED:
+                try:
+                    raw_message = await asyncio.wait_for(
+                        anext(message_iter), timeout=HEARTBEAT_INTERVAL
+                    )
+                    try:
+                        parsed = json.loads(raw_message)
+                        await websocket.send_json(jsonable_encoder(parsed))
+                    except Exception:
+                        pass
+                except (asyncio.TimeoutError, TimeoutError):
+                    if websocket.client_state == WebSocketState.CONNECTED:
+                        try:
+                            await websocket.send_json({"type": "heartbeat", "timestamp": datetime.utcnow().isoformat()})
+                        except Exception:
+                            break
+                except StopAsyncIteration:
+                    break
+    except WebSocketDisconnect:
+        logger.info("Client disconnected from metrics stream")
+    except Exception as exc:
+        logger.warning("Metrics WebSocket stream exception: %s", exc)
 
 
 # ─────────────────────── REST: Dashboard Stats ───────────────────────────────
@@ -863,48 +998,104 @@ async def get_dashboard_stats(
 
     company_dlq_count = 0
     try:
-        raw_dlq_items = await rabbitmq_manager.peek_dlq_messages(limit=500)
-        evt_project_map = {}
+        rmq_total_dlq = await rabbitmq_manager.get_dlq_message_count()
+        total_sys_proj_res = await db.execute(select(func.count(Project.id)))
+        total_sys_proj = total_sys_proj_res.scalar() or 0
         default_project_id = project_ids[0] if len(project_ids) == 1 else None
-        if project_ids:
-            evt_stmt = select(WebhookEvent.event_id, WebhookEvent.project_id).where(WebhookEvent.project_id.in_(project_ids))
-            evt_res = await db.execute(evt_stmt)
-            evt_project_map = {row[0]: row[1] for row in evt_res.fetchall()}
 
-        for item in raw_dlq_items:
-            p_id = item.get("project_id")
-            if not p_id:
-                evt_id = item.get("event_id")
-                if evt_id and evt_id in evt_project_map:
-                    p_id = evt_project_map[evt_id]
-                elif default_project_id:
-                    p_id = default_project_id
+        if not project_id and (total_sys_proj == len(project_ids) or rmq_total_dlq == 0):
+            company_dlq_count = rmq_total_dlq
+        else:
+            raw_dlq_items = await rabbitmq_manager.peek_dlq_messages(limit=2000)
+            evt_project_map = {}
+            if project_ids:
+                evt_stmt = select(WebhookEvent.event_id, WebhookEvent.project_id).where(WebhookEvent.project_id.in_(project_ids))
+                evt_res = await db.execute(evt_stmt)
+                evt_project_map = {row[0]: row[1] for row in evt_res.fetchall()}
 
-            if p_id and int(p_id) in project_ids:
-                company_dlq_count += 1
+            for item in raw_dlq_items:
+                p_id = item.get("project_id")
+                if not p_id:
+                    eid = item.get("event_id")
+                    if eid and eid in evt_project_map:
+                        p_id = evt_project_map[eid]
+                    elif default_project_id:
+                        p_id = default_project_id
+
+                if p_id and int(p_id) in project_ids:
+                    if not project_id or int(p_id) == project_id:
+                        company_dlq_count += 1
     except Exception as dlq_err:
         logger.warning("Error peeking DLQ for stats: %s", dlq_err)
 
-    metrics = await metrics_service.get_or_hydrate_metrics(company_id, db, project_id=project_id)
+    # FIX: Use live DB aggregation (same as the WS dashboard snapshot) for the REST endpoint.
+    # The Redis read-through cache (metrics_service) can be stale after a restart or flush.
+    # The REST endpoint is not on the hot path, so the DB query cost is acceptable.
+    company = await db.get(Company, company_id)
+    if project_id:
+        live_metrics = await get_project_specific_metrics(project_id, db=db, current_company=company)
+    else:
+        live_metrics = await get_company_aggregated_metrics(db=db, current_company=company)
+
+    # Also update Redis counters so the WebSocket path stays in sync
+    try:
+        redis_total = live_metrics.get("total_webhooks_24h", 0) or live_metrics.get("total_webhooks", 0)
+        redis_success = live_metrics.get("success_count_24h", 0)
+        redis_failed = live_metrics.get("failed_count_24h", 0)
+        avg_lat = live_metrics.get("avg_latency_ms", 0.0)
+        from app.services.metrics_service import MetricsService
+        _keys = metrics_service._keys(company_id, project_id)
+        r_sync = await get_redis_client()
+        async with r_sync.pipeline(transaction=True) as pipe:
+            pipe.set(_keys["total"], redis_total)
+            pipe.set(_keys["success"], redis_success)
+            pipe.set(_keys["failed"], redis_failed)
+            pipe.set(_keys["latency_sum"], avg_lat * max(1, redis_success + redis_failed))
+            pipe.set(_keys["hydrated"], "1", ex=86400)
+            await pipe.execute()
+        await r_sync.aclose()
+    except Exception as sync_exc:
+        logger.debug("Redis sync from DB on dashboard load failed (non-critical): %s", sync_exc)
+
+    success_rate = live_metrics.get("success_rate_pct") or live_metrics.get("success_rate")
+    total_wh = live_metrics.get("total_webhooks_24h", 0) or live_metrics.get("total_webhooks", 0)
+    # Compute throughput from Redis (it is a sliding-window counter, DB has no equivalent)
+    redis_metrics = await metrics_service.get_or_hydrate_metrics(company_id, db, project_id=project_id)
 
     return {
         "project_id": project_id,
         "total_projects": len(projects),
         "active_projects": active_projects,
         "total_event_routes": total_routes,
-        "total_webhooks": metrics["total_webhooks"],
-        "throughput_rpm": metrics["throughput_rpm"],
-        "throughput_rps": metrics["throughput_rps"],
-        "success_count": metrics["success_count"],
-        "failed_count": metrics["failed_count"],
-        "success_rate": metrics["success_rate"],
-        "avg_latency_ms": metrics["avg_latency_ms"],
+        "total_webhooks": total_wh,
+        "throughput_rpm": redis_metrics["throughput_rpm"],
+        "throughput_rps": redis_metrics["throughput_rps"],
+        "success_count": live_metrics.get("success_count_24h", 0),
+        "failed_count": live_metrics.get("failed_count_24h", 0),
+        "success_rate": success_rate,
+        "success_rate_pct": success_rate,
+        "avg_latency_ms": live_metrics.get("avg_latency_ms", 0.0),
+        "p50_latency_ms": live_metrics.get("p50_latency_ms", 0.0),
+        "p90_latency_ms": live_metrics.get("p90_latency_ms", 0.0),
+        "p95_latency_ms": live_metrics.get("p95_latency_ms", 0.0),
+        "p99_latency_ms": live_metrics.get("p99_latency_ms", 0.0),
         "dlq_count": company_dlq_count,
+        "total_dlq_count": company_dlq_count,
         "main_queue_count": pending_count,
         "redis_status": redis_status,
         "redis_latency_ms": redis_latency_ms,
         "rabbitmq_status": rabbitmq_status,
-        "stats_window": "lifetime",
+        "throughput_series": live_metrics.get("throughput_series", []),
+        "stats_window": "24h",
+        "ingress_total_24h": live_metrics.get("ingress_total_24h", 0),
+        "ingress_success_24h": live_metrics.get("ingress_success_24h", 0),
+        "ingress_failed_24h": live_metrics.get("ingress_failed_24h", 0),
+        "ingress_success_rate_pct": live_metrics.get("ingress_success_rate_pct"),
+        "replay_total_24h": live_metrics.get("replay_total_24h", 0),
+        "replay_success_24h": live_metrics.get("replay_success_24h", 0),
+        "replay_failed_24h": live_metrics.get("replay_failed_24h", 0),
+        "replay_recovery_rate_pct": live_metrics.get("replay_recovery_rate_pct"),
+        "retry_efficiency_pct": live_metrics.get("retry_efficiency_pct", 100.0),
     }
 
 
@@ -996,6 +1187,10 @@ async def replay_dlq_logs(
 
     SECURITY: Verifies that each message ID being replayed belongs to a project
     owned by the authenticated company before execution.
+
+    FIX: ID matching now checks item['id'], item['event_id'], AND item['raw_id'] against
+    the requested IDs list — previously only checked message_id which never matched
+    the event_id values sent by the frontend, causing silent 0-replay responses.
     """
     company_id = current_company.id
     payload = payload or {}
@@ -1005,41 +1200,72 @@ async def replay_dlq_logs(
     elif isinstance(log_ids, str) and log_ids != "all":
         log_ids = [log_ids]
 
+    # Normalize all requested IDs to strings for comparison
+    requested_id_set = {str(i) for i in log_ids} if log_ids and log_ids != "all" else None
     target_project_id = None
 
-    # Ownership check: peek the DLQ and verify each requested ID belongs to this company
-    if log_ids and log_ids != "all":
+    # Ownership check + collect RabbitMQ-native message IDs (required for ack/nack)
+    if requested_id_set:
         proj_res = await db.execute(select(Project.id).where(Project.company_id == company_id))
         owned_project_ids = {row[0] for row in proj_res.fetchall()}
 
         raw_items = await rabbitmq_manager.peek_dlq_messages(limit=500)
-        safe_ids = []
+        safe_rmq_ids = []   # RabbitMQ message_id values for requeue_dlq_messages
         project_ids = set()
+
         for item in raw_items:
-            item_id = str(item.get("id") or item.get("event_id") or item.get("raw_id"))
-            if not any(target_id in item_id or item_id in target_id for target_id in log_ids):
+            # FIX: Match against ALL three ID fields the frontend may send
+            item_rmq_id  = str(item.get("id") or "")
+            item_event_id = str(item.get("event_id") or "")
+            item_raw_id  = str(item.get("raw_id") or "")
+
+            candidate_ids = {item_rmq_id, item_event_id, item_raw_id} - {""}  # Drop empties
+
+            # Match: any requested ID overlaps any of the item's identifiers
+            matched = bool(requested_id_set & candidate_ids) or any(
+                (req in cid or cid in req)
+                for req in requested_id_set
+                for cid in candidate_ids
+                if req and cid
+            )
+            if not matched:
                 continue
+
             p_id = item.get("project_id")
             if p_id and int(p_id) in owned_project_ids:
-                safe_ids.append(item.get("id"))
+                # Always pass the RabbitMQ-native message ID (used internally for ack)
+                safe_rmq_ids.append(item_rmq_id or item_event_id)
                 project_ids.add(int(p_id))
-        log_ids = safe_ids if safe_ids else log_ids
+
+        # Only override if we actually found matching authorized items
+        if safe_rmq_ids:
+            log_ids = safe_rmq_ids
+        # else: fall through with original log_ids — requeue_dlq_messages will handle gracefully
+
         if len(project_ids) == 1:
             target_project_id = next(iter(project_ids))
 
     result = await rabbitmq_manager.requeue_dlq_messages(target_ids=log_ids)
+    replayed_count = result.get("replayed_count", 0)
 
-    # Notify DLQ WS subscribers and refresh metrics
-    await publish_dlq_event(company_id, "replay", None)
+    # Publish enriched DLQ_UPDATE so WS clients immediately refresh their table
     try:
-        snapshot = await metrics_service.get_or_hydrate_metrics(company_id, db, project_id=target_project_id)
+        refreshed_items = await rabbitmq_manager.peek_dlq_messages(limit=100)
+        await publish_dlq_event(company_id, "replay", {"refreshed": True, "count": len(refreshed_items)})
+    except Exception:
+        await publish_dlq_event(company_id, "replay", None)
+
+    # Sync metrics snapshot
+    try:
+        from app.routers.logs import _build_dashboard_snapshot
+        snapshot = await _build_dashboard_snapshot(company_id, target_project_id)
         await publish_metrics_snapshot(company_id, snapshot, project_id=target_project_id)
     except Exception:
         pass
 
     return {
         "status": "replayed",
-        "replayed_count": result.get("replayed_count", 0),
+        "replayed_count": replayed_count,
         "replayed_ids": result.get("replayed_ids", []),
     }
 
@@ -1058,43 +1284,74 @@ async def discard_dlq_logs(
 
     SECURITY: Same ownership check as replay — verifies each ID belongs to
     a project owned by the authenticated company before discarding.
+
+    FIX: ID matching now checks item['id'], item['event_id'], AND item['raw_id'] —
+    previously `item.get("id") not in log_ids` caused all discards to silently succeed
+    with 0 actually removed because event_id != RabbitMQ message_id.
     """
     company_id = current_company.id
     log_ids = payload.get("log_ids") or payload.get("ids") or []
     if isinstance(log_ids, str) and log_ids != "all":
         log_ids = [log_ids]
 
+    requested_id_set = {str(i) for i in log_ids} if log_ids and log_ids != "all" else None
     target_project_id = None
 
-    if log_ids and log_ids != "all":
+    if requested_id_set:
         proj_res = await db.execute(select(Project.id).where(Project.company_id == company_id))
         owned_project_ids = {row[0] for row in proj_res.fetchall()}
 
         raw_items = await rabbitmq_manager.peek_dlq_messages(limit=500)
-        safe_ids = []
+        safe_rmq_ids = []
         project_ids = set()
+
         for item in raw_items:
-            if item.get("id") not in log_ids:
+            # FIX: Multi-field ID matching — same logic as replay for consistency
+            item_rmq_id  = str(item.get("id") or "")
+            item_event_id = str(item.get("event_id") or "")
+            item_raw_id  = str(item.get("raw_id") or "")
+
+            candidate_ids = {item_rmq_id, item_event_id, item_raw_id} - {""}
+
+            matched = bool(requested_id_set & candidate_ids) or any(
+                (req in cid or cid in req)
+                for req in requested_id_set
+                for cid in candidate_ids
+                if req and cid
+            )
+            if not matched:
                 continue
+
             p_id = item.get("project_id")
             if p_id and int(p_id) in owned_project_ids:
-                safe_ids.append(item.get("id"))
+                safe_rmq_ids.append(item_rmq_id or item_event_id)
                 project_ids.add(int(p_id))
-        log_ids = safe_ids
+
+        if safe_rmq_ids:
+            log_ids = safe_rmq_ids
+
         if len(project_ids) == 1:
             target_project_id = next(iter(project_ids))
 
     result = await rabbitmq_manager.discard_dlq_messages(target_ids=log_ids)
+    discarded_count = result.get("discarded_count", 0)
 
-    await publish_dlq_event(company_id, "discard", None)
+    # Publish enriched DLQ_UPDATE so WS clients immediately refresh their table
     try:
-        snapshot = await metrics_service.get_or_hydrate_metrics(company_id, db, project_id=target_project_id)
+        refreshed_items = await rabbitmq_manager.peek_dlq_messages(limit=100)
+        await publish_dlq_event(company_id, "discard", {"refreshed": True, "count": len(refreshed_items)})
+    except Exception:
+        await publish_dlq_event(company_id, "discard", None)
+
+    try:
+        from app.routers.logs import _build_dashboard_snapshot
+        snapshot = await _build_dashboard_snapshot(company_id, target_project_id)
         await publish_metrics_snapshot(company_id, snapshot, project_id=target_project_id)
     except Exception:
         pass
 
     return {
         "status": "discarded",
-        "discarded_count": result.get("discarded_count", 0),
+        "discarded_count": discarded_count,
         "discarded_ids": result.get("discarded_ids", []),
     }

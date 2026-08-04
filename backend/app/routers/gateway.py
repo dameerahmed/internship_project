@@ -89,6 +89,32 @@ async def _persist_gateway_log(log_payload: dict) -> None:
             )
             db_session.add(entry)
             await db_session.commit()
+
+            # Broadcast live log entry over Redis Pub/Sub immediately
+            project_id = log_payload.get("project_id")
+            if project_id:
+                try:
+                    from app.routers.logs import _serialize_log_entry, _build_dashboard_snapshot
+                    from app.services import pubsub_service
+                    from sqlalchemy.orm import selectinload
+                    
+                    reload_result = await db_session.execute(
+                        select(WebhookLog)
+                        .options(selectinload(WebhookLog.event))
+                        .where(WebhookLog.id == entry.id)
+                    )
+                    reloaded = reload_result.scalars().first()
+                    if reloaded:
+                        serialized = _serialize_log_entry(reloaded)
+                        await pubsub_service.publish_log_event(project_id, serialized)
+                        
+                        # Also broadcast updated 24h metrics snapshot
+                        company_id = getattr(reloaded.event, "project", None).company_id if reloaded.event and getattr(reloaded.event, "project", None) else None
+                        if company_id:
+                            snapshot = await _build_dashboard_snapshot(company_id, project_id)
+                            await pubsub_service.publish_metrics_snapshot(company_id, snapshot, project_id=project_id)
+                except Exception as pub_exc:
+                    logger.warning("Pub/Sub gateway log publish failed: %s", pub_exc)
             break
     except Exception as exc:
         logger.warning("Failed to persist gateway log: %s", exc)
@@ -330,18 +356,29 @@ async def test_webhook_receiver(test_req: GatewayTestRequest):
     }
 
     async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            response = await client.post(
-                "http://127.0.0.1:8000/v1/gateway",
-                headers=headers,
-                content=body_bytes
-            )
-            response_json = response.json() if response.headers.get("content-type", "").startswith("application/json") else response.text
-            response_code = response.status_code
-        except Exception as exc:
+        response = None
+        response_code = 500
+        response_json = None
+        last_exc = None
+
+        for base_url in ["http://127.0.0.1:8000", "http://localhost:8000", "http://backend:8000"]:
+            try:
+                res = await client.post(
+                    f"{base_url}/v1/gateway",
+                    headers=headers,
+                    content=body_bytes
+                )
+                response_code = res.status_code
+                response_json = res.json() if res.headers.get("content-type", "").startswith("application/json") else res.text
+                break
+            except Exception as exc:
+                last_exc = exc
+                continue
+
+        if response_code == 500 and response_json is None and last_exc:
             return sanitize_response_payload({
                 "status": "Failed",
-                "detail": f"Failed to send request to /v1/gateway: {str(exc)}",
+                "detail": f"Failed to send request to /v1/gateway: {str(last_exc)}",
                 "generated_headers": headers,
                 "sent_payload": payload_data,
             })

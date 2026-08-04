@@ -1,15 +1,15 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { 
-  RefreshCw, 
+import {
   ArrowRight,
-  Send,
-  ExternalLink,
-  CheckCircle2,
+  RefreshCw,
+  TrendingUp,
+  TrendingDown,
+  Minus,
   AlertCircle,
+  CheckCircle2,
   Clock,
   Layers,
-  FileText
 } from 'lucide-react';
 import ProtectedLayout from '../components/ProtectedLayout';
 import { useAuth } from '../context/AuthContext';
@@ -17,29 +17,109 @@ import { useProjectStore } from '@/store/useProjectStore';
 import apiClient from '@/api/client';
 import { API_ENDPOINTS, WS_ENDPOINTS, withToken } from '@/utils/constants';
 
+/* ─── Skeleton shimmer component ──────────────────────────────────── */
+function Skeleton({ className = '', style = {} }) {
+  return <div className={`skeleton ${className}`} style={style} />;
+}
+
+/* ─── Metric Card with optional sparkline ─────────────────────────── */
+function MetricCard({ label, value, sub, color, trend, onClick, sparkPath, loading }) {
+  if (loading) {
+    return (
+      <div className="rounded-eds-md p-4 space-y-3" style={{ background: 'var(--eds-panel)', border: '1px solid var(--eds-border)' }}>
+        <Skeleton className="h-3 w-28" />
+        <Skeleton className="h-8 w-20" />
+        <Skeleton className="h-2 w-36" />
+      </div>
+    );
+  }
+
+  const TrendIcon = trend === 'up' ? TrendingUp : trend === 'down' ? TrendingDown : Minus;
+
+  return (
+    <div
+      onClick={onClick}
+      className={`group rounded-eds-md p-4 space-y-2 transition-all duration-200 ${onClick ? 'cursor-pointer' : ''}`}
+      style={{
+        background: 'var(--eds-panel)',
+        border: '1px solid var(--eds-border)',
+      }}
+      onMouseEnter={(e) => { if (onClick) { e.currentTarget.style.borderColor = color; e.currentTarget.style.boxShadow = `0 0 0 1px ${color}30`; }}}
+      onMouseLeave={(e) => { if (onClick) { e.currentTarget.style.borderColor = 'var(--eds-border)'; e.currentTarget.style.boxShadow = 'none'; }}}
+    >
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-bold font-mono uppercase tracking-wider" style={{ color: 'var(--eds-muted)' }}>
+          {label}
+          {onClick && <span className="ml-1 opacity-50">↗</span>}
+        </span>
+        {sparkPath && (
+          <svg className="w-12 h-5 shrink-0" fill="none" viewBox="0 0 40 16" stroke={color} strokeWidth="2">
+            <path strokeLinecap="round" strokeLinejoin="round" d={sparkPath} />
+          </svg>
+        )}
+      </div>
+      <div className="text-2xl font-extrabold tracking-tight transition-colors" style={{ color: value === 0 && label !== 'Retry Rate' ? 'var(--eds-faint)' : color }}>
+        {typeof value === 'number' ? value.toLocaleString() : value}
+      </div>
+      {sub && (
+        <div className="flex items-center gap-1 text-[11px]" style={{ color: 'var(--eds-muted)' }}>
+          {trend && <TrendIcon size={11} style={{ color }} />}
+          <span>{sub}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Latency stat box ─────────────────────────────────────────────── */
+function LatencyBox({ label, value, loading }) {
+  if (loading) {
+    return (
+      <div className="rounded-eds-md p-4 space-y-2" style={{ background: 'var(--eds-panel)', border: '1px solid var(--eds-border)' }}>
+        <Skeleton className="h-3 w-10" />
+        <Skeleton className="h-6 w-20" />
+      </div>
+    );
+  }
+  const ms = Number(value || 0);
+  const color = ms < 100 ? 'var(--eds-success)' : ms < 500 ? 'var(--eds-warning)' : 'var(--eds-danger-2)';
+  return (
+    <div className="rounded-eds-md p-4" style={{ background: 'var(--eds-panel)', border: '1px solid var(--eds-border)' }}>
+      <span className="text-[10px] font-bold font-mono uppercase tracking-wider block mb-1" style={{ color: 'var(--eds-muted)' }}>{label}</span>
+      <span className="text-lg font-extrabold block" style={{ color: ms > 0 ? color : 'var(--eds-faint)' }}>
+        {ms.toFixed(1)} <span className="text-xs font-normal" style={{ color: 'var(--eds-muted)' }}>ms</span>
+      </span>
+    </div>
+  );
+}
+
+/* ─── Smooth cubic-bezier spline path generator ──────────────────── */
+function cubicBezierPath(points) {
+  if (points.length < 2) return '';
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+  let d = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    const cp1x = prev.x + (curr.x - prev.x) * 0.5;
+    const cp2x = curr.x - (curr.x - prev.x) * 0.5;
+    d += ` C ${cp1x.toFixed(1)} ${prev.y.toFixed(1)}, ${cp2x.toFixed(1)} ${curr.y.toFixed(1)}, ${curr.x.toFixed(1)} ${curr.y.toFixed(1)}`;
+  }
+  return d;
+}
+
 export default function DashboardPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { 
-    companyMetrics, 
-    setCompanyMetrics, 
-    companyMetricsLoading, 
-    setCompanyMetricsLoading 
-  } = useProjectStore();
+  const { companyMetrics, setCompanyMetrics, companyMetricsLoading, setCompanyMetricsLoading } = useProjectStore();
 
   const [recentLogs, setRecentLogs] = useState([]);
-  const [topEvents, setTopEvents] = useState([]);
 
   const loadCompanyData = async (silent = false) => {
-    if (!silent && !companyMetrics) {
-      setCompanyMetricsLoading(true);
-    }
+    if (!silent && !companyMetrics) setCompanyMetricsLoading(true);
     try {
-      // 1. Fetch company aggregated metrics
       const { data: metricsData } = await apiClient.get(API_ENDPOINTS.METRICS.COMPANY);
       setCompanyMetrics(metricsData);
-
-      // 2. Fetch recent webhook logs
       const { data: logsData } = await apiClient.get('/v1/webhooks/logs?limit=8');
       const list = Array.isArray(logsData) ? logsData : (logsData?.logs || []);
       setRecentLogs(list.map((log) => {
@@ -48,47 +128,26 @@ export default function DashboardPage() {
         const level = (log?.level || '').toUpperCase();
         const isFailed = status === 'FAILED' || status === 'REJECTED' || level === 'ERROR';
         let code = log.response_code ?? log.status_code ?? metadata.response_code ?? metadata.status_code;
-        if (isFailed) {
-          if (!code || Number(code) === 200) code = 500;
-        } else if (!code) {
-          code = 200;
-        }
+        if (isFailed) { if (!code || Number(code) === 200) code = 500; }
+        else if (!code) { code = 200; }
         return {
           ...log,
           status: status || (isFailed ? 'FAILED' : 'SUCCESS'),
           created_at: log.created_at || log.timestamp || '',
           response_code: Number(code),
-          status_code: Number(code),
-          event_type: log.event_type || metadata.event_type || log.delivery_packet?.event_type || 'webhook.event',
-          target_url: log.target_url || log.path || metadata.target_url || log.delivery_packet?.target_url || '',
-          http_method: log.http_method || metadata.http_method || log.delivery_packet?.http_method || 'POST',
+          event_type: log.event_type || metadata.event_type || 'webhook.event',
+          target_url: log.target_url || log.path || metadata.target_url || '',
         };
       }));
-
-      // 3. Compute top event frequencies
-      const counts = {};
-      list.forEach((l) => {
-        const ev = l.event_type || l.delivery_packet?.event_type || 'webhook.event';
-        counts[ev] = (counts[ev] || 0) + 1;
-      });
-      const sortedEvents = Object.entries(counts)
-        .map(([name, count]) => ({ name, count }))
-        .sort((a, b) => b.count - a.count);
-      setTopEvents(sortedEvents);
-
     } catch (err) {
       console.error('Failed to load company metrics:', err);
     } finally {
-      if (!silent) {
-        setCompanyMetricsLoading(false);
-      }
+      if (!silent) setCompanyMetricsLoading(false);
     }
   };
 
   useEffect(() => {
     loadCompanyData(false);
-
-    // Establish WebSocket stream to /ws/dashboard with auto-reconnect
     let socket = null;
     let reconnectTimer = null;
     let retryCount = 0;
@@ -96,53 +155,70 @@ export default function DashboardPage() {
     const connectWs = () => {
       const token = user?.access_token || (localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user'))?.access_token : null);
       if (!token) return;
-
       const wsUrl = withToken(WS_ENDPOINTS.DASHBOARD(), token);
       try {
         socket = new WebSocket(wsUrl);
-
-        socket.onopen = () => {
-          retryCount = 0;
-        };
-
+        socket.onopen = () => { retryCount = 0; };
         socket.onmessage = (event) => {
           try {
             const payload = JSON.parse(event.data);
+            if (payload.type === 'heartbeat') return;
             if (payload.type === 'DASHBOARD_UPDATE' || payload.total_webhooks !== undefined || payload.total_webhooks_24h !== undefined) {
-              setCompanyMetrics((prev) => ({
-                ...(prev || {}),
-                ...payload,
-                total_webhooks_24h: payload.total_webhooks_24h ?? payload.total_webhooks ?? prev?.total_webhooks_24h ?? 0,
-                success_rate_pct: payload.success_rate_pct ?? payload.success_rate ?? prev?.success_rate_pct ?? null,
-                failure_rate_pct: payload.failure_rate_pct ?? payload.failure_rate ?? prev?.failure_rate_pct ?? 0,
-                avg_latency_ms: payload.avg_latency_ms ?? prev?.avg_latency_ms ?? 0,
-                active_projects_count: payload.active_projects_count ?? prev?.active_projects_count ?? 0,
-                total_projects_count: payload.total_projects_count ?? prev?.total_projects_count ?? 0,
-                total_dlq_count: payload.total_dlq_count ?? payload.dlq_count ?? prev?.total_dlq_count ?? 0,
-                throughput_series: payload.throughput_series ?? prev?.throughput_series ?? [],
-              }));
+              setCompanyMetrics((prev) => {
+                const next = {
+                  ...(prev || {}),
+                  ...payload,
+                  total_webhooks_24h:   payload.total_webhooks_24h ?? payload.total_webhooks ?? prev?.total_webhooks_24h ?? 0,
+                  success_rate_pct:     payload.success_rate_pct ?? payload.success_rate ?? prev?.success_rate_pct ?? null,
+                  failure_rate_pct:     payload.failure_rate_pct ?? payload.failure_rate ?? prev?.failure_rate_pct ?? 0,
+                  // FIX: also merge absolute count fields that drive the stat cards
+                  success_count:        payload.success_count ?? payload.success_count_24h ?? prev?.success_count ?? 0,
+                  failed_count:         payload.failed_count  ?? payload.failed_count_24h  ?? prev?.failed_count  ?? 0,
+                  avg_latency_ms:       payload.avg_latency_ms ?? prev?.avg_latency_ms ?? 0,
+                  // FIX: merge percentile latencies so the latency stat boxes update in real-time
+                  p50_latency_ms:       payload.p50_latency_ms ?? prev?.p50_latency_ms ?? 0,
+                  p90_latency_ms:       payload.p90_latency_ms ?? prev?.p90_latency_ms ?? 0,
+                  p95_latency_ms:       payload.p95_latency_ms ?? prev?.p95_latency_ms ?? 0,
+                  p99_latency_ms:       payload.p99_latency_ms ?? prev?.p99_latency_ms ?? 0,
+                  ingress_total_24h:        payload.ingress_total_24h ?? prev?.ingress_total_24h ?? 0,
+                  ingress_success_24h:      payload.ingress_success_24h ?? prev?.ingress_success_24h ?? 0,
+                  ingress_failed_24h:       payload.ingress_failed_24h ?? prev?.ingress_failed_24h ?? 0,
+                  ingress_success_rate_pct: payload.ingress_success_rate_pct ?? prev?.ingress_success_rate_pct ?? null,
+                  replay_total_24h:         payload.replay_total_24h ?? prev?.replay_total_24h ?? 0,
+                  replay_success_24h:       payload.replay_success_24h ?? prev?.replay_success_24h ?? 0,
+                  replay_failed_24h:        payload.replay_failed_24h ?? prev?.replay_failed_24h ?? 0,
+                  replay_recovery_rate_pct: payload.replay_recovery_rate_pct ?? prev?.replay_recovery_rate_pct ?? null,
+                  retry_efficiency_pct:     payload.retry_efficiency_pct ?? prev?.retry_efficiency_pct ?? 100.0,
+                  active_projects_count:  payload.active_projects_count ?? prev?.active_projects_count ?? 0,
+                  total_projects_count:   payload.total_projects_count  ?? prev?.total_projects_count  ?? 0,
+                  total_dlq_count:      payload.total_dlq_count ?? payload.dlq_count ?? prev?.total_dlq_count ?? 0,
+                  throughput_series:    payload.throughput_series ?? prev?.throughput_series ?? [],
+                };
+                // Bail out early if nothing actually changed (reference equality for unchanged prev)
+                if (prev &&
+                  prev.total_webhooks_24h === next.total_webhooks_24h &&
+                  prev.success_count      === next.success_count &&
+                  prev.failed_count       === next.failed_count &&
+                  prev.replay_total_24h   === next.replay_total_24h &&
+                  prev.avg_latency_ms     === next.avg_latency_ms &&
+                  prev.total_dlq_count    === next.total_dlq_count) {
+                  return prev;
+                }
+                return next;
+              });
             }
-          } catch (err) {
-            console.warn('Dashboard WS message parse error:', err);
-          }
+          } catch {}
         };
-
         socket.onclose = () => {
-          const delay = Math.min(1000 * Math.pow(2, retryCount), 15000);
+          const delay = Math.min(1000 * Math.pow(2, retryCount), 15000) + Math.random() * 1000;
           retryCount++;
           reconnectTimer = setTimeout(connectWs, delay);
         };
-
-        socket.onerror = () => {
-          try { socket.close(); } catch {}
-        };
-      } catch (err) {
-        console.warn('WebSocket connection error:', err);
-      }
+        socket.onerror = () => { try { socket.close(); } catch {} };
+      } catch {}
     };
 
     connectWs();
-
     return () => {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (socket) socket.close();
@@ -150,388 +226,433 @@ export default function DashboardPage() {
   }, [user?.access_token]);
 
   const m = companyMetrics || {
-    total_webhooks_24h: 0,
-    success_rate_pct: null,
-    failure_rate_pct: 0.0,
-    avg_latency_ms: 0.0,
-    p50_latency_ms: 0.0,
-    p90_latency_ms: 0.0,
-    p95_latency_ms: 0.0,
-    p99_latency_ms: 0.0,
-    active_projects_count: 0,
-    total_projects_count: 0,
-    total_dlq_count: 0,
-    throughput_series: []
+    total_webhooks_24h: 0, success_rate_pct: null, failure_rate_pct: 0.0,
+    avg_latency_ms: 0.0, p50_latency_ms: 0.0, p90_latency_ms: 0.0,
+    p95_latency_ms: 0.0, p99_latency_ms: 0.0,
+    active_projects_count: 0, total_projects_count: 0, total_dlq_count: 0,
+    throughput_series: [],
+    ingress_total_24h: 0, ingress_success_24h: 0, ingress_failed_24h: 0, ingress_success_rate_pct: null,
+    replay_total_24h: 0, replay_success_24h: 0, replay_failed_24h: 0, replay_recovery_rate_pct: null,
+    retry_efficiency_pct: 100.0,
   };
 
   const totalSent = m.total_webhooks_24h || 0;
   const isColdStart = m.success_rate_pct === null || m.success_rate_pct === undefined;
-  const successfulCount = m.success_count_24h ?? (isColdStart ? 0 : Math.round(totalSent * ((m.success_rate_pct || 0) / 100)));
+  const successRate = isColdStart ? null : m.success_rate_pct;
   const failedCount = m.failed_count_24h ?? Math.round(totalSent * ((m.failure_rate_pct || 0) / 100));
-  const pendingCount = m.total_dlq_count || 0;
-  const retryRate = `${(m.failure_rate_pct || 0).toFixed(0)}%`;
+  const successCount = m.success_count_24h ?? (isColdStart ? 0 : Math.round(totalSent * ((successRate || 0) / 100)));
+  const dlqCount = m.total_dlq_count || 0;
+  const retryRate = `${(m.failure_rate_pct || 0).toFixed(1)}%`;
 
   const series = Array.isArray(m.throughput_series) ? m.throughput_series : [];
 
-  // Dynamic SVG Path Generator for 24h Spline Area Chart
+  // Smooth spline chart geometry (cubic bezier)
   const chartGeometry = useMemo(() => {
-    const width = 500;
-    const height = 110;
-    const baseLine = 140;
-
-    if (!series || series.length === 0) {
+    const W = 500, H = 110, BASE = 140;
+    if (!series.length) {
       return {
-        linePath: `M 0 ${baseLine} L ${width} ${baseLine}`,
-        areaPath: `M 0 ${baseLine} L ${width} ${baseLine} L ${width} 160 L 0 160 Z`,
-        peakX: width / 2,
-        peakY: baseLine,
-        peakTotal: 0
+        linePath: `M 0 ${BASE} L ${W} ${BASE}`,
+        areaPath: `M 0 ${BASE} L ${W} ${BASE} L ${W} 160 L 0 160 Z`,
+        peakX: W / 2, peakY: BASE, peakTotal: 0,
       };
     }
-
     const maxVal = Math.max(...series.map(s => s.total || 0), 1);
-    const points = series.map((s, i) => {
-      const x = series.length > 1 ? (i / (series.length - 1)) * width : width / 2;
-      const y = baseLine - ((s.total || 0) / maxVal) * height;
-      return { x, y, total: s.total || 0 };
-    });
-
-    const linePath = points.reduce((acc, p, i) => i === 0 ? `M ${p.x.toFixed(1)} ${p.y.toFixed(1)}` : `${acc} L ${p.x.toFixed(1)} ${p.y.toFixed(1)}`, '');
-    const areaPath = `${linePath} L ${width} 160 L 0 160 Z`;
-    
-    let peak = points[0];
-    points.forEach(p => { if (p.total > (peak.total || 0)) peak = p; });
-
+    const points = series.map((s, i) => ({
+      x: series.length > 1 ? (i / (series.length - 1)) * W : W / 2,
+      y: BASE - ((s.total || 0) / maxVal) * H,
+      total: s.total || 0,
+    }));
+    const linePath = cubicBezierPath(points);
+    const areaPath = `${linePath} L ${W} 160 L 0 160 Z`;
+    const peak = points.reduce((p, c) => c.total > p.total ? c : p, points[0]);
     return { linePath, areaPath, peakX: peak.x, peakY: peak.y, peakTotal: peak.total };
   }, [series]);
 
-  // Dynamic Micro Sparkline Path Generator
   const getSparklinePath = (key = 'total') => {
-    if (!series || series.length === 0) return 'M 2 10 L 38 10';
+    if (!series.length) return 'M 2 10 L 38 10';
     const vals = series.map(s => s[key] || 0);
     const maxVal = Math.max(...vals, 1);
     return vals.map((v, i) => {
-      const x = 2 + (i / (vals.length - 1)) * 36;
+      const x = 2 + (i / Math.max(vals.length - 1, 1)) * 36;
       const y = 14 - (v / maxVal) * 10;
       return `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
     }).join(' ');
   };
 
+  const loading = companyMetricsLoading && !companyMetrics;
+
+  /* Donut chart values */
+  const successArc = isColdStart ? 0 : Math.min(successRate || 0, 100);
+  const failureArc = Math.min(m.failure_rate_pct || 0, 100);
+
   return (
     <ProtectedLayout>
-      <div className="flex flex-col gap-8 font-sans w-full max-w-7xl mx-auto text-zinc-100 pb-12 select-none">
-        
-        {/* 🌟 1. Top Header Bar */}
-        <div className="flex items-center justify-between border-b border-cyan-900/20 pb-4">
+      <div className="flex flex-col gap-8 w-full max-w-7xl mx-auto pb-12 animate-fade-in">
+
+        {/* ── Header ──────────────────────────────────────────────── */}
+        <div className="flex items-center justify-between pb-4"
+             style={{ borderBottom: '1px solid var(--eds-border)' }}>
           <div>
-            <h1 className="text-2xl font-bold tracking-tight text-white">
+            <h2 className="text-2xl font-bold tracking-tight" style={{ color: 'var(--eds-text)' }}>
               Company Webhooks Overview
-            </h1>
-            <p className="text-xs text-zinc-400 font-normal mt-0.5">
-              Live ingress telemetry & organization analytics
+            </h2>
+            <p className="text-xs mt-0.5 font-medium" style={{ color: 'var(--eds-muted)' }}>
+              Live ingress telemetry &amp; organization analytics
             </p>
           </div>
-
           <button
             type="button"
             onClick={() => navigate('/dashboard/projects')}
-            className="inline-flex items-center gap-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 px-4 py-2 text-xs font-bold text-white shadow-lg shadow-cyan-950/40 transition active:scale-95 shrink-0 border border-cyan-400/30"
+            className="eds-btn-primary shrink-0"
           >
             <span>Manage Projects</span>
-            <ArrowRight className="h-4 w-4" />
+            <ArrowRight size={14} />
           </button>
         </div>
 
-        {/* 📈 2. Resend-Style Micro Inline Metrics Row */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-6 border-b border-cyan-900/20 pb-8">
-          
-          {/* Metric 1: Total Webhooks Sent */}
-          <div 
+        {/* ── Inline Metric Strip ──────────────────────────────────── */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4 pb-8"
+             style={{ borderBottom: '1px solid var(--eds-border)' }}>
+          <MetricCard
+            label="Total Sent"
+            value={totalSent}
+            sub="24h rolling window"
+            color="var(--eds-accent-2)"
+            trend="up"
+            sparkPath={getSparklinePath('total')}
             onClick={() => navigate('/dashboard/projects?sort=volume')}
-            title="Click to view projects sorted by webhook volume"
-            className="space-y-1 p-3 rounded-xl cursor-pointer bg-[#0d151c] border border-cyan-900/30 hover:border-cyan-500/40 transition group select-none"
-          >
-            <span className="text-[11px] font-mono font-bold text-cyan-400/80 group-hover:text-cyan-300 block uppercase tracking-wider transition">
-              Total Webhooks Sent ↗
-            </span>
-            <div className="flex items-baseline gap-3">
-              <span className="text-2xl font-extrabold text-white group-hover:text-cyan-400 transition">
-                {totalSent.toLocaleString()}
-              </span>
-              <svg className="w-12 h-5 text-cyan-400 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d={getSparklinePath('total')} />
-              </svg>
-            </div>
-          </div>
-
-          {/* Metric 2: Successful */}
-          <div 
+            loading={loading}
+          />
+          <MetricCard
+            label="Successful"
+            value={isColdStart ? '—' : successCount}
+            sub={isColdStart ? 'No data yet' : `${successRate}% success rate`}
+            color="var(--eds-success)"
+            trend="up"
+            sparkPath={getSparklinePath('success')}
             onClick={() => navigate('/dashboard/projects?sort=success')}
-            title="Click to view projects sorted by highest success rate"
-            className="space-y-1 p-3 rounded-xl cursor-pointer bg-[#0d151c] border border-cyan-900/30 hover:border-cyan-500/40 transition group select-none"
-          >
-            <span className="text-[11px] font-mono font-bold text-cyan-400/80 group-hover:text-emerald-400 block uppercase tracking-wider transition">
-              Successful ↗
-            </span>
-            <div className="flex items-baseline gap-3">
-              <span className="text-2xl font-extrabold text-white group-hover:text-emerald-400 transition">
-                {isColdStart ? '0' : successfulCount.toLocaleString()}
-              </span>
-              <svg className="w-12 h-5 text-emerald-400 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d={getSparklinePath('success')} />
-              </svg>
-            </div>
-          </div>
-
-          {/* Metric 3: Failed */}
-          <div 
+            loading={loading}
+          />
+          <MetricCard
+            label="Failed"
+            value={failedCount}
+            sub="Delivery failures"
+            color={failedCount > 0 ? 'var(--eds-danger-2)' : 'var(--eds-faint)'}
+            trend={failedCount > 0 ? 'down' : null}
+            sparkPath={getSparklinePath('failed')}
             onClick={() => navigate('/dashboard/projects?sort=failure')}
-            title="Click to view projects sorted by highest failure rate"
-            className="space-y-1 p-3 rounded-xl cursor-pointer bg-[#0d151c] border border-cyan-900/30 hover:border-rose-500/40 transition group select-none"
-          >
-            <span className="text-[11px] font-mono font-bold text-cyan-400/80 group-hover:text-rose-400 block uppercase tracking-wider transition">
-              Failed ↗
-            </span>
-            <div className="flex items-baseline gap-3">
-              <span className="text-2xl font-extrabold text-rose-400 transition">
-                {failedCount}
-              </span>
-              <svg className="w-12 h-5 text-rose-400 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d={getSparklinePath('failed')} />
-              </svg>
-            </div>
-          </div>
-
-          {/* Metric 4: Pending / DLQ */}
-          <div 
-            onClick={() => navigate('/dashboard/projects?sort=dlq')}
-            title="Click to view projects sorted by DLQ items"
-            className="space-y-1 p-3 rounded-xl cursor-pointer bg-[#0d151c] border border-cyan-900/30 hover:border-amber-500/40 transition group select-none"
-          >
-            <span className="text-[11px] font-mono font-bold text-cyan-400/80 group-hover:text-amber-400 block uppercase tracking-wider transition">
-              Pending DLQ ↗
-            </span>
-            <div className="flex items-baseline gap-3">
-              <span className="text-2xl font-extrabold text-white group-hover:text-amber-400 transition">
-                {pendingCount}
-              </span>
-              <svg className="w-12 h-5 text-amber-400 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d={getSparklinePath('failed')} />
-              </svg>
-            </div>
-          </div>
-
-          {/* Metric 5: Retry / Failure Rate */}
-          <div 
-            onClick={() => navigate('/dashboard/projects?sort=failure')}
-            title="Click to view projects sorted by failure & retry rate"
-            className="space-y-1 p-3 rounded-xl cursor-pointer bg-[#0d151c] border border-cyan-900/30 hover:border-rose-500/40 transition group select-none"
-          >
-            <span className="text-[11px] font-mono font-bold text-cyan-400/80 group-hover:text-rose-400 block uppercase tracking-wider transition">
-              Retry Rate ↗
-            </span>
-            <div className="flex items-baseline gap-3">
-              <span className="text-2xl font-extrabold text-white group-hover:text-rose-400 transition">
-                {retryRate}
-              </span>
-              <svg className="w-12 h-5 text-rose-400 shrink-0" fill="none" viewBox="0 0 40 16" stroke="currentColor" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d={getSparklinePath('failed')} />
-              </svg>
-            </div>
-          </div>
-
+            loading={loading}
+          />
+          <MetricCard
+            label="Pending DLQ"
+            value={dlqCount}
+            sub="Dead letter items"
+            color={dlqCount > 0 ? 'var(--eds-warning)' : 'var(--eds-faint)'}
+            trend={dlqCount > 0 ? 'down' : null}
+            sparkPath={getSparklinePath('failed')}
+            onClick={() => navigate('/dlq')}
+            loading={loading}
+          />
+          <MetricCard
+            label="Retry Rate"
+            value={retryRate}
+            sub="Failure + retry ratio"
+            color={parseFloat(retryRate) > 5 ? 'var(--eds-danger-2)' : 'var(--eds-muted)'}
+            trend={parseFloat(retryRate) > 0 ? 'down' : null}
+            loading={loading}
+          />
         </div>
 
-        {/* 📊 3. Side-by-Side Analytics Charts */}
+        {/* ── Charts Row ───────────────────────────────────────────── */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-          
-          {/* Left Analytics Card (7 Cols): Webhook Delivery Statistics */}
-          <div className="lg:col-span-7 flex flex-col justify-between rounded-2xl border border-cyan-900/30 bg-[#0d151c] p-5 shadow-xl space-y-4">
+
+          {/* Throughput Chart — 7 cols */}
+          <div
+            className="lg:col-span-7 flex flex-col rounded-eds-md p-5 shadow-eds-md space-y-4"
+            style={{ background: 'var(--eds-panel)', border: '1px solid var(--eds-border)' }}
+          >
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-sm font-extrabold text-white tracking-tight">
+                <h3 className="text-sm font-extrabold tracking-tight" style={{ color: 'var(--eds-text)' }}>
                   Webhook Delivery Statistics
-                </h2>
-                <p className="text-[11px] text-zinc-400 font-medium">Real-time throughput trend (24h)</p>
+                </h3>
+                <p className="text-[11px] font-medium" style={{ color: 'var(--eds-muted)' }}>
+                  Real-time throughput trend (24h window)
+                </p>
               </div>
-
-              <select className="rounded-xl border border-cyan-900/40 bg-[#070e14] text-xs px-2.5 py-1 text-zinc-300 font-medium focus:outline-none">
+              <select
+                className="rounded-eds text-xs px-2.5 py-1.5 font-mono outline-none"
+                style={{
+                  background: 'var(--eds-surface-2)',
+                  border: '1px solid var(--eds-border-2)',
+                  color: 'var(--eds-text-2)',
+                }}
+              >
                 <option>Last 24 Hours</option>
               </select>
             </div>
 
-            {/* Smooth Dynamic Spline Area SVG Chart */}
-            <div className="relative h-56 w-full pt-4 pb-2">
-              <svg className="w-full h-full overflow-visible" viewBox="0 0 500 160" preserveAspectRatio="none">
-                <defs>
-                  <linearGradient id="splineGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#06b6d4" stopOpacity="0.35" />
-                    <stop offset="100%" stopColor="#06b6d4" stopOpacity="0.0" />
-                  </linearGradient>
-                </defs>
-
-                {/* Grid Lines */}
-                <line x1="0" y1="40" x2="500" y2="40" stroke="currentColor" className="text-cyan-900/20" strokeDasharray="3 3" />
-                <line x1="0" y1="80" x2="500" y2="80" stroke="currentColor" className="text-cyan-900/20" strokeDasharray="3 3" />
-                <line x1="0" y1="120" x2="500" y2="120" stroke="currentColor" className="text-cyan-900/20" strokeDasharray="3 3" />
-
-                {/* Dynamic Area Path */}
-                <path d={chartGeometry.areaPath} fill="url(#splineGradient)" />
-
-                {/* Dynamic Stroke Line */}
-                <path
-                  d={chartGeometry.linePath}
-                  fill="none"
-                  stroke="#06b6d4"
-                  strokeWidth="3"
-                  strokeLinecap="round"
-                />
-
-                {/* Peak Highlight Circle */}
-                <circle cx={chartGeometry.peakX} cy={chartGeometry.peakY} r="5" fill="#06b6d4" stroke="#ffffff" strokeWidth="2" />
-              </svg>
-
-              {/* Peak Tooltip Pill */}
-              <div 
-                style={{ left: `${(chartGeometry.peakX / 500) * 100}%` }}
-                className="absolute top-6 -translate-x-1/2 rounded-lg bg-[#070e14] border border-cyan-500/40 text-cyan-400 px-2.5 py-1 text-[11px] font-bold shadow-lg flex flex-col items-center pointer-events-none z-10 font-mono"
-              >
-                <span className="text-[10px] text-zinc-400">Peak Traffic</span>
-                <span>{chartGeometry.peakTotal > 0 ? `${chartGeometry.peakTotal} Webhooks` : 'Real-time Ingress'}</span>
+            {loading ? (
+              <div className="flex-1 flex flex-col gap-3 py-4">
+                <Skeleton className="h-40 w-full" />
               </div>
-            </div>
+            ) : (
+              <div className="relative h-52 w-full">
+                <svg className="w-full h-full overflow-visible" viewBox="0 0 500 160" preserveAspectRatio="none">
+                  <defs>
+                    <linearGradient id="chart-area-grad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%"   stopColor="#6366f1" stopOpacity="0.30" />
+                      <stop offset="100%" stopColor="#6366f1" stopOpacity="0.0" />
+                    </linearGradient>
+                  </defs>
 
-            <div className="flex items-center justify-between text-[11px] text-zinc-400 font-mono pt-2 border-t border-cyan-900/20">
-              <span>0:00</span>
-              <span>6:00</span>
-              <span>12:00</span>
-              <span>18:00</span>
-              <span>24:00</span>
+                  {/* Grid lines */}
+                  {[40, 80, 120].map((y) => (
+                    <line key={y} x1="0" y1={y} x2="500" y2={y}
+                          stroke="rgba(255,255,255,0.05)" strokeDasharray="4 4" />
+                  ))}
+
+                  {/* Area fill */}
+                  <path d={chartGeometry.areaPath} fill="url(#chart-area-grad)" />
+
+                  {/* Smooth line */}
+                  <path
+                    d={chartGeometry.linePath}
+                    fill="none"
+                    stroke="#6366f1"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+
+                  {/* Peak dot */}
+                  {chartGeometry.peakTotal > 0 && (
+                    <>
+                      <circle cx={chartGeometry.peakX} cy={chartGeometry.peakY} r="6"
+                              fill="#6366f1" opacity="0.25" />
+                      <circle cx={chartGeometry.peakX} cy={chartGeometry.peakY} r="4"
+                              fill="#818cf8" stroke="#06080d" strokeWidth="1.5" />
+                    </>
+                  )}
+                </svg>
+
+                {/* Peak tooltip */}
+                {chartGeometry.peakTotal > 0 && (
+                  <div
+                    className="absolute top-4 -translate-x-1/2 rounded-eds px-2.5 py-1.5 text-[10px] font-bold font-mono shadow-eds flex flex-col items-center pointer-events-none z-10"
+                    style={{
+                      left: `${(chartGeometry.peakX / 500) * 100}%`,
+                      background: 'var(--eds-panel-2)',
+                      border: '1px solid var(--eds-border-2)',
+                      color: 'var(--eds-accent-2)',
+                    }}
+                  >
+                    <span style={{ color: 'var(--eds-muted)' }} className="text-[9px]">Peak</span>
+                    <span>{chartGeometry.peakTotal} events</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between text-[10px] font-mono pt-1"
+                 style={{ borderTop: '1px solid var(--eds-border)', color: 'var(--eds-faint)' }}>
+              <span>0:00</span><span>6:00</span><span>12:00</span><span>18:00</span><span>24:00</span>
             </div>
           </div>
 
-          {/* Right Analytics Card (5 Cols): Delivery Status Breakdown */}
-          <div className="lg:col-span-5 flex flex-col justify-between rounded-2xl border border-cyan-900/30 bg-[#0d151c] p-5 shadow-xl space-y-4">
+          {/* Delivery Status Donut — 5 cols */}
+          <div
+            className="lg:col-span-5 flex flex-col rounded-eds-md p-5 shadow-eds-md space-y-4"
+            style={{ background: 'var(--eds-panel)', border: '1px solid var(--eds-border)' }}
+          >
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-sm font-extrabold text-white tracking-tight">
+                <h3 className="text-sm font-extrabold tracking-tight" style={{ color: 'var(--eds-text)' }}>
                   Delivery Status Distribution
-                </h2>
-                <p className="text-[11px] text-zinc-400 font-medium">Real-time status ratio</p>
+                </h3>
+                <p className="text-[11px] font-medium" style={{ color: 'var(--eds-muted)' }}>
+                  Real-time status breakdown
+                </p>
               </div>
-
-              <select className="rounded-xl border border-cyan-900/40 bg-[#070e14] text-xs px-2 py-1 text-zinc-300 font-medium focus:outline-none">
+              <select
+                className="rounded-eds text-xs px-2 py-1.5 font-mono outline-none"
+                style={{
+                  background: 'var(--eds-surface-2)',
+                  border: '1px solid var(--eds-border-2)',
+                  color: 'var(--eds-text-2)',
+                }}
+              >
                 <option>All Events</option>
               </select>
             </div>
 
-            {/* Donut Chart View */}
-            <div className="flex items-center justify-center relative py-2">
-              <svg className="w-36 h-36 -rotate-90" viewBox="0 0 36 36">
-                {/* Background Ring */}
-                <path
-                  d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                  fill="none"
-                  stroke="currentColor"
-                  className="text-cyan-900/20"
-                  strokeWidth="3.8"
-                />
-
-                {/* Successful Segment (Emerald) */}
-                <path
-                  d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                  fill="none"
-                  stroke="#10b981"
-                  strokeWidth="3.8"
-                  strokeDasharray={`${isColdStart ? 0 : (m.success_rate_pct || 100)}, 100`}
-                />
-
-                {/* Failed Segment (Rose) */}
-                {m.failure_rate_pct > 0 && (
+            {loading ? (
+              <div className="flex-1 flex items-center justify-center">
+                <Skeleton className="h-36 w-36 rounded-full" />
+              </div>
+            ) : (
+              <div className="flex items-center justify-center relative py-2">
+                <svg className="w-36 h-36 -rotate-90" viewBox="0 0 36 36">
+                  {/* Track */}
                   <path
                     d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
                     fill="none"
-                    stroke="#f43f5e"
-                    strokeWidth="3.8"
-                    strokeDasharray={`${m.failure_rate_pct}, 100`}
-                    strokeDashoffset={`-${isColdStart ? 0 : (m.success_rate_pct || 100)}`}
+                    stroke="rgba(255,255,255,0.06)"
+                    strokeWidth="3.5"
                   />
-                )}
-              </svg>
+                  {/* Success segment */}
+                  <path
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                    fill="none"
+                    stroke="#10b981"
+                    strokeWidth="3.5"
+                    strokeDasharray={`${isColdStart ? 0 : (successRate || 100)}, 100`}
+                    style={{ transition: 'stroke-dasharray 0.8s ease' }}
+                  />
+                  {/* Failure segment */}
+                  {failureArc > 0 && (
+                    <path
+                      d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                      fill="none"
+                      stroke="#f43f5e"
+                      strokeWidth="3.5"
+                      strokeDasharray={`${failureArc}, 100`}
+                      strokeDashoffset={`-${isColdStart ? 0 : (successRate || 100)}`}
+                      style={{ transition: 'stroke-dasharray 0.8s ease' }}
+                    />
+                  )}
+                </svg>
 
-              {/* Center Donut Label */}
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none">
-                <span className="text-[10px] text-zinc-400 font-mono uppercase tracking-wider">Total</span>
-                <span className="text-lg font-extrabold text-white">
-                  {totalSent}
-                </span>
+                {/* Center label */}
+                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-center">
+                  <span className="text-[9px] font-mono uppercase tracking-wider" style={{ color: 'var(--eds-muted)' }}>Total</span>
+                  <span className="text-xl font-extrabold" style={{ color: 'var(--eds-text)' }}>{totalSent.toLocaleString()}</span>
+                </div>
               </div>
-            </div>
+            )}
 
-            {/* Donut Legend Items */}
-            <div className="flex items-center justify-around text-xs font-semibold pt-2 border-t border-cyan-900/20">
+            <div className="flex items-center justify-around text-xs font-semibold pt-2"
+                 style={{ borderTop: '1px solid var(--eds-border)' }}>
               <div className="flex items-center gap-2">
                 <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 shrink-0" />
                 <div className="flex flex-col">
-                  <span className="text-zinc-200">Successful</span>
-                  <span className="text-[11px] text-zinc-400 font-mono">
-                    {successfulCount} ({isColdStart ? 'N/A' : `${m.success_rate_pct}%`})
+                  <span style={{ color: 'var(--eds-text-2)' }}>Successful</span>
+                  <span className="text-[10px] font-mono" style={{ color: 'var(--eds-muted)' }}>
+                    {successCount.toLocaleString()} ({isColdStart ? 'N/A' : `${successRate}%`})
                   </span>
                 </div>
               </div>
-
               <div className="flex items-center gap-2">
                 <span className="h-2.5 w-2.5 rounded-full bg-rose-500 shrink-0" />
                 <div className="flex flex-col">
-                  <span className="text-zinc-200">Failed / DLQ</span>
-                  <span className="text-[11px] text-zinc-400 font-mono">{failedCount} ({m.failure_rate_pct}%)</span>
+                  <span style={{ color: 'var(--eds-text-2)' }}>Failed / DLQ</span>
+                  <span className="text-[10px] font-mono" style={{ color: 'var(--eds-muted)' }}>
+                    {failedCount} ({m.failure_rate_pct || 0}%)
+                  </span>
                 </div>
               </div>
             </div>
-
           </div>
-
         </div>
 
-        {/* ⚡ 4. Latency Percentiles */}
-        <div className="border-t border-cyan-900/20 pt-8">
-          
-          <div className="space-y-4">
-            <h3 className="text-sm font-bold text-white">
-              Latency Percentiles
-            </h3>
+        {/* ── Delivery Provenance & Replay Efficiency Matrix ───────────────── */}
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-extrabold tracking-tight" style={{ color: 'var(--eds-text)' }}>
+                Independent Telemetry &amp; Recovery Efficiency Matrix
+              </h3>
+              <p className="text-[11px] font-medium" style={{ color: 'var(--eds-muted)' }}>
+                Isolated tracking for primary ingress vs DLQ replay recovery
+              </p>
+            </div>
+            <span className="px-2.5 py-1 rounded-full text-[10px] font-bold font-mono"
+              style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.25)' }}>
+              LIVE PROVENANCE
+            </span>
+          </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-              <div className="rounded-xl border border-cyan-900/30 bg-[#0d151c] p-4">
-                <span className="text-[11px] font-mono font-bold text-cyan-400/80 uppercase tracking-wider block">P50</span>
-                <span className="text-base font-bold text-white mt-1 block">
-                  {m.p50_latency_ms || 0.0} <span className="text-xs font-normal text-zinc-400">ms</span>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Primary Ingress Deliveries */}
+            <div className="rounded-eds-md p-4 flex flex-col justify-between space-y-3"
+                 style={{ background: 'var(--eds-panel)', border: '1px solid var(--eds-border)' }}>
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-sky-400">Primary Ingress</span>
+                <span className="h-2 w-2 rounded-full bg-sky-400" />
+              </div>
+              <div className="flex items-baseline justify-between">
+                <span className="text-2xl font-extrabold" style={{ color: 'var(--eds-text)' }}>
+                  {(m.ingress_total_24h || 0).toLocaleString()}
+                </span>
+                <span className="text-xs font-mono font-bold text-emerald-400">
+                  {m.ingress_success_rate_pct !== null && m.ingress_success_rate_pct !== undefined
+                    ? `${m.ingress_success_rate_pct}% success`
+                    : 'N/A'}
                 </span>
               </div>
+              <div className="flex items-center justify-between text-[11px] font-mono" style={{ color: 'var(--eds-muted)' }}>
+                <span>✓ {(m.ingress_success_24h || 0).toLocaleString()} success</span>
+                <span>✗ {(m.ingress_failed_24h || 0).toLocaleString()} failed</span>
+              </div>
+            </div>
 
-              <div className="rounded-xl border border-cyan-900/30 bg-[#0d151c] p-4">
-                <span className="text-[11px] font-mono font-bold text-cyan-400/80 uppercase tracking-wider block">P90</span>
-                <span className="text-base font-bold text-white mt-1 block">
-                  {m.p90_latency_ms || 0.0} <span className="text-xs font-normal text-zinc-400">ms</span>
+            {/* DLQ Replay Recovery */}
+            <div className="rounded-eds-md p-4 flex flex-col justify-between space-y-3"
+                 style={{ background: 'var(--eds-panel)', border: '1px solid var(--eds-border)' }}>
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-purple-400">DLQ Replay Recovery</span>
+                <span className="h-2 w-2 rounded-full bg-purple-400" />
+              </div>
+              <div className="flex items-baseline justify-between">
+                <span className="text-2xl font-extrabold" style={{ color: 'var(--eds-text)' }}>
+                  {(m.replay_total_24h || 0).toLocaleString()}
+                </span>
+                <span className="text-xs font-mono font-bold text-purple-400">
+                  {m.replay_recovery_rate_pct !== null && m.replay_recovery_rate_pct !== undefined
+                    ? `${m.replay_recovery_rate_pct}% recovered`
+                    : 'No replays'}
                 </span>
               </div>
+              <div className="flex items-center justify-between text-[11px] font-mono" style={{ color: 'var(--eds-muted)' }}>
+                <span>✓ {(m.replay_success_24h || 0).toLocaleString()} recovered</span>
+                <span>✗ {(m.replay_failed_24h || 0).toLocaleString()} re-failed</span>
+              </div>
+            </div>
 
-              <div className="rounded-xl border border-cyan-900/30 bg-[#0d151c] p-4">
-                <span className="text-[11px] font-mono font-bold text-cyan-400/80 uppercase tracking-wider block">P95</span>
-                <span className="text-base font-bold text-white mt-1 block">
-                  {m.p95_latency_ms || 0.0} <span className="text-xs font-normal text-zinc-400">ms</span>
+            {/* Overall System Efficiency */}
+            <div className="rounded-eds-md p-4 flex flex-col justify-between space-y-3"
+                 style={{ background: 'var(--eds-panel)', border: '1px solid var(--eds-border)' }}>
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-400">System Efficiency Matrix</span>
+                <span className="h-2 w-2 rounded-full bg-emerald-400" />
+              </div>
+              <div className="flex items-baseline justify-between">
+                <span className="text-2xl font-extrabold" style={{ color: 'var(--eds-text)' }}>
+                  {m.retry_efficiency_pct !== undefined ? `${m.retry_efficiency_pct}%` : '100%'}
+                </span>
+                <span className="text-xs font-mono font-bold text-emerald-400">
+                  Overall Efficiency
                 </span>
               </div>
-
-              <div className="rounded-xl border border-cyan-900/30 bg-[#0d151c] p-4">
-                <span className="text-[11px] font-mono font-bold text-cyan-400/80 uppercase tracking-wider block">P99</span>
-                <span className="text-base font-bold text-white mt-1 block">
-                  {m.p99_latency_ms || 0.0} <span className="text-xs font-normal text-zinc-400">ms</span>
-                </span>
+              <div className="flex items-center justify-between text-[11px] font-mono" style={{ color: 'var(--eds-muted)' }}>
+                <span>Ingress + Replay Combined</span>
+                <span>Zero Data Lag</span>
               </div>
             </div>
           </div>
+        </div>
 
+        {/* ── Latency Percentiles ──────────────────────────────────── */}
+        <div className="space-y-4">
+          <h3 className="text-sm font-bold" style={{ color: 'var(--eds-text)' }}>
+            Latency Percentiles
+          </h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <LatencyBox label="P50" value={m.p50_latency_ms} loading={loading} />
+            <LatencyBox label="P90" value={m.p90_latency_ms} loading={loading} />
+            <LatencyBox label="P95" value={m.p95_latency_ms} loading={loading} />
+            <LatencyBox label="P99" value={m.p99_latency_ms} loading={loading} />
+          </div>
         </div>
 
       </div>

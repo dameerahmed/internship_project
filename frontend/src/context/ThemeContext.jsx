@@ -3,24 +3,20 @@ import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 const ThemeContext = createContext(null);
 
 export function ThemeProvider({ children }) {
-  const [theme, setTheme] = useState(() => {
-    if (typeof window === 'undefined') return 'dark';
-    return window.localStorage.getItem('weds-theme') || 'dark';
-  });
+  // Always dark — enterprise infrastructure tooling standard.
+  // Anti-FOUC is handled by the inline script in index.html.
+  const [theme] = useState('dark');
 
   useEffect(() => {
     const root = document.documentElement;
-    root.classList.toggle('dark', theme === 'dark');
-    root.style.colorScheme = theme;
-    document.body.classList.toggle('theme-light', theme === 'light');
-    document.body.classList.toggle('theme-dark', theme === 'dark');
-    window.localStorage.setItem('weds-theme', theme);
-  }, [theme]);
+    root.classList.add('dark');
+    root.style.colorScheme = 'dark';
+    // Keep localStorage synced so the anti-FOUC script in index.html
+    // always reads the correct value on next hard refresh.
+    window.localStorage.setItem('weds-theme', 'dark');
+  }, []);
 
-  const value = useMemo(() => ({
-    theme,
-    toggleTheme: () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark')),
-  }), [theme]);
+  const value = useMemo(() => ({ theme }), [theme]);
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }
