@@ -17,8 +17,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy dependencies first for Docker layer caching optimization
 COPY requirements.txt /app/
 
-# Install python packages
-RUN pip install --no-cache-dir -r /app/requirements.txt
+# Install uv — Rust-based Python package manager (10-100x faster than pip)
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Install python packages using uv
+# --mount=type=cache: reuse uv's package cache across builds
+# --system: install into the system Python (no virtualenv needed in Docker)
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system -r /app/requirements.txt
 
 # Copy the entire backend workspace (relative to context) into /app/backend
 COPY . /app/backend

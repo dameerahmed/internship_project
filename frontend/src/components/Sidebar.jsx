@@ -11,7 +11,10 @@ import {
   AlertTriangle,
   Sliders,
   ArrowLeft,
-  ShieldCheck
+  ShieldCheck,
+  KeyRound,
+  Clock,
+  Trash2
 } from 'lucide-react';
 import BrandLogo from './BrandLogo';
 import { useAuth } from '../context/AuthContext';
@@ -71,7 +74,7 @@ export default function Sidebar() {
         /* 🌐 2. GLOBAL COMPANY SIDEBAR NAVIGATION */
         <div className="flex flex-1 flex-col gap-6 overflow-y-auto custom-scrollbar">
           
-          {/* Main Menu Section */}
+          {/* Main Menu Section — Exactly 3 Core Options */}
           <div className="space-y-1">
             <div className="px-3 pb-2 text-[10px] font-extrabold uppercase tracking-wider text-slate-400 font-mono">
               MAIN MENU
@@ -104,13 +107,6 @@ export default function Sidebar() {
               <FolderKanban size={17} className="shrink-0 text-indigo-400" />
               <span className="truncate">Project Management</span>
             </NavLink>
-          </div>
-
-          {/* System Settings Section */}
-          <div className="space-y-1">
-            <div className="px-3 pb-2 text-[10px] font-extrabold uppercase tracking-wider text-slate-400 font-mono">
-              SYSTEM & SECURITY
-            </div>
 
             <NavLink
               to="/settings"
@@ -122,8 +118,8 @@ export default function Sidebar() {
                 }`
               }
             >
-              <Settings2 size={17} className="shrink-0 text-slate-400" />
-              <span className="truncate">Settings & Public Keys</span>
+              <Settings2 size={17} className="shrink-0 text-indigo-400" />
+              <span className="truncate">Settings & Governance</span>
             </NavLink>
           </div>
 
@@ -235,19 +231,80 @@ export default function Sidebar() {
               <span>Dead Letter Queue</span>
             </button>
 
-            {/* Security */}
-            <button
-              type="button"
-              onClick={() => setActiveTab('settings')}
-              className={`w-full flex items-center gap-3 rounded-lg px-3.5 py-2.5 font-medium transition-all ${
-                activeTab === 'settings' || activeTab === 'security'
-                  ? 'bg-indigo-500/20 text-indigo-300 font-semibold border-l-2 border-indigo-400 shadow-sm'
-                  : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border-l-2 border-transparent'
-              }`}
-            >
-              <ShieldCheck size={17} className="text-slate-400 shrink-0" />
-              <span>Settings & Keys</span>
-            </button>
+            {/* Settings & Keys */}
+            <div className="space-y-1">
+              <button
+                type="button"
+                onClick={() => setActiveTab('settings')}
+                className={`w-full flex items-center justify-between gap-3 rounded-lg px-3.5 py-2.5 font-medium transition-all ${
+                  activeTab === 'settings' || activeTab === 'security'
+                    ? 'bg-indigo-500/20 text-indigo-300 font-semibold border-l-2 border-indigo-400 shadow-sm'
+                    : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border-l-2 border-transparent'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <ShieldCheck size={17} className="text-slate-400 shrink-0" />
+                  <span>Settings & Keys</span>
+                </div>
+                {(activeTab === 'settings' || activeTab === 'security') && (
+                  <span className="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-pulse shrink-0" />
+                )}
+              </button>
+
+              {/* Sub-navigation icons under Settings & Keys when active */}
+              {activeTab.startsWith('settings') && (
+                <div className="ml-5 pl-3 border-l border-indigo-500/30 space-y-1.5 pt-1.5 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('settings-credentials')}
+                    className={`flex items-center gap-2 py-1 px-2 rounded-md w-full text-left transition ${
+                      activeTab === 'settings-credentials' || activeTab === 'settings'
+                        ? 'text-indigo-300 font-bold bg-indigo-500/10 hover:bg-indigo-500/20'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+                    }`}
+                  >
+                    <KeyRound size={13} className="text-amber-400 shrink-0" />
+                    <span>Credentials & Keys</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('settings-identity')}
+                    className={`flex items-center gap-2 py-1 px-2 rounded-md w-full text-left transition ${
+                      activeTab === 'settings-identity'
+                        ? 'text-indigo-300 font-bold bg-indigo-500/10 hover:bg-indigo-500/20'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+                    }`}
+                  >
+                    <Sliders size={13} className="text-cyan-400 shrink-0" />
+                    <span>Project Identity</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('settings-retention')}
+                    className={`flex items-center gap-2 py-1 px-2 rounded-md w-full text-left transition ${
+                      activeTab === 'settings-retention'
+                        ? 'text-indigo-300 font-bold bg-indigo-500/10 hover:bg-indigo-500/20'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+                    }`}
+                  >
+                    <Clock size={13} className="text-indigo-400 shrink-0" />
+                    <span>Retention & Schedule</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('settings-danger')}
+                    className={`flex items-center gap-2 py-1 px-2 rounded-md w-full text-left transition ${
+                      activeTab === 'settings-danger'
+                        ? 'text-indigo-300 font-bold bg-indigo-500/10 hover:bg-indigo-500/20'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+                    }`}
+                  >
+                    <Trash2 size={13} className="text-rose-400 shrink-0" />
+                    <span>Danger Zone</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
 
         </div>

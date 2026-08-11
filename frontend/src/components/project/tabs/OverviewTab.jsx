@@ -372,8 +372,10 @@ export default function OverviewTab({ project, onNavigateTab }) {
               </div>
             ) : (
               recentLogs.map((log, i) => {
-                const status = log.status_code || log.response_code || 200;
-                const isSuccess = status >= 200 && status < 300;
+                const rawCode = log.response_code ?? log.status_code ?? log.metadata?.response_code;
+                const statusName = log.status || log.metadata?.status || 'UNKNOWN';
+                const status = rawCode ?? (statusName === 'FAILED' ? 500 : (statusName === 'SUCCESS' ? 200 : 202));
+                const isSuccess = statusName === 'SUCCESS' || (status >= 200 && status < 300 && statusName !== 'FAILED');
                 const eventName = log.event_type || log.delivery_packet?.event_type || 'webhook.event';
                 const targetUrl = log.target_url || log.delivery_packet?.target_url || '/v1/webhooks';
 

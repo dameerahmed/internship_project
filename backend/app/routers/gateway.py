@@ -39,6 +39,8 @@ class GatewayTestRequest(BaseModel):
         "order_id": "ord_1001",
         "amount": 99.99
     }
+    target_url: Optional[str] = None
+    dry_run: Optional[bool] = True
 
 
 async def _persist_gateway_log(log_payload: dict) -> None:
@@ -111,6 +113,14 @@ async def _queue_gateway_log(log_payload: dict, redis_conn=None) -> None:
                 await redis_client.close()
         except Exception as exc:
             logger.warning("Redis unavailable while queueing gateway log: %s", exc)
+
+    pid = log_payload.get("project_id")
+    if pid:
+        try:
+            from app.services import pubsub_service
+            await pubsub_service.publish_log_event(pid, log_payload)
+        except Exception as pub_err:
+            logger.warning("Gateway pubsub log publish warning: %s", pub_err)
 
     asyncio.create_task(_persist_gateway_log(log_payload))
 
@@ -234,9 +244,14 @@ async def incoming_webhook_receiver(
             req_keys = cached_event.get("payload_keys") or metadata_urls.get("payload_keys")
             req_types = cached_event.get("payload_types") or metadata_urls.get("payload_types")
             if req_keys and not validate_payload_keys(payload_json, req_keys, req_types):
+                err_detail = f"Payload validation failed: Missing required keys or data type mismatch for event '{incoming_event_type}'."
+                log_payload["status"] = "FAILED"
+                log_payload["response_code"] = 422
+                log_payload["error_message"] = err_detail
+                await _queue_gateway_log(log_payload, redis_conn=redis_conn)
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"Payload validation failed: Missing required keys or data type mismatch for event '{incoming_event_type}'."
+                    detail=err_detail
                 )
 
         await _queue_gateway_log(log_payload, redis_conn=redis_conn)
@@ -272,41 +287,82 @@ async def incoming_webhook_receiver(
 
 
 @router.post("/v1/gateway/test")
-async def test_webhook_receiver(test_req: GatewayTestRequest):
+@router.post("/v1/webhooks/dispatch")
+async def test_webhook_receiver(
+    test_req: GatewayTestRequest,
+    background_tasks: BackgroundTasks,
+    redis_conn = Depends(get_redis),
+):
     """
-    Swagger UI Test Helper Endpoint (/docs):
-    Takes mandatory api_key, secret_key, event_type, and payload.
-    Calculates X-HUB-SIGNATURE using the required secret_key and sends an HTTP POST
-    request to hit our real gateway route POST /v1/gateway!
+    Dry-Run & Real Simulation Dispatch Helper Endpoint:
+    Directly processes incoming webhooks, validates HMAC signatures, logs records, 
+    and dispatches Celery delivery tasks to RabbitMQ without HTTP self-deadlocks.
     """
     payload_data = dict(test_req.payload or {})
-    payload_data["event"] = test_req.event_type
+    if test_req.event_type and "event" not in payload_data:
+        payload_data["event"] = test_req.event_type
+
+    api_key = test_req.api_key
+    secret_key = test_req.secret_key
+
+    if not api_key or not secret_key:
+        try:
+            async for db_session in get_db():
+                res = await db_session.execute(select(Project).where(Project.is_active == True))
+                active_project = res.scalars().first()
+                if active_project:
+                    if not active_project.api_key or not active_project.secret_key:
+                        # Refresh project keys if missing
+                        from app.services.project_service import refresh_project_cache
+                        await refresh_project_cache(active_project.id, db_session, redis_conn)
+                        await db_session.refresh(active_project)
+                    if not api_key:
+                        api_key = active_project.api_key
+                    if not secret_key:
+                        secret_key = active_project.secret_key
+                break
+        except Exception as db_err:
+            logger.warning("Failed to auto-resolve active project keys in gateway test: %s", db_err)
 
     body_bytes = json.dumps(payload_data).encode("utf-8")
-    signature = WebhookSecurity.sign_payload(body_bytes, test_req.secret_key)
+    signature = WebhookSecurity.sign_payload(body_bytes, secret_key or "whsec_default")
 
     headers = {
-        "X-API-KEY": test_req.api_key,
+        "X-API-KEY": api_key or "",
         "X-HUB-SIGNATURE": signature,
         "Content-Type": "application/json",
     }
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            response = await client.post(
-                "http://127.0.0.1:8000/v1/gateway",
-                headers=headers,
-                content=body_bytes
-            )
-            response_json = response.json() if response.headers.get("content-type", "").startswith("application/json") else response.text
-            response_code = response.status_code
-        except Exception as exc:
-            return sanitize_response_payload({
-                "status": "Failed",
-                "detail": f"Failed to send request to /v1/gateway: {str(exc)}",
-                "generated_headers": headers,
-                "sent_payload": payload_data,
-            })
+    # Construct internal mock Request for direct in-memory gateway execution
+    fake_scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/gateway",
+        "headers": [
+            (b"x-api-key", (api_key or "").encode("utf-8")),
+            (b"x-hub-signature", signature.encode("utf-8")),
+            (b"content-type", b"application/json"),
+        ],
+        "client": ("127.0.0.1", 12345),
+    }
+    fake_request = Request(fake_scope)
+    fake_request._body = body_bytes
+
+    try:
+        gateway_res = await incoming_webhook_receiver(
+            request=fake_request,
+            background_tasks=background_tasks,
+            redis_conn=redis_conn,
+            _rl=None,
+        )
+        response_code = 200
+        response_json = gateway_res
+    except HTTPException as http_exc:
+        response_code = http_exc.status_code
+        response_json = {"detail": http_exc.detail}
+    except Exception as exc:
+        response_code = 500
+        response_json = {"detail": str(exc)}
 
     return sanitize_response_payload({
         "status": "Gateway_Accepted" if response_code < 400 else "Gateway_Rejected",
@@ -314,9 +370,10 @@ async def test_webhook_receiver(test_req: GatewayTestRequest):
         "gateway_response": response_json,
         "generated_headers": headers,
         "sent_payload": payload_data,
+        "signature": signature,
         "curl_command": (
             f"curl -X POST http://127.0.0.1:8000/v1/gateway "
-            f"-H 'X-API-KEY: {test_req.api_key}' "
+            f"-H 'X-API-KEY: {api_key}' "
             f"-H 'X-HUB-SIGNATURE: {signature}' "
             f"-H 'Content-Type: application/json' "
             f"-d '{json.dumps(payload_data)}'"

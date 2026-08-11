@@ -17,9 +17,10 @@ import { useProjectStore } from '@/store/useProjectStore';
 import apiClient from '@/api/client';
 import { API_ENDPOINTS, WS_ENDPOINTS, withToken } from '@/utils/constants';
 
-export default function DashboardPage() {
+export default function DashboardPage({ initialSubView = 'overview' }) {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const [subView, setSubView] = useState(initialSubView);
   const { 
     companyMetrics, 
     setCompanyMetrics, 
@@ -29,6 +30,10 @@ export default function DashboardPage() {
 
   const [recentLogs, setRecentLogs] = useState([]);
   const [topEvents, setTopEvents] = useState([]);
+
+  useEffect(() => {
+    if (initialSubView) setSubView(initialSubView);
+  }, [initialSubView]);
 
   const loadCompanyData = async (silent = false) => {
     if (!silent && !companyMetrics) {
@@ -208,25 +213,64 @@ export default function DashboardPage() {
     <ProtectedLayout>
       <div className="flex flex-col gap-8 font-sans w-full max-w-7xl mx-auto text-zinc-900 dark:text-zinc-100 pb-12 select-none">
         
-        {/* 🌟 1. Top Header Bar */}
-        <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 pb-4">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight text-zinc-900 dark:text-white">
-              Company Webhooks Overview
-            </h1>
-            <p className="text-xs text-zinc-400 font-normal mt-0.5">
-              Live ingress telemetry & organization analytics
-            </p>
+        {/* 🌟 1. Top Header Bar & Sub-Navigation */}
+        <div className="flex flex-col gap-4 border-b border-zinc-200 dark:border-zinc-800 pb-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight text-zinc-900 dark:text-white">
+                Company Webhooks Dashboard
+              </h1>
+              <p className="text-xs text-zinc-400 font-normal mt-0.5">
+                Real-time ingress telemetry & system health monitoring
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => navigate('/dashboard/projects')}
+              className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 px-4 py-2 text-xs font-bold text-white shadow-md transition active:scale-95 shrink-0"
+            >
+              <span>Manage Projects</span>
+              <ArrowRight className="h-4 w-4" />
+            </button>
           </div>
 
-          <button
-            type="button"
-            onClick={() => navigate('/dashboard/projects')}
-            className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 px-4 py-2 text-xs font-bold text-white shadow-md transition active:scale-95 shrink-0"
-          >
-            <span>Manage Projects</span>
-            <ArrowRight className="h-4 w-4" />
-          </button>
+          {/* Sub-Navigation Pill Bar */}
+          <div className="flex items-center gap-2 pt-2">
+            <button
+              type="button"
+              onClick={() => { setSubView('overview'); navigate('/dashboard/overview'); }}
+              className={`px-4 py-2 text-xs font-bold rounded-xl transition ${
+                subView === 'overview'
+                  ? 'bg-indigo-600 text-white shadow-md'
+                  : 'bg-zinc-800/40 text-zinc-400 hover:text-white hover:bg-zinc-800'
+              }`}
+            >
+              Overview & Analytics
+            </button>
+            <button
+              type="button"
+              onClick={() => { setSubView('throughput'); navigate('/dashboard/throughput'); }}
+              className={`px-4 py-2 text-xs font-bold rounded-xl transition ${
+                subView === 'throughput'
+                  ? 'bg-indigo-600 text-white shadow-md'
+                  : 'bg-zinc-800/40 text-zinc-400 hover:text-white hover:bg-zinc-800'
+              }`}
+            >
+              Throughput Analytics
+            </button>
+            <button
+              type="button"
+              onClick={() => { setSubView('health'); navigate('/dashboard/health'); }}
+              className={`px-4 py-2 text-xs font-bold rounded-xl transition ${
+                subView === 'health'
+                  ? 'bg-indigo-600 text-white shadow-md'
+                  : 'bg-zinc-800/40 text-zinc-400 hover:text-white hover:bg-zinc-800'
+              }`}
+            >
+              System & Broker Health
+            </button>
+          </div>
         </div>
 
         {/* 📈 2. Resend-Style Micro Inline Metrics Row */}

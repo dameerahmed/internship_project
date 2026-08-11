@@ -7,13 +7,18 @@ import apiClient from '@/api/client';
 import { API_ENDPOINTS } from '@/utils/constants';
 import { createProjectPayload } from '@/utils/projectPayloads';
 
-export default function ProjectsPage() {
+export default function ProjectsPage({ initialSubView = 'directory' }) {
   const navigate = useNavigate();
+  const [subView, setSubView] = useState(initialSubView);
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [feedback, setFeedback] = useState({ type: '', message: '' });
+
+  useEffect(() => {
+    if (initialSubView) setSubView(initialSubView);
+  }, [initialSubView]);
   
   const [newProjectForm, setNewProjectForm] = useState({
     name: '',
@@ -96,6 +101,44 @@ export default function ProjectsPage() {
   return (
     <ProtectedLayout title="Project Management Directory" eyebrow="Workspace Setup">
       <div className="flex flex-col gap-6 font-sans">
+        
+        {/* Sub-Navigation Pill Bar */}
+        <div className="flex items-center gap-2 border-b border-zinc-200 dark:border-zinc-800 pb-3">
+          <button
+            type="button"
+            onClick={() => { setSubView('directory'); navigate('/projects'); }}
+            className={`px-4 py-2 text-xs font-bold rounded-xl transition ${
+              subView === 'directory'
+                ? 'bg-indigo-600 text-white shadow-md'
+                : 'bg-zinc-800/40 text-zinc-400 hover:text-white hover:bg-zinc-800'
+            }`}
+          >
+            Project Directory
+          </button>
+          <button
+            type="button"
+            onClick={() => { setSubView('tenant-rules'); navigate('/projects/tenant-rules'); }}
+            className={`px-4 py-2 text-xs font-bold rounded-xl transition ${
+              subView === 'tenant-rules'
+                ? 'bg-indigo-600 text-white shadow-md'
+                : 'bg-zinc-800/40 text-zinc-400 hover:text-white hover:bg-zinc-800'
+            }`}
+          >
+            Tenant Isolation Rules
+          </button>
+          <button
+            type="button"
+            onClick={() => { setSubView('routing-rules'); navigate('/projects/routing-rules'); }}
+            className={`px-4 py-2 text-xs font-bold rounded-xl transition ${
+              subView === 'routing-rules'
+                ? 'bg-indigo-600 text-white shadow-md'
+                : 'bg-zinc-800/40 text-zinc-400 hover:text-white hover:bg-zinc-800'
+            }`}
+          >
+            Event Routing Rules
+          </button>
+        </div>
+
         {feedback.message && (
           <div className={`rounded-2xl p-4 text-xs font-semibold flex items-center justify-between border ${
             feedback.type === 'error' ? 'bg-rose-500/10 text-rose-300 border-rose-500/30' : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
@@ -110,11 +153,95 @@ export default function ProjectsPage() {
           </div>
         )}
 
-        <ProjectsGrid
-          projects={projects}
-          onRefresh={loadProjects}
-          onCreateClick={() => setShowCreateModal(true)}
-        />
+        {subView === 'directory' && (
+          <ProjectsGrid
+            projects={projects}
+            onRefresh={loadProjects}
+            onCreateClick={() => setShowCreateModal(true)}
+          />
+        )}
+
+        {subView === 'tenant-rules' && (
+          <div className="space-y-6 rounded-2xl border border-zinc-800 bg-zinc-900/80 p-6 backdrop-blur-md">
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-4">
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <ShieldCheck className="h-5 w-5 text-indigo-400" />
+                  Tenant Isolation Boundaries & Security Rules
+                </h3>
+                <p className="text-xs text-zinc-400 mt-1">
+                  Enforces isolated Redis key namespaces, HMAC-SHA256 signature requirements, and rate limit quotas across active project nodes.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+              <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-4 space-y-2">
+                <div className="font-bold text-indigo-400">Strict Namespace Isolation</div>
+                <p className="text-zinc-400 text-[11px]">Each project operates in isolated Redis Pub/Sub channels and database scope, prohibiting cross-tenant data leakage.</p>
+              </div>
+              <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-4 space-y-2">
+                <div className="font-bold text-emerald-400">Signature Enforcement</div>
+                <p className="text-zinc-400 text-[11px]">Mandatory constant-time HMAC-SHA256 signature verification on all incoming webhook payloads.</p>
+              </div>
+              <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-4 space-y-2">
+                <div className="font-bold text-amber-400">Rate Limiting & Throttling</div>
+                <p className="text-zinc-400 text-[11px]">Per-second sliding window rate limits (100 req/sec per project node) backed by Redis atomic memory structures.</p>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-4 text-xs space-y-3">
+              <div className="font-bold text-zinc-200">Active Tenant Workspaces</div>
+              <div className="divide-y divide-zinc-800">
+                {projects.map((p) => (
+                  <div key={p.id} className="py-2.5 flex items-center justify-between">
+                    <div>
+                      <div className="font-semibold text-white">{p.name}</div>
+                      <div className="text-[10px] text-zinc-500 font-mono">ID: {p.id} • Retention: {p.retention_days || 30} Days</div>
+                    </div>
+                    <span className="font-mono text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/30">
+                      Isolated Active
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {subView === 'routing-rules' && (
+          <div className="space-y-6 rounded-2xl border border-zinc-800 bg-zinc-900/80 p-6 backdrop-blur-md">
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-4">
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <Database className="h-5 w-5 text-emerald-400" />
+                  Event Routing Rules & Destination Targets
+                </h3>
+                <p className="text-xs text-zinc-400 mt-1">
+                  Configure multi-destination URL targets, fallbacks, and dead-letter routing queues.
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              {projects.map((p) => (
+                <div key={p.id} className="rounded-xl border border-zinc-800 bg-zinc-950 p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-indigo-300">{p.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/projects/${p.id}`)}
+                      className="text-[11px] text-indigo-400 hover:underline"
+                    >
+                      Configure Target Rules →
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-zinc-400">Routes event types to upstream endpoints with exponential backoff retries (1-5 attempts) and DLQ failover.</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Provision New Project Node Modal with Custom Data Retention */}
         {showCreateModal && (

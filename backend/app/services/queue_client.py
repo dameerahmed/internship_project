@@ -241,14 +241,19 @@ class RabbitMQManager:
                         x_death = headers.get("x-death") or []
                         death_info = x_death[0] if isinstance(x_death, list) and len(x_death) > 0 else {}
 
-                        attempt_count = death_info.get("count", 1)
-                        death_reason = death_info.get("reason", "rejected")
-                        source_queue = death_info.get("queue", self.main_queue_name)
-
                         # Handle nested delivery_packet structure from updated Celery worker
                         delivery_packet = packet
                         if isinstance(packet, dict):
                             delivery_packet = packet.get("delivery_packet") or packet
+
+                        # BUG FIX: prefer attempt_number stored in delivery_packet (written by worker
+                        # when routing to DLQ) over x-death count which is a RabbitMQ hop counter.
+                        attempt_count_from_packet = None
+                        if isinstance(delivery_packet, dict):
+                            attempt_count_from_packet = delivery_packet.get("attempt_number")
+                        attempt_count = attempt_count_from_packet or death_info.get("count", 1)
+                        death_reason = death_info.get("reason", "rejected")
+                        source_queue = death_info.get("queue", self.main_queue_name)
 
                         event_id = None
                         project_id = None
@@ -357,15 +362,27 @@ class RabbitMQManager:
                 raw_id = str(msg.message_id or "")
                 raw_body = msg.body.decode("utf-8") if isinstance(msg.body, (bytes, bytearray)) else str(msg.body)
 
+                parsed_body = {}
+                parsed_event_id = None
+                try:
+                    parsed_body = json.loads(raw_body)
+                    if isinstance(parsed_body, dict):
+                        delivery_packet = parsed_body.get("delivery_packet") or parsed_body
+                        parsed_event_id = parsed_body.get("event_id") or (delivery_packet.get("event_id") if isinstance(delivery_packet, dict) else None)
+                except Exception:
+                    pass
+
                 should_requeue = False
                 if target_set is None:  # "all"
                     should_requeue = True
                 else:
-                    if raw_id in target_set:
+                    if raw_id and raw_id in target_set:
+                        should_requeue = True
+                    elif parsed_event_id and str(parsed_event_id) in target_set:
                         should_requeue = True
                     else:
                         for tid in target_set:
-                            if tid in raw_id or tid in raw_body:
+                            if tid and (tid in raw_id or tid in raw_body or (parsed_event_id and tid in str(parsed_event_id))):
                                 should_requeue = True
                                 break
 
@@ -373,21 +390,23 @@ class RabbitMQManager:
                     # 1. Acknowledge and remove from DLQ
                     await msg.ack()
                     
-                    # 2. Parse payload to get the delivery packet
-                    try:
-                        import json
-                        parsed_body = json.loads(raw_body)
-                        delivery_packet = parsed_body.get("delivery_packet") or parsed_body
-                    except Exception:
-                        delivery_packet = {"raw_content": raw_body}
+                    # 2. Parse payload to get the delivery packet and tag with DLQ Replay metadata
+                    delivery_packet = parsed_body.get("delivery_packet") if isinstance(parsed_body, dict) else parsed_body
+                    if isinstance(delivery_packet, dict):
+                        prev_attempt = int(delivery_packet.get("attempt_number") or 5)
+                        delivery_packet["attempt_number"] = max(6, prev_attempt + 1)
+                        delivery_packet["is_replayed"] = True
+                        delivery_packet["source"] = "DLQ Replay"
+                    else:
+                        delivery_packet = {"raw_content": raw_body, "attempt_number": 6, "is_replayed": True, "source": "DLQ Replay"}
 
                     # 3. Publish back into main queue AS A PROPER CELERY TASK
-                    celery_app.send_task(
-                        " app.services.celery_worker.dispatch_webhook_task",
+                    from app.services.celery_worker import dispatch_webhook_task
+                    dispatch_webhook_task.apply_async(
                         kwargs={"delivery_packet": delivery_packet},
                         queue="webhook_delivery_queue"
                     )
-                    requeued_ids.append(raw_id or f"msg_{len(requeued_ids)+1}")
+                    requeued_ids.append(parsed_event_id or raw_id or f"msg_{len(requeued_ids)+1}")
                 else:
                     # Return unmatched message to DLQ
                     await msg.nack(requeue=True)
@@ -425,22 +444,33 @@ class RabbitMQManager:
                 raw_id = str(msg.message_id or "")
                 raw_body = msg.body.decode("utf-8") if isinstance(msg.body, (bytes, bytearray)) else str(msg.body)
 
+                parsed_event_id = None
+                try:
+                    parsed_json = json.loads(raw_body)
+                    if isinstance(parsed_json, dict):
+                        delivery_packet = parsed_json.get("delivery_packet") or parsed_json
+                        parsed_event_id = parsed_json.get("event_id") or (delivery_packet.get("event_id") if isinstance(delivery_packet, dict) else None)
+                except Exception:
+                    pass
+
                 should_discard = False
                 if target_set is None:  # "all"
                     should_discard = True
                 else:
-                    if raw_id in target_set:
+                    if raw_id and raw_id in target_set:
+                        should_discard = True
+                    elif parsed_event_id and str(parsed_event_id) in target_set:
                         should_discard = True
                     else:
                         for tid in target_set:
-                            if tid in raw_id or tid in raw_body:
+                            if tid and (tid in raw_id or tid in raw_body or (parsed_event_id and tid in str(parsed_event_id))):
                                 should_discard = True
                                 break
 
                 if should_discard:
                     # Ack to permanently delete from RabbitMQ DLQ
                     await msg.ack()
-                    discarded_ids.append(raw_id or f"msg_{len(discarded_ids)+1}")
+                    discarded_ids.append(parsed_event_id or raw_id or f"discarded_{len(discarded_ids)+1}")
                 else:
                     # Keep unmatched message in DLQ
                     await msg.nack(requeue=True)

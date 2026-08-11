@@ -54,7 +54,9 @@ export default function LogsPage({ projectId, embedded = false }) {
 
   const normalizeLog = (log) => {
     const metadata = log?.metadata || {};
-    const responseCode = log?.response_code ?? log?.status_code ?? metadata?.response_code ?? metadata?.status_code ?? 200;
+    const statusName = log?.status || metadata?.status || 'UNKNOWN';
+    const rawCode = log?.response_code ?? log?.status_code ?? metadata?.response_code ?? metadata?.status_code;
+    const responseCode = rawCode ?? (statusName === 'FAILED' ? 500 : (statusName === 'SUCCESS' ? 200 : 202));
     const createdAt = log?.created_at || log?.timestamp || metadata?.created_at || '';
     const eventType = log?.event_type || metadata?.event_type || log?.delivery_packet?.event_type || '';
     const targetUrl = log?.target_url || log?.path || metadata?.target_url || log?.delivery_packet?.target_url || '';
@@ -62,6 +64,7 @@ export default function LogsPage({ projectId, embedded = false }) {
 
     return {
       ...log,
+      status: statusName,
       created_at: createdAt,
       response_code: responseCode,
       status_code: responseCode,
@@ -90,58 +93,95 @@ export default function LogsPage({ projectId, embedded = false }) {
     }
   };
 
+  // Auto-Scroll & Virtualized Buffer State
+  const [autoScroll, setAutoScroll] = useState(true);
+
   useEffect(() => {
     fetchLogs(false);
 
-    if (!projectId) return;
-
     let socket = null;
+    let eventSource = null;
     let reconnectTimer = null;
     let retryCount = 0;
 
-    const connectWs = () => {
-      const token = user?.access_token || (localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user'))?.access_token : null);
-      if (!token) return;
+    if (projectId) {
+      // Project-scoped view — dedicated WebSocket
+      const connectWs = () => {
+        const token = user?.access_token || (localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user'))?.access_token : null);
+        if (!token) return;
 
-      const wsUrl = withToken(WS_ENDPOINTS.LOGS(projectId), token);
-      try {
-        socket = new WebSocket(wsUrl);
+        const wsUrl = withToken(WS_ENDPOINTS.LOGS(projectId), token);
+        try {
+          socket = new WebSocket(wsUrl);
 
-        socket.onmessage = (event) => {
-          try {
-            const payload = JSON.parse(event.data);
-            if (payload && payload.id) {
-              const normalizedPayload = normalizeLog(payload);
-              setLogs((prevLogs) => {
-                const exists = prevLogs.some((l) => l.id === normalizedPayload.id);
-                if (exists) return prevLogs;
-                return [normalizedPayload, ...prevLogs].slice(0, 500);
-              });
+          socket.onmessage = (event) => {
+            try {
+              const payload = JSON.parse(event.data);
+              if (payload && payload.id) {
+                const normalizedPayload = normalizeLog(payload);
+                setLogs((prevLogs) => {
+                  const exists = prevLogs.some((l) => l.id === normalizedPayload.id);
+                  if (exists) return prevLogs;
+                  // Cap buffer at 500 to prevent browser memory pressure
+                  return [normalizedPayload, ...prevLogs].slice(0, 500);
+                });
+              }
+            } catch (err) {
+              console.warn('Log WS message parse error:', err);
             }
-          } catch (err) {
-            console.warn('Log WS message parse error:', err);
-          }
-        };
+          };
 
-        socket.onclose = () => {
-          const delay = Math.min(1000 * Math.pow(2, retryCount), 15000);
-          retryCount++;
-          reconnectTimer = setTimeout(connectWs, delay);
-        };
+          socket.onclose = () => {
+            const delay = Math.min(1000 * Math.pow(2, retryCount), 15000);
+            retryCount++;
+            reconnectTimer = setTimeout(connectWs, delay);
+          };
 
-        socket.onerror = () => {
-          try { socket.close(); } catch {}
-        };
-      } catch (err) {
-        console.warn('Log WebSocket error:', err);
+          socket.onerror = () => {
+            try { socket.close(); } catch {}
+          };
+        } catch (err) {
+          console.warn('Log WebSocket error:', err);
+        }
+      };
+      connectWs();
+    } else {
+      // Company-wide view — Server-Sent Events (SSE) /v1/logs/stream
+      const token = user?.access_token || (localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user'))?.access_token : null);
+      if (token) {
+        try {
+          const sseUrl = `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/v1/logs/stream?token=${encodeURIComponent(token)}`;
+          eventSource = new EventSource(sseUrl);
+
+          eventSource.onmessage = (event) => {
+            try {
+              const payload = JSON.parse(event.data);
+              if (payload && payload.id) {
+                const normalizedPayload = normalizeLog(payload);
+                setLogs((prevLogs) => {
+                  const exists = prevLogs.some((l) => l.id === normalizedPayload.id);
+                  if (exists) return prevLogs;
+                  return [normalizedPayload, ...prevLogs].slice(0, 500);
+                });
+              }
+            } catch (err) {
+              console.warn('SSE log parse error:', err);
+            }
+          };
+
+          eventSource.onerror = () => {
+            try { eventSource.close(); } catch {}
+          };
+        } catch (err) {
+          console.warn('SSE connection error:', err);
+        }
       }
-    };
-
-    connectWs();
+    }
 
     return () => {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (socket) socket.close();
+      if (eventSource) eventSource.close();
     };
   }, [projectId, user]);
 
@@ -201,7 +241,7 @@ export default function LogsPage({ projectId, embedded = false }) {
   }, [logs, searchQuery, statusFilter, productFilter, methodFilter, timeFilter, customStartDate, customEndDate]);
 
   const chartData = useMemo(() => {
-    const buckets = Array.from({ length: 24 }, (_, i) => ({ id: i, count: 0 }));
+    const buckets = Array.from({ length: 24 }, (_, i) => ({ id: i, count: 0, hasError: false, hasWarn: false }));
     const now = Date.now();
 
     filteredLogs.forEach((log) => {
@@ -209,6 +249,12 @@ export default function LogsPage({ projectId, embedded = false }) {
       const ageHours = Math.max(0, Math.min(23, (now - ts) / (1000 * 60 * 60)));
       const bucketIndex = Math.floor(ageHours);
       buckets[bucketIndex].count += 1;
+      const code = Number(log.response_code || log.status_code || 200);
+      if (code >= 400 || log.status === 'FAILED') {
+        buckets[bucketIndex].hasError = true;
+      } else if (code >= 300) {
+        buckets[bucketIndex].hasWarn = true;
+      }
     });
 
     return buckets;
@@ -285,6 +331,21 @@ export default function LogsPage({ projectId, embedded = false }) {
               title="Refresh logs"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin text-emerald-500' : ''}`} />
+            </button>
+
+            {/* Auto-Scroll Toggle Button */}
+            <button
+              type="button"
+              onClick={() => setAutoScroll(!autoScroll)}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition shrink-0 ${
+                autoScroll
+                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400'
+                  : 'border-zinc-700 bg-zinc-800/60 text-zinc-400 hover:text-zinc-200'
+              }`}
+              title={autoScroll ? 'Auto-Scroll Active (Click to Pause)' : 'Auto-Scroll Paused (Click to Resume)'}
+            >
+              <span className={`h-2 w-2 rounded-full ${autoScroll ? 'bg-emerald-400 animate-ping' : 'bg-zinc-500'}`} />
+              <span>{autoScroll ? 'Auto-Scroll ON' : 'Auto-Scroll OFF'}</span>
             </button>
           </div>
 
@@ -434,12 +495,20 @@ export default function LogsPage({ projectId, embedded = false }) {
             {chartData.map((bucket) => {
               const maxCount = Math.max(1, ...chartData.map((item) => item.count));
               const hPct = bucket.count === 0 ? 8 : Math.max(12, Math.round((bucket.count / maxCount) * 100));
+              const barColor = bucket.count === 0
+                ? 'bg-zinc-800/40'
+                : bucket.hasError
+                  ? 'bg-rose-500 hover:bg-rose-400 shadow-sm shadow-rose-500/30'
+                  : bucket.hasWarn
+                    ? 'bg-amber-400 hover:bg-amber-300'
+                    : 'bg-emerald-500 hover:bg-emerald-400 shadow-sm shadow-emerald-500/30';
+
               return (
                 <div 
                   key={bucket.id} 
-                  className="flex-1 bg-emerald-500/70 hover:bg-emerald-500 rounded-t transition cursor-pointer" 
+                  className={`flex-1 rounded-t transition cursor-pointer ${barColor}`} 
                   style={{ height: `${hPct}%` }}
-                  title={`${bucket.count} log entries`}
+                  title={`${bucket.count} log entries (${bucket.hasError ? 'Errors' : 'Success'})`}
                 />
               );
             })}

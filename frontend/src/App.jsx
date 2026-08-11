@@ -12,6 +12,8 @@ import LogsPage from './pages/LogsPage';
 import DLQPage from './pages/DLQPage';
 import AccountBlocked from './components/Auth/AccountBlocked';
 
+import SandboxPage from './pages/SandboxPage';
+
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
 
@@ -44,15 +46,26 @@ function AppRoutes() {
       <Route path="/blocked" element={<AccountBlocked />} />
       <Route path="/account-blocked" element={<Navigate to="/blocked" replace />} />
 
-      {/* 🏢 1. High-Level Company Dashboard & Projects Entry Views */}
-      <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
-      <Route path="/dashboard/projects" element={<ProtectedRoute><ProjectsPage /></ProtectedRoute>} />
+      {/* 🏢 1. High-Level Company Dashboard Sub-Views */}
+      <Route path="/dashboard" element={<ProtectedRoute><DashboardPage initialSubView="overview" /></ProtectedRoute>} />
+      <Route path="/dashboard/overview" element={<ProtectedRoute><DashboardPage initialSubView="overview" /></ProtectedRoute>} />
+      <Route path="/dashboard/throughput" element={<ProtectedRoute><DashboardPage initialSubView="throughput" /></ProtectedRoute>} />
+      <Route path="/dashboard/health" element={<ProtectedRoute><DashboardPage initialSubView="health" /></ProtectedRoute>} />
 
-      {/* 🛡️ 2. Workspace Project & Sub-system Views */}
-      <Route path="/projects" element={<ProtectedRoute><ProjectsPage /></ProtectedRoute>} />
+      {/* 📁 2. Project Management Sub-Views */}
+      <Route path="/dashboard/projects" element={<ProtectedRoute><ProjectsPage initialSubView="directory" /></ProtectedRoute>} />
+      <Route path="/projects" element={<ProtectedRoute><ProjectsPage initialSubView="directory" /></ProtectedRoute>} />
+      <Route path="/projects/tenant-rules" element={<ProtectedRoute><ProjectsPage initialSubView="tenant-rules" /></ProtectedRoute>} />
+      <Route path="/projects/routing-rules" element={<ProtectedRoute><ProjectsPage initialSubView="routing-rules" /></ProtectedRoute>} />
+
+      {/* 🛡️ 3. Workspace Project & Sub-system Views */}
       <Route path="/projects/:projectId" element={<ProtectedRoute><ProjectDetailPage /></ProtectedRoute>} />
       <Route path="/dashboard/projects/:projectId" element={<ProtectedRoute><ProjectDetailPage /></ProtectedRoute>} />
       <Route path="/projects/:projectId/logs" element={<ProtectedRoute><LogsPage /></ProtectedRoute>} />
+
+      {/* ⚡ 4. Gateway Simulator, Logs, DLQ & Settings */}
+      <Route path="/simulate" element={<ProtectedRoute><SandboxPage /></ProtectedRoute>} />
+      <Route path="/sandbox" element={<Navigate to="/simulate" replace />} />
       <Route path="/logs" element={<ProtectedRoute><LogsPage /></ProtectedRoute>} />
       <Route path="/dlq" element={<ProtectedRoute><DLQPage /></ProtectedRoute>} />
       <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />

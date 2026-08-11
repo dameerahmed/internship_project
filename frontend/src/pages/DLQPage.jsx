@@ -100,14 +100,12 @@ export default function DLQPage({ projectId, embedded = false }) {
 
     connectWs();
 
-    const interval = setInterval(() => {
-      fetchDLQ(true);
-    }, 15000);
+    // FIX: Removed 15-second polling interval — the WebSocket pushes live updates.
+    // Polling was redundant, wasteful, and caused ghost re-appearances after replay.
 
     return () => {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (socket) socket.close();
-      clearInterval(interval);
     };
   }, [projectId, user]);
 
@@ -142,15 +140,25 @@ export default function DLQPage({ projectId, embedded = false }) {
     if (!eventIds || eventIds.length === 0) return;
     setActionLoading(true);
     setMessage(null);
+    // FIX: Optimistic removal — remove from UI immediately before API resolves.
+    // This prevents the "ghost re-appearance" where fetchDLQ would pull back in-flight items.
+    // The WebSocket will push a fresh DLQ_UPDATE snapshot once the backend confirms removal.
+    setItems((prev) => prev.filter((item) => !eventIds.includes(item.id || item.event_id)));
+    setSelectedIds([]);
+    if (selectedItem && eventIds.includes(selectedItem.id || selectedItem.event_id)) {
+      setSelectedItem(null);
+    }
     try {
       const endpoint = '/v1/dlq/replay';
       await apiClient.post(endpoint, { log_ids: eventIds, ids: eventIds });
       setMessage({ type: 'success', text: `Requeued ${eventIds.length} failed event(s) for redelivery.` });
-      setItems((prev) => prev.filter((item) => !eventIds.includes(item.id || item.event_id)));
-      setSelectedIds([]);
-      await fetchDLQ(false);
+      // FIX: Removed fetchDLQ(false) here — it caused ghost re-appearances because the
+      // re-queued messages were still in RabbitMQ at the time of the refetch.
+      // The WebSocket DLQ_UPDATE message will sync the list cleanly.
     } catch (err) {
+      // On error, restore items by refetching
       setMessage({ type: 'error', text: err.response?.data?.detail || 'Replay operation failed.' });
+      fetchDLQ(false);
     } finally {
       setActionLoading(false);
     }
@@ -161,16 +169,18 @@ export default function DLQPage({ projectId, embedded = false }) {
     if (!window.confirm(`Discard ${eventIds.length} selected DLQ item(s)?`)) return;
     setActionLoading(true);
     setMessage(null);
+    // FIX: Optimistic removal before API resolves
+    setItems((prev) => prev.filter((item) => !eventIds.includes(item.id || item.event_id)));
+    setSelectedIds([]);
+    setSelectedItem(null);
     try {
       const endpoint = '/v1/dlq/discard';
       await apiClient.post(endpoint, { log_ids: eventIds, ids: eventIds });
       setMessage({ type: 'success', text: `Discarded ${eventIds.length} DLQ item(s).` });
-      setItems((prev) => prev.filter((item) => !eventIds.includes(item.id || item.event_id)));
-      setSelectedIds([]);
-      setSelectedItem(null);
-      await fetchDLQ(false);
+      // FIX: Removed redundant fetchDLQ — WS syncs the list
     } catch (err) {
       setMessage({ type: 'error', text: err.response?.data?.detail || 'Discard operation failed.' });
+      fetchDLQ(false);
     } finally {
       setActionLoading(false);
     }
@@ -307,11 +317,11 @@ export default function DLQPage({ projectId, embedded = false }) {
               </div>
             ) : (
               filteredItems.map((item, idx) => {
-                const eventId = item.id || item.event_id || `evt_${idx}`;
+                const eventId = item.event_id || item.id || `evt_${idx}`;
                 const eventType = item.event_type || item.delivery_packet?.event_type || 'webhook.failed';
-                const reason = item.failure_reason || item.error || 'Connection Timeout (504 Gateway)';
-                const target = item.target_url || item.delivery_packet?.target_url || 'https://api.domain.com/webhook';
-                const attempts = item.attempts_count || item.retry_count || 5;
+                const reason = item.error_message || item.failure_reason || item.error || item.reason || 'Delivery Failed';
+                const target = item.target_url || item.delivery_packet?.target_url || '/v1/gateway';
+                const attempts = item.attempt_number || item.attempts_count || item.retry_count || '?';
                 const isSelected = selectedItem?.id === item.id || selectedItem?.event_id === eventId;
                 const isChecked = selectedIds.includes(eventId);
 
@@ -460,28 +470,28 @@ export default function DLQPage({ projectId, embedded = false }) {
                 <div className="flex items-center justify-between">
                   <span className="text-zinc-500 font-medium">Event ID</span>
                   <span className="font-mono text-zinc-800 dark:text-zinc-200 font-bold">
-                    {currentSelection.event_id || currentSelection.id || 'evt_9918'}
+                    {currentSelection.event_id || currentSelection.id || 'N/A'}
                   </span>
                 </div>
 
                 <div className="flex items-center justify-between">
                   <span className="text-zinc-500 font-medium">Event Type</span>
                   <span className="font-mono font-bold text-rose-500">
-                    {currentSelection.event_type || currentSelection.delivery_packet?.event_type || 'order.created'}
+                    {currentSelection.event_type || currentSelection.delivery_packet?.event_type || 'webhook.failed'}
                   </span>
                 </div>
 
                 <div className="flex items-center justify-between">
                   <span className="text-zinc-500 font-medium">Failure Reason</span>
                   <span className="font-sans text-rose-500 font-semibold truncate max-w-[200px]">
-                    {currentSelection.failure_reason || currentSelection.error || 'Connection Timeout (504)'}
+                    {currentSelection.error_message || currentSelection.failure_reason || currentSelection.error || currentSelection.reason || 'Delivery Failed'}
                   </span>
                 </div>
 
                 <div className="flex items-center justify-between">
                   <span className="text-zinc-500 font-medium">Retry Attempts</span>
                   <span className="font-mono font-bold text-zinc-800 dark:text-zinc-200">
-                    {currentSelection.attempts_count || 5} attempts
+                    {currentSelection.attempt_number || currentSelection.attempts_count || currentSelection.retry_count || '?'} attempts
                   </span>
                 </div>
 
@@ -490,7 +500,7 @@ export default function DLQPage({ projectId, embedded = false }) {
                     FAILED PAYLOAD METADATA
                   </span>
                   <pre className="p-3.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 text-rose-500 font-mono text-[11px] overflow-x-auto max-h-60 leading-relaxed shadow-inner">
-                    {JSON.stringify(currentSelection.payload || currentSelection.delivery_packet?.payload || { error: "Target host unreachable" }, null, 2)}
+                    {JSON.stringify(currentSelection.payload || currentSelection.data_payload || currentSelection.delivery_packet?.data_payload || currentSelection.delivery_packet?.payload || currentSelection.raw_content || currentSelection, null, 2)}
                   </pre>
                 </div>
 

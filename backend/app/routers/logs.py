@@ -5,6 +5,7 @@ from typing import Optional
 from datetime import datetime, timezone, timedelta
 from urllib.parse import unquote
 from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect, Query, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -87,10 +88,17 @@ def _serialize_log_entry(log: WebhookLog) -> dict:
     status_name = log.status.name if log.status else "UNKNOWN"
     level = "SUCCESS" if status_name == "SUCCESS" else "ERROR" if status_name == "FAILED" else "INFO"
 
+    effective_code = log.response_code
+    if effective_code is None:
+        if status_name == "FAILED":
+            effective_code = 500
+        elif status_name == "SUCCESS":
+            effective_code = 200
+
     metadata = {
         "event_type": event_type,
         "status": status_name,
-        "response_code": log.response_code,
+        "response_code": effective_code,
         "attempt": log.attempt_number,
         "http_method": log.http_method or "POST",
         "source_ip": log.source_ip or "127.0.0.1",
@@ -99,7 +107,7 @@ def _serialize_log_entry(log: WebhookLog) -> dict:
         "incoming_headers": incoming_headers,
         "request_payload": event_payload,
         "response_data": {
-            "status_code": log.response_code or 200,
+            "status_code": effective_code if effective_code is not None else (500 if status_name == "FAILED" else 200),
             "status": status_name,
             "error_message": log.error_message,
             "processing_duration_ms": log.processing_duration_ms,
@@ -120,8 +128,8 @@ def _serialize_log_entry(log: WebhookLog) -> dict:
         "message": (event_payload.get("message") if isinstance(event_payload, dict) else None) or (event_payload.get("event") if isinstance(event_payload, dict) else None) or f"Webhook event '{event_type}'",
         "source": "gateway",
         "status": status_name,
-        "status_code": log.response_code,
-        "response_code": log.response_code,
+        "status_code": effective_code,
+        "response_code": effective_code,
         "event_type": event_type,
         "http_method": log.http_method or "POST",
         "target_url": target_url,
@@ -652,6 +660,52 @@ async def websocket_dashboard_stream(websocket: WebSocket):
         logger.warning("Dashboard WebSocket exception: %s", exc)
 
 
+@router.websocket("/api/ws/metrics")
+async def websocket_api_metrics(websocket: WebSocket):
+    """Alias for /ws/dashboard to support /api/ws/metrics contract."""
+    await websocket_dashboard_stream(websocket)
+
+
+@router.get("/v1/logs/stream")
+async def stream_logs_sse(
+    request: Request,
+    project_id: Optional[int] = Query(None),
+    current_company = Depends(get_current_company),
+):
+    """
+    Server-Sent Events (SSE) stream for real-time logs.
+    Streams log updates continuously over HTTP text/event-stream.
+    """
+    company_id = current_company.id
+
+    async def log_event_generator():
+        channels = []
+        if project_id:
+            channels.append(logs_channel(project_id))
+        else:
+            async for db in get_db():
+                res = await db.execute(select(Project.id).where(Project.company_id == company_id))
+                p_ids = [row[0] for row in res.fetchall()]
+                channels = [logs_channel(p) for p in p_ids]
+                break
+
+        if not channels:
+            yield "data: {\"type\": \"connected\", \"message\": \"No active projects to stream\"}\n\n"
+            return
+
+        try:
+            async with RedisPubSubSubscriber(channels) as sub:
+                yield "data: {\"type\": \"connected\", \"message\": \"SSE Log Stream Active\"}\n\n"
+                async for raw_msg in sub.listen():
+                    if await request.is_disconnected():
+                        break
+                    yield f"data: {raw_msg}\n\n"
+        except asyncio.CancelledError:
+            pass
+
+    return StreamingResponse(log_event_generator(), media_type="text/event-stream")
+
+
 # ─────────────────────── REST: Dashboard Stats ───────────────────────────────
 
 @router.get("/v1/dashboard/stats")
@@ -856,7 +910,10 @@ async def replay_dlq_logs(
 
     target_project_id = None
 
-    # Ownership check: peek the DLQ and verify each requested ID belongs to this company
+    # BUG FIX: Ownership check previously matched item.get("id") against log_ids where log_ids
+    # contains event_id strings from the frontend. The AMQP message_id never matched, so
+    # safe_ids was always empty and NOTHING ever got replayed. We now match on both fields.
+    replayed_items = []  # collect matched items for audit log
     if log_ids and log_ids != "all":
         proj_res = await db.execute(select(Project.id).where(Project.company_id == company_id))
         owned_project_ids = {row[0] for row in proj_res.fetchall()}
@@ -865,29 +922,73 @@ async def replay_dlq_logs(
         safe_ids = []
         project_ids = set()
         for item in raw_items:
-            if item.get("id") not in log_ids:
+            item_id = str(item.get("id") or "")
+            item_event_id = str(item.get("event_id") or "")
+            raw_id = str(item.get("raw_id") or "")
+            
+            # Check if any ID provided in log_ids matches item_id, item_event_id, or raw_id
+            matched = any(tid in [item_id, item_event_id, raw_id] or (tid and (tid in item_id or tid in item_event_id or tid in raw_id)) for tid in log_ids)
+            if not matched:
                 continue
             p_id = item.get("project_id")
             if p_id and int(p_id) in owned_project_ids:
-                safe_ids.append(item.get("id"))
+                for val in [item_id, item_event_id, raw_id]:
+                    if val and val not in safe_ids:
+                        safe_ids.append(val)
                 project_ids.add(int(p_id))
+                replayed_items.append(item)
         log_ids = safe_ids
         if len(project_ids) == 1:
             target_project_id = next(iter(project_ids))
 
     result = await rabbitmq_manager.requeue_dlq_messages(target_ids=log_ids)
 
-    # Notify DLQ WS subscribers and refresh metrics
-    await publish_dlq_event(company_id, "replay", None)
-    try:
-        snapshot = await metrics_service.get_or_hydrate_metrics(company_id, db, project_id=target_project_id)
-        await publish_metrics_snapshot(company_id, snapshot, project_id=target_project_id)
-    except Exception:
-        pass
+    replayed_count = result.get("replayed_count", 0)
+    if replayed_count > 0:
+        for item in replayed_items:
+            try:
+                prev_attempt = int(item.get("attempt_number") or 5)
+                evt_id = item.get("event_id")
+                p_id = item.get("project_id")
+                ec_res = await db.execute(
+                    select(EventConfig.id)
+                    .join(Project, Project.id == EventConfig.project_id)
+                    .where(Project.id == p_id)
+                    .limit(1)
+                ) if p_id else None
+                ec_id = None
+                if ec_res:
+                    ec_row = ec_res.scalars().first()
+                    ec_id = ec_row if ec_row else None
+
+                audit_log = WebhookLog(
+                    event_id=evt_id,
+                    event_config_id=ec_id,
+                    status=WebhookStatus.PENDING,
+                    attempt_number=prev_attempt + 1,
+                    response_code=None,
+                    error_message="DLQ Replay — re-queued for delivery",
+                    http_method="POST",
+                )
+                db.add(audit_log)
+            except Exception as audit_err:
+                logger.warning("Failed to write DLQ replay audit log: %s", audit_err)
+        if replayed_items:
+            try:
+                await db.commit()
+            except Exception:
+                await db.rollback()
+
+        await publish_dlq_event(company_id, "REMOVED", None)
+        try:
+            snapshot = await metrics_service.get_or_hydrate_metrics(company_id, db, project_id=target_project_id)
+            await publish_metrics_snapshot(company_id, snapshot, project_id=target_project_id)
+        except Exception:
+            pass
 
     return {
         "status": "replayed",
-        "replayed_count": result.get("replayed_count", 0),
+        "replayed_count": replayed_count,
         "replayed_ids": result.get("replayed_ids", []),
     }
 
@@ -922,11 +1023,18 @@ async def discard_dlq_logs(
         safe_ids = []
         project_ids = set()
         for item in raw_items:
-            if item.get("id") not in log_ids:
+            item_id = str(item.get("id") or "")
+            item_event_id = str(item.get("event_id") or "")
+            raw_id = str(item.get("raw_id") or "")
+            
+            matched = any(tid in [item_id, item_event_id, raw_id] or (tid and (tid in item_id or tid in item_event_id or tid in raw_id)) for tid in log_ids)
+            if not matched:
                 continue
             p_id = item.get("project_id")
             if p_id and int(p_id) in owned_project_ids:
-                safe_ids.append(item.get("id"))
+                for val in [item_id, item_event_id, raw_id]:
+                    if val and val not in safe_ids:
+                        safe_ids.append(val)
                 project_ids.add(int(p_id))
         log_ids = safe_ids
         if len(project_ids) == 1:
@@ -934,12 +1042,14 @@ async def discard_dlq_logs(
 
     result = await rabbitmq_manager.discard_dlq_messages(target_ids=log_ids)
 
-    await publish_dlq_event(company_id, "discard", None)
-    try:
-        snapshot = await metrics_service.get_or_hydrate_metrics(company_id, db, project_id=target_project_id)
-        await publish_metrics_snapshot(company_id, snapshot, project_id=target_project_id)
-    except Exception:
-        pass
+    discarded_count = result.get("discarded_count", 0)
+    if discarded_count > 0 or not log_ids:
+        await publish_dlq_event(company_id, "REMOVED", None)
+        try:
+            snapshot = await metrics_service.get_or_hydrate_metrics(company_id, db, project_id=target_project_id)
+            await publish_metrics_snapshot(company_id, snapshot, project_id=target_project_id)
+        except Exception:
+            pass
 
     return {
         "status": "discarded",

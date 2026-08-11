@@ -85,7 +85,10 @@ async def _persist_webhook_log(**kwargs):
     try:
         async for db_session in get_db():
             event_id = kwargs.get("event_id")
+            # ── BUG FIX: project_id and company_id must flow through every call path ──
             project_id = kwargs.get("project_id")
+            company_id = kwargs.get("company_id")
+
             stmt = select(WebhookLog).where(WebhookLog.event_id == event_id)
             result = await db_session.execute(stmt)
             existing_log = result.scalars().first()
@@ -123,7 +126,6 @@ async def _persist_webhook_log(**kwargs):
 
             # ── Redis Pub/Sub: publish the log entry so /ws/logs instantly pushes it ──
             status_val = kwargs.get("status")
-            company_id = kwargs.get("company_id")
 
             if project_id:
                 try:
@@ -142,6 +144,7 @@ async def _persist_webhook_log(**kwargs):
                     logger.warning("Pub/Sub log publish failed: %s", pub_exc)
 
             # ── Redis Pub/Sub: update metrics and publish snapshot ──
+            # BUG FIX: company_id is now correctly sourced from kwargs (not re-declared here)
             if status_val in [WebhookStatus.SUCCESS, WebhookStatus.FAILED]:
                 if company_id:
                     is_success = (status_val == WebhookStatus.SUCCESS)
@@ -252,6 +255,7 @@ async def orchestrate_webhook_lifecycle(task_instance: Task, delivery_packet: di
         result = await _process_webhook_delivery(
             event_id=event_id,
             project_id=project_id,
+            # BUG FIX: company_id was missing from this call — pub/sub and metrics were firing with None
             company_id=company_id,
             event_type=event_type,
             data_payload=data_payload,
@@ -281,9 +285,27 @@ async def orchestrate_webhook_lifecycle(task_instance: Task, delivery_packet: di
                 exc=result["captured_exception"]
             )
 
-        logger.warning("Retries exhausted for project %s; routing packet to DLQ", project_id)
-        
-        # Route FULL payload to DLQ so the UI can render it and requeues work correctly
+        # ── BUG FIX: Write the FINAL DB log (attempt_number = max_retries + 1) ──────
+        # This ensures WebhookLog.attempt_number reaches 5 in the DB before DLQ routing.
+        # Previously, the last attempt was logged as attempt 4 because the DLQ path skipped
+        # a final DB write. Now we write the definitive terminal failure record first.
+        final_attempt_number = task_instance.max_retries + 1  # = 6 (retries 0-4, then this final call)
+        await _persist_webhook_log(
+            event_id=event_id,
+            event_config_id=result.get("event_config_id"),
+            project_id=project_id,
+            company_id=company_id,
+            status=WebhookStatus.FAILED,
+            attempt_number=final_attempt_number,
+            response_code=result.get("response_code", 500),
+            error_message=f"All {task_instance.max_retries + 1} delivery attempts exhausted. {result.get('captured_exception', 'Unknown error')}",
+            processing_duration_ms=result.get("processing_duration_ms"),
+            http_method="POST",
+        )
+
+        logger.warning("Retries exhausted for project %s; routing packet to DLQ after %s attempts", project_id, final_attempt_number)
+
+        # ── BUG FIX: Include attempt_number in DLQ packet so peek_dlq_messages reads it ──
         dlq_packet = {
             "event_id": event_id,
             "project_id": project_id,
@@ -291,7 +313,8 @@ async def orchestrate_webhook_lifecycle(task_instance: Task, delivery_packet: di
             "event_type": event_type,
             "data_payload": data_payload,
             "target_url": result.get("target_url") or target_url,
-            "url_index": url_index
+            "url_index": url_index,
+            "attempt_number": final_attempt_number,  # ← NEW: persisted for DLQ UI display
         }
         try:
             with celery_app.producer_pool.acquire(block=True) as producer:
@@ -306,7 +329,7 @@ async def orchestrate_webhook_lifecycle(task_instance: Task, delivery_packet: di
                     serializer="json",
                     retry=True
                 )
-            logger.info("Event %s routed to DLQ successfully", event_id)
+            logger.info("Event %s routed to DLQ after %s attempts", event_id, final_attempt_number)
             if company_id:
                 await pubsub_service.publish_dlq_event(company_id, "ADDED", dlq_packet)
         except Exception as dlq_err:
@@ -419,6 +442,8 @@ async def _process_webhook_delivery(
         await _persist_webhook_log(
             event_id=event_id,
             event_config_id=event_config_id,
+            project_id=project_id,
+            company_id=company_id,
             status=WebhookStatus.FAILED,
             attempt_number=retry_count + 1,
             response_code=response_code,
@@ -462,9 +487,12 @@ async def _process_webhook_delivery(
         captured_exception = exc
 
     # Step 4: Storage Transaction Tracking
+    # BUG FIX: project_id and company_id are now passed through so pub/sub fires correctly
     result = await _persist_webhook_log(
         event_id=event_id,
         event_config_id=event_config_id,
+        project_id=project_id,
+        company_id=company_id,
         response_code=response_code,
         attempt_number=retry_count + 1,
         status=WebhookStatus.SUCCESS if response_code < 300 else WebhookStatus.FAILED,
@@ -472,6 +500,7 @@ async def _process_webhook_delivery(
         processing_duration_ms=int((time.time() - (started_at or time.time())) * 1000),
         source_ip=None,
         http_method="POST",
+        target_url=target_url,
     )
 
     return {

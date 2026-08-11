@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import func, case, delete
+from sqlalchemy import func, case, delete, or_
 
 from database import get_db
 from app.services.dependencies import get_current_company
@@ -74,61 +74,63 @@ async def get_company_aggregated_metrics(
             "throughput_series": []
         }
 
-    # 2. Get event config IDs under these projects
-    ec_res = await db.execute(
-        select(EventConfig.id).where(EventConfig.project_id.in_(project_ids))
-    )
-    event_config_ids = [row[0] for row in ec_res.fetchall()]
-
     now = datetime.utcnow()
     twenty_four_hours_ago = now - timedelta(hours=24)
 
-    # 3. Aggregate 24h rolling stats from WebhookLog
+    # 2. Aggregate 24h rolling stats from WebhookLog
     total_webhooks_24h = 0
     success_count_24h = 0
     failed_count_24h = 0
     avg_latency_ms = 0.0
     latencies_list = []
 
-    if event_config_ids:
-        agg_stmt = (
-            select(
-                func.count(WebhookLog.id).label("total"),
-                func.sum(case((WebhookLog.status == WebhookStatus.SUCCESS, 1), else_=0)).label("successes"),
-                func.sum(case((WebhookLog.status == WebhookStatus.FAILED, 1), else_=0)).label("failures"),
-                func.avg(WebhookLog.processing_duration_ms).label("avg_latency")
-            )
-            .where(
-                WebhookLog.event_config_id.in_(event_config_ids),
-                WebhookLog.created_at >= twenty_four_hours_ago
-            )
-        )
-        agg_res = await db.execute(agg_stmt)
-        agg_row = agg_res.fetchone()
+    proj_filter = or_(
+        WebhookEvent.project_id.in_(project_ids),
+        EventConfig.project_id.in_(project_ids)
+    )
 
-        if agg_row:
-            total_webhooks_24h = agg_row.total or 0
-            success_count_24h = agg_row.successes or 0
-            failed_count_24h = agg_row.failures or 0
-            avg_latency_ms = round(float(agg_row.avg_latency or 0.0), 2)
-
-        # Real latency values for percentile calculation
-        lat_stmt = (
-            select(WebhookLog.processing_duration_ms)
-            .where(
-                WebhookLog.event_config_id.in_(event_config_ids),
-                WebhookLog.created_at >= twenty_four_hours_ago,
-                WebhookLog.processing_duration_ms.isnot(None)
-            )
+    agg_stmt = (
+        select(
+            func.count(WebhookLog.id).label("total"),
+            func.sum(case((WebhookLog.status == WebhookStatus.SUCCESS, 1), else_=0)).label("successes"),
+            func.sum(case((WebhookLog.status == WebhookStatus.FAILED, 1), else_=0)).label("failures"),
+            func.avg(WebhookLog.processing_duration_ms).label("avg_latency")
         )
-        lat_res = await db.execute(lat_stmt)
-        latencies_list = [row[0] for row in lat_res.fetchall() if row[0] is not None]
+        .join(WebhookEvent, WebhookLog.event_id == WebhookEvent.event_id, isouter=True)
+        .join(EventConfig, WebhookLog.event_config_id == EventConfig.id, isouter=True)
+        .where(
+            proj_filter,
+            WebhookLog.created_at >= twenty_four_hours_ago
+        )
+    )
+    agg_res = await db.execute(agg_stmt)
+    agg_row = agg_res.fetchone()
+
+    if agg_row:
+        total_webhooks_24h = agg_row.total or 0
+        success_count_24h = agg_row.successes or 0
+        failed_count_24h = agg_row.failures or 0
+        avg_latency_ms = round(float(agg_row.avg_latency or 0.0), 2)
+
+    # Real latency values for percentile calculation
+    lat_stmt = (
+        select(WebhookLog.processing_duration_ms)
+        .join(WebhookEvent, WebhookLog.event_id == WebhookEvent.event_id, isouter=True)
+        .join(EventConfig, WebhookLog.event_config_id == EventConfig.id, isouter=True)
+        .where(
+            proj_filter,
+            WebhookLog.created_at >= twenty_four_hours_ago,
+            WebhookLog.processing_duration_ms.isnot(None)
+        )
+    )
+    lat_res = await db.execute(lat_stmt)
+    latencies_list = [row[0] for row in lat_res.fetchall() if row[0] is not None]
 
     percentiles = calculate_percentiles(latencies_list)
     success_rate_pct = None if total_webhooks_24h == 0 else round((success_count_24h / total_webhooks_24h) * 100, 2)
     failure_rate_pct = 0.0 if total_webhooks_24h == 0 else round((failed_count_24h / total_webhooks_24h) * 100, 2)
 
-    # 4. Calculate total DLQ items across company projects
+    # 3. Calculate total DLQ items across company projects
     total_dlq_count = 0
     try:
         raw_dlq = await rabbitmq_manager.peek_dlq_messages(limit=250)
@@ -151,46 +153,47 @@ async def get_company_aggregated_metrics(
     except Exception as e:
         logger.warning(f"Error calculating company DLQ count: {e}")
 
-    # 5. Build 24h Hourly Throughput Series
+    # 4. Build 24h Hourly Throughput Series
     throughput_series = []
-    if event_config_ids:
-        series_stmt = (
-            select(
-                func.date_trunc('hour', WebhookLog.created_at).label("hour_bucket"),
-                func.count(WebhookLog.id).label("total"),
-                func.sum(case((WebhookLog.status == WebhookStatus.SUCCESS, 1), else_=0)).label("successes"),
-                func.sum(case((WebhookLog.status == WebhookStatus.FAILED, 1), else_=0)).label("failures")
-            )
-            .where(
-                WebhookLog.event_config_id.in_(event_config_ids),
-                WebhookLog.created_at >= twenty_four_hours_ago
-            )
-            .group_by("hour_bucket")
-            .order_by("hour_bucket")
+    series_stmt = (
+        select(
+            func.date_trunc('hour', WebhookLog.created_at).label("hour_bucket"),
+            func.count(WebhookLog.id).label("total"),
+            func.sum(case((WebhookLog.status == WebhookStatus.SUCCESS, 1), else_=0)).label("successes"),
+            func.sum(case((WebhookLog.status == WebhookStatus.FAILED, 1), else_=0)).label("failures")
         )
-        series_res = await db.execute(series_stmt)
-        series_rows = series_res.fetchall()
-        
-        bucket_map = {
-            row.hour_bucket.strftime("%Y-%m-%dT%H:00:00Z"): {
-                "total": row.total or 0,
-                "success": row.successes or 0,
-                "failed": row.failures or 0
-            }
-            for row in series_rows if row.hour_bucket
+        .join(WebhookEvent, WebhookLog.event_id == WebhookEvent.event_id, isouter=True)
+        .join(EventConfig, WebhookLog.event_config_id == EventConfig.id, isouter=True)
+        .where(
+            proj_filter,
+            WebhookLog.created_at >= twenty_four_hours_ago
+        )
+        .group_by("hour_bucket")
+        .order_by("hour_bucket")
+    )
+    series_res = await db.execute(series_stmt)
+    series_rows = series_res.fetchall()
+    
+    bucket_map = {
+        row.hour_bucket.strftime("%Y-%m-%dT%H:00:00Z"): {
+            "total": row.total or 0,
+            "success": row.successes or 0,
+            "failed": row.failures or 0
         }
+        for row in series_rows if row.hour_bucket
+    }
 
-        for i in range(23, -1, -1):
-            h_time = (now - timedelta(hours=i)).replace(minute=0, second=0, microsecond=0)
-            h_key = h_time.strftime("%Y-%m-%dT%H:00:00Z")
-            data = bucket_map.get(h_key, {"total": 0, "success": 0, "failed": 0})
-            throughput_series.append({
-                "timestamp": h_key,
-                "label": h_time.strftime("%H:00"),
-                "total": data["total"],
-                "success": data["success"],
-                "failed": data["failed"]
-            })
+    for i in range(23, -1, -1):
+        h_time = (now - timedelta(hours=i)).replace(minute=0, second=0, microsecond=0)
+        h_key = h_time.strftime("%Y-%m-%dT%H:00:00Z")
+        data = bucket_map.get(h_key, {"total": 0, "success": 0, "failed": 0})
+        throughput_series.append({
+            "timestamp": h_key,
+            "label": h_time.strftime("%H:00"),
+            "total": data["total"],
+            "success": data["success"],
+            "failed": data["failed"]
+        })
 
     return {
         "total_webhooks_24h": total_webhooks_24h,
@@ -231,12 +234,6 @@ async def get_project_specific_metrics(
             detail="Project not found or unauthorized"
         )
 
-    # Get event configs for this project
-    ec_res = await db.execute(
-        select(EventConfig.id).where(EventConfig.project_id == project_id)
-    )
-    event_config_ids = [row[0] for row in ec_res.fetchall()]
-
     now = datetime.utcnow()
     twenty_four_hours_ago = now - timedelta(hours=24)
 
@@ -246,38 +243,46 @@ async def get_project_specific_metrics(
     avg_latency_ms = 0.0
     latencies_list = []
 
-    if event_config_ids:
-        agg_stmt = (
-            select(
-                func.count(WebhookLog.id).label("total"),
-                func.sum(case((WebhookLog.status == WebhookStatus.SUCCESS, 1), else_=0)).label("successes"),
-                func.sum(case((WebhookLog.status == WebhookStatus.FAILED, 1), else_=0)).label("failures"),
-                func.avg(WebhookLog.processing_duration_ms).label("avg_latency")
-            )
-            .where(
-                WebhookLog.event_config_id.in_(event_config_ids),
-                WebhookLog.created_at >= twenty_four_hours_ago
-            )
-        )
-        agg_res = await db.execute(agg_stmt)
-        agg_row = agg_res.fetchone()
+    proj_filter = or_(
+        WebhookEvent.project_id == project_id,
+        EventConfig.project_id == project_id
+    )
 
-        if agg_row:
-            total_webhooks_24h = agg_row.total or 0
-            success_count_24h = agg_row.successes or 0
-            failed_count_24h = agg_row.failures or 0
-            avg_latency_ms = round(float(agg_row.avg_latency or 0.0), 2)
-
-        lat_stmt = (
-            select(WebhookLog.processing_duration_ms)
-            .where(
-                WebhookLog.event_config_id.in_(event_config_ids),
-                WebhookLog.created_at >= twenty_four_hours_ago,
-                WebhookLog.processing_duration_ms.isnot(None)
-            )
+    agg_stmt = (
+        select(
+            func.count(WebhookLog.id).label("total"),
+            func.sum(case((WebhookLog.status == WebhookStatus.SUCCESS, 1), else_=0)).label("successes"),
+            func.sum(case((WebhookLog.status == WebhookStatus.FAILED, 1), else_=0)).label("failures"),
+            func.avg(WebhookLog.processing_duration_ms).label("avg_latency")
         )
-        lat_res = await db.execute(lat_stmt)
-        latencies_list = [row[0] for row in lat_res.fetchall() if row[0] is not None]
+        .join(WebhookEvent, WebhookLog.event_id == WebhookEvent.event_id, isouter=True)
+        .join(EventConfig, WebhookLog.event_config_id == EventConfig.id, isouter=True)
+        .where(
+            proj_filter,
+            WebhookLog.created_at >= twenty_four_hours_ago
+        )
+    )
+    agg_res = await db.execute(agg_stmt)
+    agg_row = agg_res.fetchone()
+
+    if agg_row:
+        total_webhooks_24h = agg_row.total or 0
+        success_count_24h = agg_row.successes or 0
+        failed_count_24h = agg_row.failures or 0
+        avg_latency_ms = round(float(agg_row.avg_latency or 0.0), 2)
+
+    lat_stmt = (
+        select(WebhookLog.processing_duration_ms)
+        .join(WebhookEvent, WebhookLog.event_id == WebhookEvent.event_id, isouter=True)
+        .join(EventConfig, WebhookLog.event_config_id == EventConfig.id, isouter=True)
+        .where(
+            proj_filter,
+            WebhookLog.created_at >= twenty_four_hours_ago,
+            WebhookLog.processing_duration_ms.isnot(None)
+        )
+    )
+    lat_res = await db.execute(lat_stmt)
+    latencies_list = [row[0] for row in lat_res.fetchall() if row[0] is not None]
 
     percentiles = calculate_percentiles(latencies_list)
     success_rate_pct = None if total_webhooks_24h == 0 else round((success_count_24h / total_webhooks_24h) * 100, 2)
@@ -303,44 +308,45 @@ async def get_project_specific_metrics(
 
     # Hourly throughput series for this project
     throughput_series = []
-    if event_config_ids:
-        series_stmt = (
-            select(
-                func.date_trunc('hour', WebhookLog.created_at).label("hour_bucket"),
-                func.count(WebhookLog.id).label("total"),
-                func.sum(case((WebhookLog.status == WebhookStatus.SUCCESS, 1), else_=0)).label("successes"),
-                func.sum(case((WebhookLog.status == WebhookStatus.FAILED, 1), else_=0)).label("failures")
-            )
-            .where(
-                WebhookLog.event_config_id.in_(event_config_ids),
-                WebhookLog.created_at >= twenty_four_hours_ago
-            )
-            .group_by("hour_bucket")
-            .order_by("hour_bucket")
+    series_stmt = (
+        select(
+            func.date_trunc('hour', WebhookLog.created_at).label("hour_bucket"),
+            func.count(WebhookLog.id).label("total"),
+            func.sum(case((WebhookLog.status == WebhookStatus.SUCCESS, 1), else_=0)).label("successes"),
+            func.sum(case((WebhookLog.status == WebhookStatus.FAILED, 1), else_=0)).label("failures")
         )
-        series_res = await db.execute(series_stmt)
-        series_rows = series_res.fetchall()
+        .join(WebhookEvent, WebhookLog.event_id == WebhookEvent.event_id, isouter=True)
+        .join(EventConfig, WebhookLog.event_config_id == EventConfig.id, isouter=True)
+        .where(
+            proj_filter,
+            WebhookLog.created_at >= twenty_four_hours_ago
+        )
+        .group_by("hour_bucket")
+        .order_by("hour_bucket")
+    )
+    series_res = await db.execute(series_stmt)
+    series_rows = series_res.fetchall()
 
-        bucket_map = {
-            row.hour_bucket.strftime("%Y-%m-%dT%H:00:00Z"): {
-                "total": row.total or 0,
-                "success": row.successes or 0,
-                "failed": row.failures or 0
-            }
-            for row in series_rows if row.hour_bucket
+    bucket_map = {
+        row.hour_bucket.strftime("%Y-%m-%dT%H:00:00Z"): {
+            "total": row.total or 0,
+            "success": row.successes or 0,
+            "failed": row.failures or 0
         }
+        for row in series_rows if row.hour_bucket
+    }
 
-        for i in range(23, -1, -1):
-            h_time = (now - timedelta(hours=i)).replace(minute=0, second=0, microsecond=0)
-            h_key = h_time.strftime("%Y-%m-%dT%H:00:00Z")
-            data = bucket_map.get(h_key, {"total": 0, "success": 0, "failed": 0})
-            throughput_series.append({
-                "timestamp": h_key,
-                "label": h_time.strftime("%H:00"),
-                "total": data["total"],
-                "success": data["success"],
-                "failed": data["failed"]
-            })
+    for i in range(23, -1, -1):
+        h_time = (now - timedelta(hours=i)).replace(minute=0, second=0, microsecond=0)
+        h_key = h_time.strftime("%Y-%m-%dT%H:00:00Z")
+        data = bucket_map.get(h_key, {"total": 0, "success": 0, "failed": 0})
+        throughput_series.append({
+            "timestamp": h_key,
+            "label": h_time.strftime("%H:00"),
+            "total": data["total"],
+            "success": data["success"],
+            "failed": data["failed"]
+        })
 
     return {
         "project_id": project_id,
