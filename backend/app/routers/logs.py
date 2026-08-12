@@ -12,7 +12,7 @@ from sqlalchemy.future import select
 from sqlalchemy import delete, func, case
 from sqlalchemy.orm import selectinload
 import time
-from app.services.dependencies import get_current_company
+from app.services.dependencies import get_current_company, get_current_company_flexible
 from app.services.redis_client import get_redis_client
 from app.models.event_config import EventConfig
 from app.models.project import Project
@@ -670,7 +670,7 @@ async def websocket_api_metrics(websocket: WebSocket):
 async def stream_logs_sse(
     request: Request,
     project_id: Optional[int] = Query(None),
-    current_company = Depends(get_current_company),
+    current_company = Depends(get_current_company_flexible),
 ):
     """
     Server-Sent Events (SSE) stream for real-time logs.

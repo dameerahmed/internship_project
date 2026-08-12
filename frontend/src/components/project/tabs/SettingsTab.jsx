@@ -62,19 +62,36 @@ export default function SettingsTab({ project, form, setForm, onSave, onToggleAc
     return () => clearInterval(interval);
   }, [showCredentials, timerSeconds]);
 
-  // Fetch & reveal credentials for 1 minute on demand
+  const setSimCookie = (name, val) => {
+    if (!val) return;
+    const cleanVal = String(val).trim().replace(/^[{"'\s,:=]+|[}"'\s,:=]+$/g, '').replace(/^["']|["']$/g, '');
+    document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/; SameSite=Lax`;
+    const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toUTCString();
+    document.cookie = `${name}=${encodeURIComponent(cleanVal)}; expires=${expires}; path=/; SameSite=Lax`;
+    const uiExpiryTime = Date.now() + 60 * 1000;
+    const uiExpires = new Date(uiExpiryTime).toUTCString();
+    document.cookie = `eds_sim_ui_expiry=${uiExpiryTime}; expires=${uiExpires}; max-age=60; path=/; SameSite=Lax`;
+  };
+
+  // Fetch & reveal credentials for 60 seconds on demand
   const handleRefreshCredentials = async () => {
     if (!project?.id) return;
     setLoadingKeys(true);
     setFeedback({ type: '', message: '' });
     try {
       const { data } = await apiClient.get(`/v1/projects/refresh_keys/${project.id}`);
-      if (data?.api_key) setApiKey(data.api_key);
-      if (data?.secret_key) setSecretKey(data.secret_key);
+      if (data?.api_key) {
+        setApiKey(data.api_key);
+        setSimCookie('eds_sim_api_key', data.api_key);
+      }
+      if (data?.secret_key) {
+        setSecretKey(data.secret_key);
+        setSimCookie('eds_sim_secret_key', data.secret_key);
+      }
       
       setShowCredentials(true);
       setTimerSeconds(60);
-      setFeedback({ type: 'success', message: '✓ Credentials fetched! Visible for 1 minute.' });
+      setFeedback({ type: 'success', message: '✓ Credentials stored in HTTP cookies! Unmasked in UI for 60s.' });
     } catch (err) {
       setFeedback({ type: 'error', message: err.message || 'Failed to fetch credentials.' });
     } finally {
@@ -106,18 +123,25 @@ export default function SettingsTab({ project, form, setForm, onSave, onToggleAc
     setFeedback({ type: '', message: '' });
     try {
       const { data } = await apiClient.get(`/v1/projects/refresh_keys/${project.id}?regenerate=true`);
-      if (data?.api_key) setApiKey(data.api_key);
-      if (data?.secret_key) setSecretKey(data.secret_key);
+      if (data?.api_key) {
+        setApiKey(data.api_key);
+        setSimCookie('eds_sim_api_key', data.api_key);
+      }
+      if (data?.secret_key) {
+        setSecretKey(data.secret_key);
+        setSimCookie('eds_sim_secret_key', data.secret_key);
+      }
       
       setShowCredentials(true);
       setTimerSeconds(60);
-      setFeedback({ type: 'success', message: '✓ Project Credentials regenerated! Visible for 1 minute.' });
+      setFeedback({ type: 'success', message: '✓ Project credentials regenerated & stored in HTTP cookies! Visible for 60s.' });
     } catch (err) {
       setFeedback({ type: 'error', message: err.message || 'Failed to regenerate credentials.' });
     } finally {
       setLoadingKeys(false);
     }
   };
+
 
   const copyToClipboard = async (text, type) => {
     if (!text) return;

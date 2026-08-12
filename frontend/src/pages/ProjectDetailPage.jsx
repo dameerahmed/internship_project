@@ -263,7 +263,7 @@ export default function ProjectDetailPage() {
             <DLQTab project={activeProject} />
           )}
 
-          {(resolvedActiveTab === 'settings' || resolvedActiveTab === 'security') && (
+          {(resolvedActiveTab.startsWith('settings') || resolvedActiveTab === 'security') && (
             <SettingsTab
               project={activeProject}
               form={form}
@@ -272,8 +272,10 @@ export default function ProjectDetailPage() {
               onToggleActive={handleToggleActive}
               onDelete={handleDeleteProject}
               onPurge={handlePurgeData}
+              activeTab={activeTab}
             />
           )}
+
         </div>
 
       </div>

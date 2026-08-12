@@ -1,4 +1,6 @@
+from datetime import datetime, timezone
 from fastapi import APIRouter, Request, Depends, HTTPException, status, BackgroundTasks
+
 from pydantic import BaseModel
 import asyncio
 import httpx
@@ -194,6 +196,8 @@ async def incoming_webhook_receiver(
         request_payload = sanitize_for_logging(payload_json)
         log_payload = build_log_payload(
             event_id=event_id,
+            id=f"log-{event_id}",
+            created_at=datetime.now(timezone.utc).isoformat(),
             request_headers=request_headers,
             request_payload=request_payload,
             project_id=project_id,
@@ -209,6 +213,7 @@ async def incoming_webhook_receiver(
             source_ip=request.client.host if request.client else None,
             http_method=request.method,
         )
+
 
         if not incoming_event_type or incoming_event_type not in cached_config.get("allowed_events", []):
             raise HTTPException(
@@ -305,27 +310,55 @@ async def test_webhook_receiver(
     api_key = test_req.api_key
     secret_key = test_req.secret_key
 
+    # Try resolving secret_key from provided API key
+    if api_key:
+        try:
+            p_id, c_id, _ = WebhookSecurity.decode_and_parse_api_key(api_key)
+            cached_json = await redis_conn.get(f"auth:project_{p_id}")
+            if cached_json:
+                cached_config = json.loads(cached_json)
+                resolved_secret = cached_config.get("secret_key")
+                if resolved_secret:
+                    secret_key = resolved_secret
+            else:
+                async for db_session in get_db():
+                    res = await db_session.execute(select(Project).where(Project.id == p_id))
+                    db_proj = res.scalars().first()
+                    if db_proj:
+                        secret_key = db_proj.secret_key
+                        from app.services.project_service import refresh_project_cache
+                        await refresh_project_cache(p_id, db_session, redis_conn)
+                    break
+        except Exception as parse_err:
+            logger.warning("API key secret resolution in test endpoint skipped: %s", parse_err)
+
     if not api_key or not secret_key:
         try:
             async for db_session in get_db():
                 res = await db_session.execute(select(Project).where(Project.is_active == True))
                 active_project = res.scalars().first()
                 if active_project:
-                    if not active_project.api_key or not active_project.secret_key:
-                        # Refresh project keys if missing
-                        from app.services.project_service import refresh_project_cache
-                        await refresh_project_cache(active_project.id, db_session, redis_conn)
-                        await db_session.refresh(active_project)
-                    if not api_key:
-                        api_key = active_project.api_key
                     if not secret_key:
                         secret_key = active_project.secret_key
+                    if not api_key:
+                        api_key, new_hash = WebhookSecurity.generate_raw_and_hash_key(
+                            project_id=active_project.id,
+                            company_id=active_project.company_id
+                        )
+                        active_project.hashed_secret = new_hash
+                        await db_session.commit()
+                        try:
+                            from app.services.project_service import refresh_project_cache
+                            await refresh_project_cache(active_project.id, db_session, redis_conn)
+                        except Exception:
+                            pass
                 break
         except Exception as db_err:
             logger.warning("Failed to auto-resolve active project keys in gateway test: %s", db_err)
 
     body_bytes = json.dumps(payload_data).encode("utf-8")
     signature = WebhookSecurity.sign_payload(body_bytes, secret_key or "whsec_default")
+
 
     headers = {
         "X-API-KEY": api_key or "",

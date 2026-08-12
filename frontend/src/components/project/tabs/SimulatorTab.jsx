@@ -72,7 +72,7 @@ export default function SimulatorTab({ project }) {
   // Helper to set cookie (Clears previous cookie first, updates cleanly for 7 days)
   const setSimCookie = (name, val) => {
     if (!val) return;
-    const cleanVal = String(val).trim().replace(/^[{"'\s,:=]+|[}"'\s,:=]+$/g, '').replace(/^["']|["']$/g, '');
+    const cleanVal = String(val).trim().replace(/^[{"'\s,:]+/, '').replace(/[\s},:]+$/, '').replace(/^["']|["']$/g, '');
     
     // 1. Wipe previous cookie first
     document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/; SameSite=Lax`;
@@ -116,17 +116,18 @@ export default function SimulatorTab({ project }) {
 
     // 2. Key-value string parsing
     if (!apiKey) {
-      const apiMatch = cleanText.match(/(?:api_key|apiKey|public_key|x-api-key)[\s"':=]+([A-Za-z0-9_=-]+)/i) ||
-                       cleanText.match(/(gw_live:[A-Za-z0-9_=-]+:[A-Za-z0-9_=-]+:[A-Za-z0-9_=-]+)/i) ||
-                       cleanText.match(/(gAAAA[A-Za-z0-9_=-]+)/i);
+      const apiMatch = cleanText.match(/(?:api_key|apiKey|public_key|x-api-key)[\s"':=]+([A-Za-z0-9_=+/.-]+)/i) ||
+                       cleanText.match(/(gw_live:[A-Za-z0-9_=+/.-]+:[A-Za-z0-9_=+/.-]+:[A-Za-z0-9_=+/.-]+)/i) ||
+                       cleanText.match(/(gAAAA[A-Za-z0-9_=+/.-]+)/i);
       if (apiMatch) apiKey = apiMatch[1] || apiMatch[0];
     }
 
     if (!secretKey) {
-      const secMatch = cleanText.match(/(?:secret_key|secretKey|secret|private_key|x-hub-signature)[\s"':=]+([A-Za-z0-9_=-]+)/i) ||
-                       cleanText.match(/(whsec_[A-Za-z0-9_=-]+)/i);
+      const secMatch = cleanText.match(/(?:secret_key|secretKey|secret|private_key|x-hub-signature)[\s"':=]+([A-Za-z0-9_=+/.-]+)/i) ||
+                       cleanText.match(/(whsec_[A-Za-z0-9_=+/.-]+)/i);
       if (secMatch) secretKey = secMatch[1] || secMatch[0];
     }
+
 
     // 3. Line-by-line fallback
     if (!apiKey || !secretKey) {
@@ -143,8 +144,8 @@ export default function SimulatorTab({ project }) {
       if (!secretKey && tokens.length >= 2) secretKey = tokens[1];
     }
 
-    if (apiKey) apiKey = apiKey.trim().replace(/^[{"'\s,:=]+|[}"'\s,:=]+$/g, '');
-    if (secretKey) secretKey = secretKey.trim().replace(/^[{"'\s,:=]+|[}"'\s,:=]+$/g, '');
+    if (apiKey) apiKey = apiKey.trim().replace(/^[{"'\s,:]+/, '').replace(/[\s},:]+$/, '');
+    if (secretKey) secretKey = secretKey.trim().replace(/^[{"'\s,:]+/, '').replace(/[\s},:]+$/, '');
 
     return { apiKey, secretKey };
   };
@@ -172,7 +173,7 @@ export default function SimulatorTab({ project }) {
   // 2. INDIVIDUAL KEY PASTES
   const handleSingleApiKeyPaste = (rawText) => {
     if (!rawText || !rawText.trim()) return;
-    const cleanText = rawText.trim().replace(/^[{"'\s,:=]+|[}"'\s,:=]+$/g, '').replace(/^["']|["']$/g, '');
+    const cleanText = rawText.trim().replace(/^[{"'\s,:]+/, '').replace(/[\s},:]+$/, '').replace(/^["']|["']$/g, '');
     setSimCookie('eds_sim_api_key', cleanText);
     setActiveApiKeyPreview(makePreview(cleanText));
     setTimerSeconds(60);
@@ -183,7 +184,7 @@ export default function SimulatorTab({ project }) {
 
   const handleSingleSecretKeyPaste = (rawText) => {
     if (!rawText || !rawText.trim()) return;
-    const cleanText = rawText.trim().replace(/^[{"'\s,:=]+|[}"'\s,:=]+$/g, '').replace(/^["']|["']$/g, '');
+    const cleanText = rawText.trim().replace(/^[{"'\s,:]+/, '').replace(/[\s},:]+$/, '').replace(/^["']|["']$/g, '');
     setSimCookie('eds_sim_secret_key', cleanText);
     setActiveSecretKeyPreview(makePreview(cleanText));
     setTimerSeconds(60);
@@ -192,17 +193,34 @@ export default function SimulatorTab({ project }) {
     setTimeout(() => setFeedbackMsg(''), 3000);
   };
 
-  // 60-Second UI Preview Countdown Interval
+
+  // 60-Second UI Preview Countdown Interval & Auto Cookie Population
   useEffect(() => {
-    const apiKeyCookie = getCookie('eds_sim_api_key');
-    const secretKeyCookie = getCookie('eds_sim_secret_key');
+    let apiKeyCookie = getCookie('eds_sim_api_key');
+    let secretKeyCookie = getCookie('eds_sim_secret_key');
     const uiExpiryCookie = getCookie('eds_sim_ui_expiry');
 
-    if (apiKeyCookie) {
-      setActiveApiKeyPreview(makePreview(decodeURIComponent(apiKeyCookie)));
-    }
-    if (secretKeyCookie) {
-      setActiveSecretKeyPreview(makePreview(decodeURIComponent(secretKeyCookie)));
+    if (!apiKeyCookie && project?.id) {
+      apiClient.get(`/v1/projects/refresh_keys/${project.id}`)
+        .then(({ data }) => {
+          if (data?.api_key) {
+            setSimCookie('eds_sim_api_key', data.api_key);
+            setActiveApiKeyPreview(makePreview(data.api_key));
+          }
+          if (data?.secret_key) {
+            setSimCookie('eds_sim_secret_key', data.secret_key);
+            setActiveSecretKeyPreview(makePreview(data.secret_key));
+          }
+          setTimerSeconds(60);
+        })
+        .catch((err) => console.warn('Auto key sync note:', err));
+    } else {
+      if (apiKeyCookie) {
+        setActiveApiKeyPreview(makePreview(decodeURIComponent(apiKeyCookie)));
+      }
+      if (secretKeyCookie) {
+        setActiveSecretKeyPreview(makePreview(decodeURIComponent(secretKeyCookie)));
+      }
     }
 
     let initialSeconds = 0;
@@ -227,7 +245,8 @@ export default function SimulatorTab({ project }) {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [project?.id]);
+
 
   // Build sample payload from event schema
   const generateSamplePayloadForEvent = (eventConfig) => {
@@ -436,8 +455,8 @@ export default function SimulatorTab({ project }) {
           {/* Active Cookies Status Bar */}
           <div className="flex flex-wrap items-center justify-between text-[11px] font-mono gap-2 pt-1">
             <div className="flex items-center gap-3">
-              <span>API Key: <strong className="text-amber-600 dark:text-amber-300">{activeApiKeyPreview || 'Default System Key'}</strong></span>
-              <span>Secret Key: <strong className="text-amber-600 dark:text-amber-300">{activeSecretKeyPreview || 'Default System Secret'}</strong></span>
+              <span>API Key: <strong className="text-amber-600 dark:text-amber-300">{timerSeconds > 0 ? (activeApiKeyPreview || 'Default System Key') : (activeApiKeyPreview ? '•••••••• (Cookie Active)' : 'Default System Key')}</strong></span>
+              <span>Secret Key: <strong className="text-amber-600 dark:text-amber-300">{timerSeconds > 0 ? (activeSecretKeyPreview || 'Default System Secret') : (activeSecretKeyPreview ? '•••••••• (Cookie Active)' : 'Default System Secret')}</strong></span>
             </div>
 
             <div className="flex items-center gap-2">
@@ -454,13 +473,14 @@ export default function SimulatorTab({ project }) {
               {timerSeconds > 0 ? (
                 <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/20 text-amber-700 dark:text-amber-300 font-bold animate-pulse">
                   <Clock className="h-3.5 w-3.5 text-amber-500" />
-                  <span>Active: {timerSeconds}s remaining</span>
+                  <span>Unmasked: {timerSeconds}s remaining</span>
                 </div>
               ) : (
-                <span className="text-zinc-500 text-[10px]">Auto-resolving project keys</span>
+                <span className="text-zinc-500 text-[10px]">Masked in UI (Cookies Active in Background)</span>
               )}
             </div>
           </div>
+
 
           {/* Mode 1: Combined Both Keys Paste Box */}
           {injectorMode === 'both' && (
@@ -468,22 +488,23 @@ export default function SimulatorTab({ project }) {
               <label className="block text-[10px] font-bold uppercase tracking-wider text-zinc-600 dark:text-zinc-400 font-mono">
                 PASTE BOTH KEYS AT ONCE (RAW TEXT OR JSON)
               </label>
-              <textarea
-                rows={2.5}
+              <input
+                type="text"
                 value={combinedBothInput}
                 onChange={(e) => {
                   setCombinedBothInput(e.target.value);
-                  if (e.target.value.length > 8) handleBothKeysPaste(e.target.value);
+                  if (e.target.value.length > 10) handleBothKeysPaste(e.target.value);
                 }}
                 onPaste={(e) => {
                   const data = e.clipboardData.getData('text');
                   handleBothKeysPaste(data);
                 }}
-                placeholder={`Paste both keys together here...\nExample JSON: { "api_key": "eds_live_...", "secret_key": "whsec_..." }\n(Instantly wipes text box & saves into 60s Cookies)`}
-                className="w-full rounded-xl border border-amber-500/40 bg-white p-3 text-xs font-mono text-amber-700 dark:bg-zinc-950 dark:text-amber-200 outline-none focus:border-amber-500 shadow-inner resize-y"
+                placeholder='Paste keys here... e.g. { "api_key": "gw_live:...", "secret_key": "whsec_..." }'
+                className="w-full rounded-xl border border-amber-500/40 bg-white px-3 py-2 text-xs font-mono text-amber-700 dark:bg-zinc-950 dark:text-amber-200 outline-none focus:border-amber-500 shadow-inner"
               />
             </div>
           )}
+
 
           {/* Mode 2: Individual Key Paste Fields */}
           {injectorMode === 'single' && (

@@ -99,91 +99,65 @@ export default function LogsPage({ projectId, embedded = false }) {
   useEffect(() => {
     fetchLogs(false);
 
-    let socket = null;
     let eventSource = null;
     let reconnectTimer = null;
     let retryCount = 0;
 
-    if (projectId) {
-      // Project-scoped view — dedicated WebSocket
-      const connectWs = () => {
-        const token = user?.access_token || (localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user'))?.access_token : null);
-        if (!token) return;
-
-        const wsUrl = withToken(WS_ENDPOINTS.LOGS(projectId), token);
-        try {
-          socket = new WebSocket(wsUrl);
-
-          socket.onmessage = (event) => {
-            try {
-              const payload = JSON.parse(event.data);
-              if (payload && payload.id) {
-                const normalizedPayload = normalizeLog(payload);
-                setLogs((prevLogs) => {
-                  const exists = prevLogs.some((l) => l.id === normalizedPayload.id);
-                  if (exists) return prevLogs;
-                  // Cap buffer at 500 to prevent browser memory pressure
-                  return [normalizedPayload, ...prevLogs].slice(0, 500);
-                });
-              }
-            } catch (err) {
-              console.warn('Log WS message parse error:', err);
-            }
-          };
-
-          socket.onclose = () => {
-            const delay = Math.min(1000 * Math.pow(2, retryCount), 15000);
-            retryCount++;
-            reconnectTimer = setTimeout(connectWs, delay);
-          };
-
-          socket.onerror = () => {
-            try { socket.close(); } catch {}
-          };
-        } catch (err) {
-          console.warn('Log WebSocket error:', err);
-        }
-      };
-      connectWs();
-    } else {
-      // Company-wide view — Server-Sent Events (SSE) /v1/logs/stream
+    const connectSSE = () => {
       const token = user?.access_token || (localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user'))?.access_token : null);
-      if (token) {
-        try {
-          const sseUrl = `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/v1/logs/stream?token=${encodeURIComponent(token)}`;
-          eventSource = new EventSource(sseUrl);
+      if (!token) return;
 
-          eventSource.onmessage = (event) => {
-            try {
-              const payload = JSON.parse(event.data);
-              if (payload && payload.id) {
-                const normalizedPayload = normalizeLog(payload);
-                setLogs((prevLogs) => {
-                  const exists = prevLogs.some((l) => l.id === normalizedPayload.id);
-                  if (exists) return prevLogs;
-                  return [normalizedPayload, ...prevLogs].slice(0, 500);
-                });
-              }
-            } catch (err) {
-              console.warn('SSE log parse error:', err);
+      const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+      const sseUrl = projectId
+        ? `${baseUrl}/v1/logs/stream?project_id=${projectId}&token=${encodeURIComponent(token)}`
+        : `${baseUrl}/v1/logs/stream?token=${encodeURIComponent(token)}`;
+
+      try {
+        eventSource = new EventSource(sseUrl);
+
+        eventSource.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data);
+            if (payload && (payload.id || payload.event_id)) {
+              const normalizedPayload = normalizeLog(payload);
+              setLogs((prevLogs) => {
+                const targetId = normalizedPayload.id || normalizedPayload.event_id;
+                const index = prevLogs.findIndex(
+                  (l) => (l.id && l.id === targetId) || (l.event_id && l.event_id === targetId)
+                );
+                if (index !== -1) {
+                  const updatedLogs = [...prevLogs];
+                  updatedLogs[index] = { ...updatedLogs[index], ...normalizedPayload };
+                  return updatedLogs;
+                }
+                // Cap buffer at 500 entries to prevent memory pressure
+                return [normalizedPayload, ...prevLogs].slice(0, 500);
+              });
             }
-          };
+          } catch (err) {
+            console.warn('SSE log parse error:', err);
+          }
+        };
 
-          eventSource.onerror = () => {
-            try { eventSource.close(); } catch {}
-          };
-        } catch (err) {
-          console.warn('SSE connection error:', err);
-        }
+        eventSource.onerror = () => {
+          try { eventSource.close(); } catch {}
+          const delay = Math.min(1000 * Math.pow(2, retryCount), 15000);
+          retryCount++;
+          reconnectTimer = setTimeout(connectSSE, delay);
+        };
+      } catch (err) {
+        console.warn('SSE connection error:', err);
       }
-    }
+    };
+
+    connectSSE();
 
     return () => {
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      if (socket) socket.close();
       if (eventSource) eventSource.close();
     };
   }, [projectId, user]);
+
 
   // 100% Working Multi-Filter Calculation
   const filteredLogs = useMemo(() => {
@@ -195,7 +169,10 @@ export default function LogsPage({ projectId, embedded = false }) {
       const path = (log.path || log.target_url || log.delivery_packet?.target_url || '').toLowerCase();
       const eventType = (log.event_type || log.delivery_packet?.event_type || '').toLowerCase();
       const method = (log.http_method || log.delivery_packet?.http_method || 'POST').toUpperCase();
-      const logTime = log.created_at ? new Date(log.created_at).getTime() : now;
+      
+      const parsedTime = log.created_at ? new Date(log.created_at).getTime() : now;
+      const logTime = isNaN(parsedTime) ? now : parsedTime;
+
 
       // 1. Search Query Filter
       const matchesSearch =

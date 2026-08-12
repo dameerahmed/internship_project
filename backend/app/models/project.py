@@ -20,6 +20,8 @@ class Project(Base):
     description = Column(String(500), nullable=True)
     hashed_secret = Column(String(255), unique=True, nullable=False, index=True)
     secret_key = Column(String(255), nullable=False)  # For HMAC Security Verification
+
+
     is_active = Column(Boolean, default=True, nullable=False, index=True)
     retention_days = Column(Integer, default=30, nullable=False, index=True)
 

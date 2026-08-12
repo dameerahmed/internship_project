@@ -237,7 +237,7 @@ export default function Sidebar() {
                 type="button"
                 onClick={() => setActiveTab('settings')}
                 className={`w-full flex items-center justify-between gap-3 rounded-lg px-3.5 py-2.5 font-medium transition-all ${
-                  activeTab === 'settings' || activeTab === 'security'
+                  activeTab.startsWith('settings') || activeTab === 'security'
                     ? 'bg-indigo-500/20 text-indigo-300 font-semibold border-l-2 border-indigo-400 shadow-sm'
                     : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border-l-2 border-transparent'
                 }`}
@@ -246,10 +246,11 @@ export default function Sidebar() {
                   <ShieldCheck size={17} className="text-slate-400 shrink-0" />
                   <span>Settings & Keys</span>
                 </div>
-                {(activeTab === 'settings' || activeTab === 'security') && (
+                {(activeTab.startsWith('settings') || activeTab === 'security') && (
                   <span className="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-pulse shrink-0" />
                 )}
               </button>
+
 
               {/* Sub-navigation icons under Settings & Keys when active */}
               {activeTab.startsWith('settings') && (

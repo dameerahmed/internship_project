@@ -482,22 +482,47 @@ export default function DLQPage({ projectId, embedded = false }) {
                 </div>
 
                 <div className="flex items-center justify-between">
-                  <span className="text-zinc-500 font-medium">Failure Reason</span>
-                  <span className="font-sans text-rose-500 font-semibold truncate max-w-[200px]">
-                    {currentSelection.error_message || currentSelection.failure_reason || currentSelection.error || currentSelection.reason || 'Delivery Failed'}
+                  <span className="text-zinc-500 font-medium">Target Destination URL</span>
+                  <span className="font-mono text-[11px] text-zinc-800 dark:text-zinc-200 truncate max-w-[200px]">
+                    {currentSelection.target_url || currentSelection.delivery_packet?.target_url || '/v1/gateway'}
                   </span>
                 </div>
 
                 <div className="flex items-center justify-between">
-                  <span className="text-zinc-500 font-medium">Retry Attempts</span>
-                  <span className="font-mono font-bold text-zinc-800 dark:text-zinc-200">
-                    {currentSelection.attempt_number || currentSelection.attempts_count || currentSelection.retry_count || '?'} attempts
+                  <span className="text-zinc-500 font-medium">Origin Source / IP</span>
+                  <span className="font-mono text-[11px] text-zinc-800 dark:text-zinc-200">
+                    {currentSelection.source_ip || currentSelection.headers?.['Source-IP'] || currentSelection.headers?.['x-forwarded-for'] || '127.0.0.1 (Ingress)'}
                   </span>
                 </div>
 
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500 font-medium">Retry Attempt Count</span>
+                  <span className="font-mono font-bold text-zinc-800 dark:text-zinc-200 bg-rose-500/10 text-rose-400 px-2 py-0.5 rounded border border-rose-500/20">
+                    {currentSelection.attempt_number || currentSelection.attempts_count || currentSelection.retry_count || 5} attempts
+                  </span>
+                </div>
+
+                <div className="flex flex-col gap-1 pt-1">
+                  <span className="text-zinc-500 font-medium">Failure Error / Stack Trace</span>
+                  <div className="p-3 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-400 font-mono text-[11px] leading-relaxed max-h-32 overflow-y-auto">
+                    {currentSelection.error_message || currentSelection.failure_reason || currentSelection.error || currentSelection.reason || 'Delivery Failed: Target endpoint returned HTTP 500 / Connection Refused'}
+                  </div>
+                </div>
+
+                {currentSelection.headers && Object.keys(currentSelection.headers).length > 0 && (
+                  <div className="flex flex-col gap-1.5 pt-2 border-t border-zinc-100 dark:border-zinc-800">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400 font-mono">
+                      ORIGINAL INGRESS HEADERS
+                    </span>
+                    <pre className="p-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 text-indigo-400 font-mono text-[11px] overflow-x-auto max-h-36 leading-relaxed shadow-inner">
+                      {JSON.stringify(currentSelection.headers, null, 2)}
+                    </pre>
+                  </div>
+                )}
+
                 <div className="flex flex-col gap-1.5 pt-2 border-t border-zinc-100 dark:border-zinc-800">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400 font-mono">
-                    FAILED PAYLOAD METADATA
+                    ORIGINAL PAYLOAD METADATA
                   </span>
                   <pre className="p-3.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 text-rose-500 font-mono text-[11px] overflow-x-auto max-h-60 leading-relaxed shadow-inner">
                     {JSON.stringify(currentSelection.payload || currentSelection.data_payload || currentSelection.delivery_packet?.data_payload || currentSelection.delivery_packet?.payload || currentSelection.raw_content || currentSelection, null, 2)}
@@ -511,11 +536,12 @@ export default function DLQPage({ projectId, embedded = false }) {
                     className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold py-2.5 text-xs shadow-md transition active:scale-95"
                   >
                     <Play className="h-4 w-4 fill-current" />
-                    <span>Replay This Failed Event Now</span>
+                    <span>Replay & Re-trigger Original Pipeline Now</span>
                   </button>
                 </div>
               </div>
             ) : (
+
               <div className="space-y-3">
                 <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-zinc-400 font-mono">
                   <span>FULL RAW DLQ OBJECT</span>

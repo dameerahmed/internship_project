@@ -4,7 +4,7 @@ import logging
 import uuid
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -95,6 +95,8 @@ async def create_project(
 
         db_project.hashed_secret = hashed_secret
         db_project.secret_key = secret_key
+
+
 
         allowed_events_list = []
         
@@ -519,6 +521,7 @@ async def new_api_and_secret_generation(
         if db_project is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
+        # Generate 4-part encrypted API key and hashed secret via WebhookSecurity
         new_client_api_key, new_hashed_secret = WebhookSecurity.generate_raw_and_hash_key(
             project_id=project_id,
             company_id=company_id
@@ -531,7 +534,7 @@ async def new_api_and_secret_generation(
         await db.refresh(db_project)
 
         try:
-            from  app.services.project_service import refresh_project_cache
+            from app.services.project_service import refresh_project_cache
             await refresh_project_cache(project_id, db, redis_conn)
         except Exception as redis_err:
             logger.warning("Redis cache synchronization skipped: %s", redis_err)
@@ -553,6 +556,8 @@ async def new_api_and_secret_generation(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate new API and secret keys: {str(e)}"
         )
+
+
 
 
 @router.post("/{project_id}/purge")

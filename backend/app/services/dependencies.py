@@ -67,3 +67,56 @@ async def get_current_company(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Database lookup failed: {str(e)}"
         )
+
+
+from fastapi import Request
+
+async def get_current_company_flexible(
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+) -> Company:
+    """
+    Flexible dependency to validate JWT token from either:
+    1. 'Authorization: Bearer <token>' header
+    2. '?token=<access_token>' query parameter (for SSE EventSource)
+    """
+    raw_token = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        raw_token = auth_header.split(" ")[1]
+    if not raw_token:
+        raw_token = request.query_params.get("token")
+
+    if not raw_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication token required via Bearer header or ?token= query parameter.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        payload = JWTManager.decode_access_token(raw_token)
+        if payload is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+        company_id_str: str = payload.get("sub") or payload.get("company_id")
+        if company_id_str is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
+
+        company_id = int(company_id_str)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token is invalid or expired.",
+        )
+
+    result = await db.execute(select(Company).where(Company.id == company_id))
+    company = result.scalars().first()
+
+    if company is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found.")
+
+    if not getattr(company, "is_active", True):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This account has been deactivated.")
+
+    return company

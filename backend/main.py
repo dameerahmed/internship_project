@@ -34,6 +34,7 @@ async def lifespan(app: FastAPI):
             )
             result = await session.execute(stmt)
             stuck_event_ids = result.scalars().all()
+
             
             if stuck_event_ids:
                 logger.warning(f"Found {len(stuck_event_ids)} stuck webhooks in DB! Re-queueing to RabbitMQ...")
@@ -46,6 +47,7 @@ async def lifespan(app: FastAPI):
         logger.error(f"Error during database recovery on startup: {exc}")
     
     yield
+
     
     # Shutdown logic if any
     pass
